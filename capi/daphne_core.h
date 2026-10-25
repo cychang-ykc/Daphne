@@ -33,17 +33,19 @@ extern "C" {
 #define DC_ERR_DEVICE -4     /* the output device could not be opened / started */
 #define DC_ERR_BUFFER -5     /* the output buffer is too small (the return value of *_json functions) */
 #define DC_ERR_INTERNAL -6   /* the engine failed inside (out of memory, an unexpected error; message says what) */
-#define DC_ERR_CANCELLED -7  /* dc_load: a dc_stop (or dc_destroy) came while it was starting; nothing plays */
+#define DC_ERR_CANCELLED -7  /* dc_load: a dc_stop, dc_cancel or dc_destroy came while it was starting (ABI 4) */
 
 typedef struct dc_player dc_player;
 
-/* 1: the first version; 2: the UTF-8 path functions (*_utf8); 3: dc_keep_device, dc_release_device, dc_device_kept. */
+/* 1: the first version; 2: the UTF-8 path functions (*_utf8); 3: dc_keep_device, dc_release_device, dc_device_kept;
+ * 4: dc_cancel, a dc_stop that cancels a dc_load in progress (DC_ERR_CANCELLED), dc_state's "loading". */
 DC_API int dc_abi_version(void);
 DC_API const char* dc_version(void);
 
 DC_API dc_player* dc_create(void);
-/* Stops playback (a dc_load in progress is cancelled first, as by dc_stop) and frees the player. No other call on
- * this player may be in progress or start meanwhile: wait for them (a host's poll thread, a load on a worker) first. */
+/* Stops playback and frees the player. A dc_load in progress on another thread is cancelled (as by dc_stop) and
+ * waited for. No other call on this player (a host's poll thread: state, events, meter) may be in progress, and none
+ * may start afterwards: wait for them first. */
 DC_API void dc_destroy(dc_player* p);
 
 /* Paths: the functions taking wchar_t paths are the original ones (UTF-16 on Windows; on other systems wchar_t
@@ -71,13 +73,15 @@ DC_API void dc_set_next_utf8(dc_player* p, const char* path);
 DC_API void dc_set_next_gain(dc_player* p, const wchar_t* path, double headroom_db);
 DC_API void dc_set_next_gain_utf8(dc_player* p, const char* path, double headroom_db);
 /* Stops playback (DSD: the DAC is returned to PCM first) and waits for it. A dc_load in progress is cancelled first
- * (it returns DC_ERR_CANCELLED and nothing plays): a filter design or the prefill stops at once, then dc_stop waits for
- * the load to return. A device that hangs in its driver while opening cannot be interrupted; a host keeps dc_stop off
- * its UI thread for that. */
+ * (it returns DC_ERR_CANCELLED): a filter design or the prefill stops at once, then dc_stop waits for the load to
+ * return. A device that hangs in its driver while opening cannot be interrupted; a host keeps dc_stop off its UI thread
+ * for that. Not yet watertight (N26): a cancel that meets the device starting can let a few ms play and leaves that
+ * load's "started" event and report behind. */
 DC_API void dc_stop(dc_player* p);
-/* ABI 4: cancels a dc_load in progress (it returns DC_ERR_CANCELLED, nothing plays) and returns at once, without
- * stopping what plays otherwise: for a host whose stop is queued behind its load (daphne-helper), so the load is not
- * waited for before the stop reaches dc_stop. No effect when nothing is loading. */
+/* ABI 4: cancels a dc_load in progress (it returns DC_ERR_CANCELLED) and returns at once, without stopping what
+ * plays otherwise: for a host whose stop is queued behind its load (daphne-helper), so the load is not waited for
+ * before the stop reaches dc_stop. No effect when nothing is loading, including a dc_load that has not taken the
+ * player's operation lock yet. */
 DC_API void dc_cancel(dc_player* p);
 
 /* macOS, exclusive mode: keep the device between tracks (MIKU's way; process-wide). On: a Core Audio output closed in
@@ -131,8 +135,10 @@ DC_API int dc_devices(char* json, int len);
 
 /* Live input (a browser page's audio tap): the host's shared ring, read by dc_load with the path L"live:".
  * Layout: uint32 write index in frames (wraps) | 12 bytes reserved | float32 stereo frames (cap_frames). The
- * memory must stay valid until dc_live_bus(NULL, 0, 0) (or another ring) returns: it returns once no read is left
- * in the previous ring, so the host may free it then, even while a live track plays. rate: the producer's
+ * producer writes the frames first, then the index with a release (or seq_cst) atomic store. The memory must stay
+ * valid until dc_live_bus(NULL, 0, 0) (or another ring) returns: it returns once no read is left in the previous
+ * ring, so the host may free it then, even while a live track plays. Call it from one thread only; start a new
+ * ring's write index at 0 (the decoder keeps its read position across rings, N2). rate: the producer's
  * sample rate (dc_live_rate when it changes). While a live track plays, dc_state has
  *   "live": {"fill": s buffered in the ring, "read": s read, "resyncs": n, "starves": n, "adjust": x,
  *            "target": s of jitter buffer aimed for now (0.15, up to 0.30 after starves)}
