@@ -18,6 +18,7 @@
 - `drflac_read_pcm_frames_s32` × 2^-31，所有位元深度（含 32 bit）精確。
 - 停用 Ogg FLAC（`DR_FLAC_NO_OGG`）：OGA 交給 FFmpeg。
 - 搜尋使用 dr_flac 的 seek table / 二分搜尋，落點為精確樣本。
+- dr_flac 照抄 STREAMINFO，取樣率 0 也能開啟；`open_decoder` 對所有解碼器（含退回的 FFmpeg）統一拒絕取樣率或聲道數 ≤ 0 的檔案，否則播放器以取樣率做的除法會讓整個程序結束（N27）。
 
 ## MP3 / MP2 / MP1（`decoder_mp3.cpp`，minimp3_ex）
 
@@ -83,6 +84,7 @@ WAV / AIFF、FLAC、MP3 與 FFmpeg 的解碼器不直接讀檔，改讀 `FileByt
 | WAV 16 / 24 / 32-bit 整數：`x · 2^(N-1)` 與寫入樣本完全相同，frames 與 bits 正確 | 通過 |
 | WAV float64（96 kHz，含 1e-12 級細節）：逐位元相同，`lossless_int = false` | 通過 |
 | WAV 搜尋到 frame 4321：第一個讀出的樣本即目標樣本 | 通過 |
+| STREAMINFO 取樣率 0 的 FLAC：`open_decoder` 失敗並回報原因（修正前開啟成功） | 通過 |
 | 即時輸入：來源開始前立刻回傳靜音；來源領先 0.5 秒後讀寫交替：1 kHz 正弦相鄰樣本差不超過理論值、兩聲道分開、沒有重新同步或 starve | 通過 |
 | 即時輸入：被寫入端追過時重新同步一次；資料讀完後等待約 20 ms 再回傳 240 frames（5 ms）靜音；沒有共用緩衝時無法開啟 | 通過 |
 | 即時輸入：seek 略過目標以外的積壓（0.5 秒），落在目標處，不計為重新同步 | 通過 |
