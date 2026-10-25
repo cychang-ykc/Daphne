@@ -15,8 +15,9 @@
 - `probe_before_design()`：有些驅動接受了串流不了的取樣率，播放器先以靜音短暫啟動一次再設計濾波器（ASIO 為 true）。
 - `supported_rates()`：開啟中的驅動接受的 PCM 取樣率，給主程式的設定畫面（ASIO）。
 - `buffer_fallback()`：裝置不接受 `output.buffer_ms`，以預設緩衝執行（WASAPI 獨占）。
+- `system_rate()`：輸出把串流轉成裝置自己的取樣率時，裝置的取樣率（Core Audio 的 `AudioConverter`、WASAPI 共享的 `AUTOCONVERTPCM`）；`format().rate` 是播放器送出的取樣率。0 表示裝置就以 `format().rate` 播放。
 - 播放器只透過這個介面使用裝置：裝置由 `PlayerDeps::open_output` 建立，Windows 預設為 `platform_output_opener()`（`core/src/output_win.cpp`：WASAPI / ASIO），macOS 為 `core/src/output_mac.cpp`（Core Audio）；Linux 目前沒有裝置輸出（N25）。
-- 開裝置之前需要知道的三件事由 `PlayerDeps::output_caps`（`OutputCaps`，預設 `platform_output_caps()`）回答，播放器不看 API 名稱：`native_dsd`（直接收 DSD：ASIO）、`shared_mix`（系統混音器、自己的取樣率，不會 bit-perfect、不能送 DSD：WASAPI 共享；目前 DSD 檔在共享模式仍會先試 DoP，N26「已知問題」）、`takes_buffer_ms`（`output.buffer_ms` 決定緩衝：ASIO 以外）。Core Audio：沒有原生 DSD（DoP 只在獨佔）、共享模式是 `shared_mix`、吃 `buffer_ms`。
+- 開裝置之前需要知道的三件事由 `PlayerDeps::output_caps`（`OutputCaps`，預設 `platform_output_caps()`）回答，播放器不看 API 名稱：`native_dsd`（直接收 DSD：ASIO）、`shared_mix`（系統混音器、自己的取樣率，不會 bit-perfect、不送 DSD 與 DoP：WASAPI 共享）、`takes_buffer_ms`（`output.buffer_ms` 決定緩衝：ASIO 以外）、`converts`（`OutputRequest::convert` 時可以轉成裝置有的取樣率：Core Audio 獨佔；播放器只在最後一次 PCM 嘗試要求，DoP 從不要求）。Core Audio：沒有原生 DSD（DoP 只在獨佔）、共享模式是 `shared_mix`、吃 `buffer_ms`、獨佔可以轉換。
 - `output.api` 的預設是這個平台的獨佔輸出（`kDefaultOutputApi`：Windows `wasapi_exclusive`、macOS `coreaudio_exclusive`）；別的平台的 API 開啟時回報原因。CLI 的 `--shared` / `--exclusive` 也對應到這個平台的 API。
 
 統計（`OutputStats`，原子變數）：回呼數、underrun、WASAPI 事件逾時（兩個緩衝長度、至少 50 ms 沒有裝置事件）、最長回呼間隔、ASIO 遲到回呼（相鄰回呼間隔 > 1.5 個緩衝區週期）。
@@ -26,7 +27,7 @@
 | 模式 | 做法 |
 |---|---|
 | 獨占 | 事件驅動（`AUDCLNT_STREAMFLAGS_EVENTCALLBACK`）。格式搜尋順序：取樣率為要求值、同家族逐次減半，再試 192k / 96k / 48k / 44.1k；樣本格式為 int32、24-in-32、float32、packed24、int16。每種組合先以 `IsFormatSupported` 檢查 |
-| 共享 | 系統混音器格式；取樣率不同時請 Windows 轉換（`AUTOCONVERTPCM`），以正確速度播放（共享模式本來就不是 bit-perfect） |
+| 共享 | 系統混音器格式；取樣率不同時請 Windows 轉換（`AUTOCONVERTPCM`），以正確速度播放（共享模式本來就不是 bit-perfect）。這時 `system_rate()` 是混音器的取樣率，報告與 MIKU 的訊號路徑以它顯示實際輸出 |
 
 - 緩衝長度：`output.buffer_ms`，0 為預設（獨占：裝置週期、至少 25 ms，一個緩衝等於一個週期；共享：100 ms），否則 10–200 ms（1–9 視為 10）。
   - 下限 10 ms：Windows 獨占模式常見的預設週期；更短的週期少有裝置接受，對播放也沒有好處（播放器本身預先處理約 0.5 秒，裝置緩衝只影響暫停與搜尋的反應速度）。
@@ -58,7 +59,7 @@
 
 | 模式 | 做法 |
 |---|---|
-| 獨佔 | hog mode（只有這個程序能在裝置上播放，也沒有其他聲音混進來）；裝置取樣率設成要求值（裝置有提供時；否則同家族、不超過要求的最高取樣率，再否則裝置的最高取樣率，`matches_request()` 為假）；DAC 實體格式調成該取樣率下位元數最多的整數格式（至少 24 bit，已足夠就不動，不重新鎖定；DAC 沒有 24 bit 以上的整數格式時的行為尚未確認，N26） |
+| 獨佔 | hog mode（只有這個程序能在裝置上播放，也沒有其他聲音混進來）；裝置取樣率設成要求值（裝置有提供時；否則同家族、不超過要求的最高取樣率，再否則裝置的最高取樣率，`matches_request()` 為假）。播放器要求轉換（`convert`，最後一次 PCM 嘗試）而裝置的取樣率不是要求值的整數倍時（只有 48 kHz 的 DAC 收 44.1 kHz），輸出回報要求的取樣率，由 `AudioConverter` 轉成裝置的取樣率（`system_rate()`，回呼數以串流的 frame 計算）；沒有要求時從不轉換，DoP 因此一定原樣送到 DAC。保留的裝置留著上一首的轉換器時，開啟時先丟掉。DAC 實體格式調成該取樣率下位元數最多的整數格式（至少 24 bit，已足夠就不動，不重新鎖定；DAC 沒有 24 bit 以上的整數格式時的行為尚未確認，N26） |
 | 共享 | 系統混音器：裝置維持自己的取樣率，不改實體格式、不拿 hog。裝置取樣率是要求值的整數倍時，輸出回報裝置取樣率，由播放器的鏈升頻（44.1 k → 88.2 kHz）；不是整數倍時（48 k 在 44.1 kHz 的裝置上、96 k 在 44.1 kHz 上），輸出回報要求的取樣率，在 IO 回呼裡用 Core Audio 的 `AudioConverter`（最高品質）轉成裝置取樣率，與 WASAPI 共享的 `AUTOCONVERTPCM` 相同（播放器的鏈只會整數倍升頻） |
 
 - 樣本格式：環裡是 24-bit 整數靠左放在 32 bit（`int24-in-32`），IO 回呼寫進串流的 virtual format（32-bit 浮點，目前的 macOS 驅動都是）時除以 2^31。32-bit 浮點能精確表示每個 24-bit 整數，獨佔模式下 HAL 把浮點轉成 DAC 的整數格式也是精確的，所以 24 bit 以內的 PCM 與 DoP 都一個位元不差地送到 DAC（與 MIKU 自己的 Core Audio 輸出、Audirvana、Roon 在 macOS 上的作法相同）。播放器看到的裝置格式就是 `int24-in-32`：DoP 的標記照常寫在最高位元組（`dop_capable`），bit-perfect 的判斷也照 24 bit 計算。
@@ -68,7 +69,7 @@
 - Windows 的輸出工廠收到 `coreaudio_*` 時回報「Core Audio is macOS only」（原本會當成 WASAPI 獨占開啟）。
 - 保留裝置（`keep_output_devices`，`devices.h`；C API `dc_keep_device`，helper 預設打開）：與 MIKU 自己的 Core Audio 輸出相同，獨佔模式的 `close()` 不還原，裝置保留著（hog、取樣率、DAC 格式，IO 繼續跑、送靜音；IO 回呼這時沒有 owner，只寫零），下一次 `open()` 同一台裝置時直接接手，新的取樣率在運轉中直接設定（DAC 只重新鎖定一次，同取樣率則完全不動），macOS 也不會在中間把系統輸出移走再移回。要求共享模式、另一台裝置、或保留的裝置已被拔除時，先把它還原再開。`release_kept_output_device()` 還原（取樣率回到第一次開啟前的值、DAC 格式）並放掉 hog。程序結束時不呼叫 HAL：helper 在 `quit` 時放開；程序掛掉時系統放掉 hog，但取樣率停在最後的值（與 MIKU 相同）。
 - 被其他程序 hog 住的裝置：獨佔與共享都開不了（不會卡住）。獨佔、或以系統輸出開啟而系統輸出不存在時，回報「… is in exclusive use by another application (pid N)」；共享模式指定裝置 UID 時不檢查 hog 的持有者，要到啟動 IO 才失敗，訊息是無法啟動。
-- 聲道：立體聲用裝置偏好的立體聲聲道（`kAudioDevicePropertyPreferredChannelsForStereo`）；單聲道寫到那兩個聲道；多聲道從第 1 個聲道依序對應（裝置聲道不夠時開啟失敗）。每次回呼先把整個 buffer list 清成 0，再寫入用到的聲道。
+- 聲道：立體聲用裝置偏好的立體聲聲道（`kAudioDevicePropertyPreferredChannelsForStereo`）；單聲道寫到那兩個聲道；多聲道從第 1 個聲道依序對應；裝置聲道不夠時（5.1 在立體聲 DAC 上）以立體聲開啟，由處理鏈降混（與 ASIO 相同）。每次回呼先把整個 buffer list 清成 0，再寫入用到的聲道。
 - IO 緩衝：`output.buffer_ms` 換算成 HAL 的 buffer frame size，限制在裝置的範圍內；0 用裝置預設（內建輸出 512 frames）。
 - 通知：裝置被拔除（`DeviceIsAlive`）→ `failed()`（「the output device was removed」）；其他程式改了取樣率 → `reset_requested()`（播放器在原位置重開）。
 - IO 回呼不上鎖、不配置記憶體；`stop()` 等正在讀環的回呼離開後才返回（之後播放器可以釋放環）。

@@ -112,7 +112,7 @@
 **會讓主程式結束或播出錯誤聲音的**
 
 - **取樣率為 0 的 PCM 檔讓整個程序結束**（重現）：dr_flac 接受 STREAMINFO 的取樣率 0，`open_decoder` 照樣成功，播放器在 `pcm_stream.cpp` 以取樣率求倍數時整數除以零（SIGFPE，`try` / `catch` 攔不到）；當成無縫的下一首時在背景預備（`common.cpp` 的 `same_output`）同樣發生，正在播的那首也一起結束。修正：在 `open_decoder` 之後統一拒絕取樣率或聲道數 ≤ 0；`fuzz_decoder` 也檢查 `info()`（現在只開檔、讀取）。
-- **共享模式播 DSD 檔會把 DoP 送進系統混音器**（重現，以假裝置）：`open_dsd` 不看 `shared_mix` 就試 DoP，原本靠「裝置鎖定的取樣率 ≠ DoP 取樣率」讓它失敗；WASAPI 共享（從第一版起，`AUTOCONVERTPCM`）與 Core Audio 共享（#23 的轉換器起）都回報要求的取樣率，檢查因此通過：DoP 資料被當成 PCM 轉換、混音，聽起來是雜音，報告還寫 bit-perfect。修正：`shared_mix` 時不試 DoP，直接轉 PCM。
+- ✅ 已修正（#53 的後續，分支 `claude/coreaudio-convert`）：**共享模式播 DSD 檔會把 DoP 送進系統混音器**（重現，以假裝置）：`open_dsd` 不看 `shared_mix` 就試 DoP，原本靠「裝置鎖定的取樣率 ≠ DoP 取樣率」讓它失敗；WASAPI 共享（從第一版起，`AUTOCONVERTPCM`）與 Core Audio 共享（#23 的轉換器起）都回報要求的取樣率，檢查因此通過：DoP 資料被當成 PCM 轉換、混音，聽起來是雜音，報告還寫 bit-perfect。修正：`shared_mix` 時不試 DoP，直接轉 PCM。
 - **即時輸入換環後讀到沒寫過的記憶體**（重現）：解碼器換環時沿用舊環的讀取位置（`read_`、`synced_`、`primed_`），新環的寫入位置在前方又不到一整圈時不重新同步，把新環裡從沒寫過的部分當成音訊讀出：測試中新環未寫的部分是 NaN，輸出有 12404 個 NaN 樣本，重新同步 0 次。NaN 進了處理鏈的 IIR（EQ、交叉饋送）或限幅器會一直留著。修正：`set_live_bus` 遞增一個世代號，解碼器看到世代改變就重新同步。
 - **即時輸入的卸離在 Apple Silicon 上可能讀到已釋放的環**（確認：編譯結果）：卸離端清掉指標（seq_cst）之後以 acquire 讀取租約計數。Dekker 式的交握要兩邊的讀取都是 seq_cst；以 `-mcpu=apple-m1`（Apple clang 在 arm64 的預設）編譯時這個讀取是 `ldapr`，ARMv8.3 允許它排到前面的 `stlr` 之前，所以讀取端可能還拿著舊指標、卸離端卻已看到計數 0 而返回，主程式接著釋放記憶體。x86 與一般 ARM64（`ldar`）沒有這個問題；目前 Mac 外殼不支援即時輸入（`supportsLive = false`）。修正：計數改用 seq_cst 讀取（`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改）。
 - **helper 在 MIKU 結束後被 `SIGPIPE` 結束、不還原裝置**（重現：Linux 上 stdout 的讀取端先關閉，helper 下一次寫出時結束，結束碼 141）：helper 沒有忽略 `SIGPIPE`；MIKU 當掉時 stdin 讀到結尾、開始 `quit` 的清理（約 0.8 – 1.7 s），期間任何事件或設計進度寫到已關閉的 stdout，程序就結束，取樣率與 DAC 格式停在 Daphne 設的值（hog 由系統放掉）。修正：`signal(SIGPIPE, SIG_IGN)`，寫出失敗視同 quit。
@@ -145,7 +145,7 @@
 - 保留的裝置放開時取樣率可能不對：`raise_physical` 第一次調高實體格式時記下的舊格式含當時的取樣率，`rate_touched` 每次開啟重算、不累積；96 k 調高格式之後接 44.1 k（接手，`rate_touched` 為假），放開時還原舊格式會把 DAC 鎖回 96 kHz。目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒動過。
 - `raise_physical` 可能降低位元數：目前的實體格式是浮點或另一個取樣率時 `cur_bits` 為 0，任何整數格式（包括 16 bit）都會被選上；沒有 24 bit 以上的整數格式時也不失敗，輸出仍宣稱 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的是 16 bit。
 - 保留裝置的 `close()`：清掉 `owner`（release）之後以 acquire 讀 `in_render`，與 `render()` 的 `fetch_add` → 讀 `owner` 是同樣的 Dekker 式交握，需要 seq_cst；x86 上 store 可以排到 load 之後，回呼可能在物件釋放後寫入 `stats_`。
-- 共享模式轉換器的小問題：`AudioConverterFillComplexBuffer` 在 IO 執行緒上執行（N24 說回呼不配置記憶體，它不保證）；`drained()` 在轉換器還留著幾個 frame 時就成立，最後幾 ms 被切掉；跳轉時轉換器沒有重設；`latency_ms` 不含轉換器的延遲。`resolve()` 的 `std::stoul` 遇到很長的全數字裝置字串會丟例外。
+- 共享模式轉換器的小問題（獨佔時要求轉換的也一樣）：`AudioConverterFillComplexBuffer` 在 IO 執行緒上執行（N24 說回呼不配置記憶體，它不保證）；`drained()` 在轉換器還留著幾個 frame 時就成立，最後幾 ms 被切掉；跳轉時轉換器沒有重設；`latency_ms` 不含轉換器的延遲。`resolve()` 的 `std::stoul` 遇到很長的全數字裝置字串會丟例外。
 
 **沒有測試涵蓋的**
 
