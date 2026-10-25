@@ -157,11 +157,6 @@
 - 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
 - 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
 
-**R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
-
-- 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。
-- 修正：`dc_cancel` 遞增一個計數，`dc_load` 開始時記下這個計數。這樣取消就不會遺失。
-
 **R9. 被取消的 DSD 直送會繼續走轉 PCM 的流程**（讀程式）
 
 - 問題：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入轉 PCM 的流程，log 顯示 `DSD cannot be sent directly (cancelled): converting to PCM`。共享模式下，引擎還會為了探測混音器的取樣率再開一次裝置。這次開啟可能卡在驅動裡，而這正是取消要避免的。
