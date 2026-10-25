@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,21 @@ TEST_CASE("unreadable file reports an error", "[decoder]") {
     std::string err;
     CHECK_FALSE(daphne::open_decoder(p, &err));
     CHECK_FALSE(err.empty());
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("a file that is not an MP3 fails to open without a leak", "[decoder]") {
+    // minimp3's open from callbacks (the read ahead) does not free its buffer when it fails; the ASan job's leak
+    // check catches it
+    const auto p = temp_path("daphne_test_bad.mp3");
+    {
+        std::vector<char> b(5000);
+        uint32_t x = 31;
+        for (auto& v : b) v = static_cast<char>((x = x * 1664525u + 1013904223u) >> 24);
+        std::ofstream(p, std::ios::binary).write(b.data(), static_cast<std::streamsize>(b.size()));
+    }
+    std::string e;
+    CHECK_FALSE(daphne::open_decoder(p, &e));
     std::filesystem::remove(p);
 }
 

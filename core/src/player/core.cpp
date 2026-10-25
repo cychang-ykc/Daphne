@@ -1,6 +1,9 @@
 // Player::Impl, the processing thread (core.h): start, the playback loop, transport, device upkeep, the end.
 #include "core.h"
 
+#include <cstdio>
+
+#include "daphne/engine/file_bytes.h"
 #include "daphne/engine/live_source.h"
 
 namespace daphne {
@@ -376,7 +379,21 @@ void Player::Impl::play(Stream& st) {
 }
 
 void Player::Impl::loop(Stream& st) {
+    // A pass that took long is logged with where the time went: the ring holds 0.5 s without a filter, so a longer
+    // stall in the decoder (a disk that stops answering) is a gap the device plays. The time of a settings change
+    // or a seek is shown but does not count: those pause or refill on purpose. The intended sleeps are left out.
+    using clock = std::chrono::steady_clock;
+    constexpr int64_t kStallMs = 250;
+    auto lap_at = clock::now();
+    auto lap = [&lap_at] {
+        const auto now = clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - lap_at).count();
+        lap_at = now;
+        return static_cast<int64_t>(ms);
+    };
+    int64_t slow_seen = slow_read_count();
     while (!cancel) {
+        lap();
         std::optional<std::pair<Settings, OutputChoice>> p;
         {
             std::lock_guard<std::mutex> l(m);
@@ -386,17 +403,23 @@ void Player::Impl::loop(Stream& st) {
             ok = false;
             break;
         }
+        const int64_t t_apply = lap();
         if (!st.poll()) {
             ok = false;
             break;
         }
+        const int64_t t_poll = lap();
         kick_prepare();
         if (!service_transport()) {
             ok = false;
             break;
         }
+        const int64_t t_transport = lap();
         if (!io.eof && !st.produce()) queue_end();
-        if (!io.push()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const int64_t t_decode = lap();
+        const bool pushed = io.push();
+        const int64_t t_push = lap();
+        if (!pushed) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         else if (io.eof && io.pend_off >= io.pend) {
             if (io.dev->drained()) {
                 ended_flag = true;
@@ -405,6 +428,7 @@ void Player::Impl::loop(Stream& st) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
+        lap();
         pos = heard_position();
         pos_sec = rep.source.rate > 0 ? static_cast<double>(pos) / rep.source.rate : 0.0;
         if (cb.on_progress) cb.on_progress(pos, rep.source.frames);
@@ -412,6 +436,25 @@ void Player::Impl::loop(Stream& st) {
         if (!service_device()) {
             ok = false;
             break;
+        }
+        const int64_t t_upkeep = lap();
+        if (t_poll + t_decode + t_push + t_upkeep >= kStallMs) {
+            const int rate = rep.device.frame_rate();
+            const double ring_ms = io.ring && rate > 0 ? io.ring->readable() / std::max(1, io.block) * 1000.0 / rate : 0.0;
+            char b[256];
+            std::snprintf(b, sizeof b,
+                          "playback loop: a pass took %lld ms (decode %lld, poll %lld, push %lld, upkeep %lld; settings %lld, transport %lld)"
+                          ", ring %.0f ms, underruns %lld",
+                          static_cast<long long>(t_apply + t_poll + t_transport + t_decode + t_push + t_upkeep), static_cast<long long>(t_decode),
+                          static_cast<long long>(t_poll), static_cast<long long>(t_push), static_cast<long long>(t_upkeep),
+                          static_cast<long long>(t_apply), static_cast<long long>(t_transport), ring_ms,
+                          static_cast<long long>(io.dev->stats().underruns.load()));
+            event(b);
+        }
+        if (slow_read_count() != slow_seen) {   // the read ahead met a slow disk (file_bytes.h)
+            const SlowRead r = last_slow_read();
+            slow_seen = r.count;
+            event("read ahead: a disk read of " + r.file + " took " + std::to_string(r.ms) + " ms (the decoder reads what was read ahead)");
         }
     }
 }

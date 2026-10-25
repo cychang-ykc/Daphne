@@ -99,6 +99,7 @@
 
 ## 已知問題（暫不處理）
 
+- **Vorbis 的搜尋偶爾不精確**：Linux 上 20 秒的 Vorbis 檔隨機 seek 300 次後讀 4096 frames，與整檔解碼比對有 3 次不同（main 與預讀相同，其他格式 0 次）。原因未查（FFmpeg 解碼器提前 4096 frames 起解，見 N2）。
 - **處理執行緒的 sleep 輪詢**（環滿時 2 ms、排空時 5 ms、等待裝置的迴圈）：之後改成事件等待。
 - **helper 在 Mac 上實機確認**：✅ 2026-10-22，`e7db5e6`，Intel Mac（macOS 11.7）、Core Audio 獨佔、Audiobyte BLACK DRAGON（USB），以模擬 MIKU 的腳本驅動 helper（同 N4「helper 程序」的情境：1M taps 第一次設計中排第二首，再按停止，PCM 176.4 kHz）。連跑 4 次：排隊的那首 0 ms、設計中的那首 2 – 76 ms 回 `DC_ERR_CANCELLED`，停止 0.82 – 0.89 s，之後再載入正常播放；合併 #45 前的 helper（`adaa2b6`）在同一台 Mac（BlackHole）上停止要約 160 s，回覆時狀態已是 playing。DAC 在設計前就被 hog（要先設好取樣率才知道濾波器怎麼設計），但 `start()` 之前 IO 回呼只送靜音，取消後不會開始播；停止的 0.8 s 是把取樣率改回原本的 352.8 kHz 並等 DAC 確認（與一般停止相同）。沒有在 Mac 的 MIKU 介面裡操作（使用者決定不需要）。
 - **Windows 擴充在 MIKU 裡實機確認**：✅ 2026-10-22，本機 publish 的 MIKU 1.4.5（獨立的設定資料夾、WASAPI 獨佔、VB-Audio Hi-Fi Cable、1M taps、double-double、16 個設計執行緒、濾波器快取關閉），經 WebView2 遠端除錯呼叫頁面自己的 `Host.call`（與按鈕相同），每 50 ms 以 `SendMessageTimeout` 量 UI 執行緒。設計中停止：2 ms 返回，沒有出聲、沒有錯誤。設計中換歌（下一首、下一首、上一首，各隔 3 s）：被跳過的立刻取消，最後一首約 52 s（一次設計）後播放，沒有錯誤；修正前四首依序各設計一次，150 s 內沒有一首開始播。設計中關閉：視窗 0.11 – 0.13 s 消失、程序 0.2 s 內結束，與沒在播放時相同；修正前約 5 s（設計裡沒有檢查取消的段落，N4）。三種情境都沒有 UI 停頓（只有啟動時一次）。

@@ -12,6 +12,7 @@ add_executable(daphne_tests
     test_dsd_output.cpp
     test_downmix.cpp
     test_eq.cpp
+    test_file_bytes.cpp
     test_filter_design.cpp
     test_fma.cpp
     test_gain.cpp

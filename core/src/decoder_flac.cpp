@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "daphne/engine/decoder.h"
+#include "daphne/engine/file_bytes.h"
 
 namespace daphne {
 namespace {
@@ -19,11 +20,16 @@ public:
 
     bool open(const std::filesystem::path& path, std::string* error) override {
         close();
-        #ifdef _WIN32
-        f_ = drflac_open_file_w(path.c_str(), nullptr);
+        if (auto bytes = FileBytes::open(path)) {   // read ahead (file_bytes.h)
+            cur_.reset(std::move(bytes));
+            f_ = drflac_open(on_read, on_seek, on_tell, &cur_, nullptr);
+        } else {
+#ifdef _WIN32
+            f_ = drflac_open_file_w(path.c_str(), nullptr);
 #else
-        f_ = drflac_open_file(path.c_str(), nullptr);
+            f_ = drflac_open_file(path.c_str(), nullptr);
 #endif
+        }
         if (!f_) {
             if (error) *error = "dr_flac: cannot open FLAC file";
             return false;
@@ -42,6 +48,7 @@ public:
     void close() override {
         if (f_) drflac_close(f_);
         f_ = nullptr;
+        cur_.reset(nullptr);
     }
 
     int read(double* out, int frames) override {
@@ -62,6 +69,16 @@ public:
     }
 
 private:
+    static size_t on_read(void* u, void* out, size_t n) { return static_cast<FileCursor*>(u)->read(out, n); }
+    static drflac_bool32 on_seek(void* u, int off, drflac_seek_origin o) {
+        return static_cast<FileCursor*>(u)->seek(off, o == DRFLAC_SEEK_CUR ? 1 : o == DRFLAC_SEEK_END ? 2 : 0);
+    }
+    static drflac_bool32 on_tell(void* u, drflac_int64* at) {
+        *at = static_cast<FileCursor*>(u)->tell();
+        return DRFLAC_TRUE;
+    }
+
+    FileCursor cur_;
     drflac* f_ = nullptr;
     std::vector<drflac_int32> buf_;
 };
