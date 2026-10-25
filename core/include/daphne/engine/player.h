@@ -140,6 +140,8 @@ public:
     bool ended() const;
     // start() failed because the output device could not be opened (not because of the file).
     bool last_failure_was_device() const;
+    // start() failed inside the engine (an exception: no memory, an unexpected error), not because of the file or device.
+    bool last_failure_was_internal() const;
     // Peak level heard since the last call (0..1; PCM only).
     void meter(double& l, double& r);
     // ASIO: PCM rates the open driver accepts (empty when not ASIO / DSD mode).

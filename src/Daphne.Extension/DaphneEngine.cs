@@ -46,6 +46,9 @@ public sealed partial class DaphneEngine : IAudioEngine
     Task _stopping = Task.CompletedTask, _loading = Task.CompletedTask, _applying = Task.CompletedTask;
 
     Track _track, _next;
+    Track _wanted;   // the track the last LoadAsync asked for (ReconfigureAsync loads it again), with its seek and play
+    double _wantedSeek;
+    bool _wantedPlay;
     double _pausedAt;
     volatile bool _loaded, _playing;
     double _position, _duration;
@@ -261,11 +264,18 @@ public sealed partial class DaphneEngine : IAudioEngine
         if (t == null) return;
         long mine = Interlocked.Increment(ref _loadSeq);
         long epoch = Interlocked.Read(ref _epoch);   // a stop from here on: this load does not play
+        _wanted = t; _wantedSeek = seek; _wantedPlay = play;
         Loading?.Invoke(t);
         if (t.IsLive)
         {
             if (!LiveBus.Ready)
             {
+                // this load took its number but cannot start: what came before (a load in its design, a track) stops
+                // here as for a stop, or it would start with nobody to pause, seek or meter it (it sees a later number)
+                Interlocked.Increment(ref _epoch);
+                _ = StopNative();
+                _loaded = false;
+                _playing = false;
                 _track = t;
                 Failed?.Invoke("YouTube Music 的聲音還沒有接上（頁面尚未載入完成）。");
                 return;
@@ -433,18 +443,22 @@ public sealed partial class DaphneEngine : IAudioEngine
         _ = StopNative();
         _loaded = false;
         _playing = false;
-        _track = null; _next = null; _signal = null; _pausedAt = 0;
+        _track = null; _next = null; _signal = null; _pausedAt = 0; _wanted = null;
         RestoreHardwareVolume();
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// The output changed: the track asked for last is loaded again. Not the one loaded now: a track change at the same
+    /// moment would be undone. No stop of its own first (dc_load stops what plays): a stop would also skip that change,
+    /// which waits at the gate with the epoch from before it.
+    /// </summary>
     public async Task ReconfigureAsync()
     {
-        var t = _track; double pos = Position; bool play = IsPlaying;
-        await _gate.WaitAsync();
-        try { Interlocked.Increment(ref _epoch); await StopNative(); _loaded = false; }
-        finally { _gate.Release(); }
-        if (t != null) await LoadAsync(t, pos, play);
+        var t = _wanted;
+        if (t == null) return;
+        bool pending = !ReferenceEquals(t, _track);   // asked for, not yet taken by its load
+        await LoadAsync(t, pending ? _wantedSeek : Position, pending ? _wantedPlay : IsPlaying);
     }
 
     /// <summary>Daphne's own settings changed (the page): the core applies them in place / rebuilds / restarts the device.</summary>
