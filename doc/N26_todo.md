@@ -115,25 +115,14 @@
 
 每一項修正另開分支，並附回歸測試。測試草稿保留在 review 的工作區。
 
-2026-10-26 狀態：R1、R3 – R19 已修正並合併（#59 – #69；R2 由 #57 修正），修正後的行為寫在 N2、N4、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。剩下的都要 Mac 實機驗證：R14 – R16 的修正（#68）只有 Windows 的一半實測過，`pack-mac.sh` 要在 Mac 上打包一次確認；R20 – R23 的部分修正在 #70（只確認 macOS 編譯通過）。
+2026-10-26 狀態：R1 – R20、R22 已修正並合併（#59 – #70；R2 由 #57 修正），修正後的行為寫在 N2、N4、N24、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。打包（#68）與 Core Audio（#70）在 Intel Mac（macOS 11.7）上實測過：`pack-mac.sh` 兩次（沒有 stamp 的舊 FFmpeg 重編 3 分 15 秒，之後沿用 4.8 秒），R20 以內建輸出重現並確認修正（N24「驗證」）。剩下 R21、R23 的一部分（要特定的 DAC），以及 `[.blackhole]`：從 ssh 執行時錄到全零（main 與 10-16 的舊測試程式也一樣，麥克風權限），要在 Mac 的桌面上跑一次。
 
-#### E. Core Audio（#70，待 Mac 實機，讀程式推論）
+#### E. Core Audio（待 Mac 實機）
 
-**R20. 引擎放開保留的裝置時，取樣率可能不對**
+**R21. 沒有 24 bit 以上的整數格式時，輸出仍宣稱 `int24-in-32`**
 
-- `raise_physical` 第一次調高實體格式時，記下舊的格式，而這個格式含當時的取樣率。引擎每次開啟都重算 `rate_touched`，值不累積。
-- 例：96 kHz 的那首調高了格式，接著 44.1 kHz 的那首接手裝置（`rate_touched` 為假）。放開時還原舊格式，會把 DAC 鎖回 96 kHz。
-- 目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒改過它。
-
-**R21. `raise_physical` 可能降低位元數**
-
-- 目前的實體格式是浮點、或是另一個取樣率時，`cur_bits` 為 0，`raise_physical` 會選上任何整數格式，包括 16 bit。
-- 沒有 24 bit 以上的整數格式時，開啟也不失敗。輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），但 DAC 收到的是 16 bit 的資料。
-
-**R22. 保留裝置的 `close()` 有與 R4 相同的交握問題**
-
-- `close()` 清掉 `owner`（release）之後，以 `acquire` 讀 `in_render`；`render()` 先 `fetch_add`，再讀 `owner`。這種 Dekker 式交握需要 `seq_cst`。
-- x86 上 store 可以排到 load 之後，所以 IO 回呼可能在物件釋放後寫入 `stats_`。
+- 2026-10-25 已修正一半：`raise_physical` 不再選少於 24 bit 的格式（原本目前的實體格式是浮點、或是另一個取樣率時 `cur_bits` 為 0，16 bit 也會被選上），找不到時寫進 log（「the DAC offers no integer format of 24 bits or more」）、不改格式。
+- 還沒處理：這時開啟也不失敗，輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的可能只有 16 bit。要改成回報實際的位元數（量化級跟著抖動到 16 bit、DoP 不可用），需要在 Mac 上用只有 16 bit 的 DAC 驗證。
 
 **R23. 共享模式轉換器的小問題**（獨佔時要求轉換的也一樣）
 
@@ -141,7 +130,7 @@
 - 轉換器還留著幾個 frame 時，`drained()` 就成立，曲子最後幾 ms 沒有播出。
 - 跳轉時沒有重設轉換器。
 - `latency_ms` 不含轉換器的延遲。
-- `resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串時會丟例外。
+- （2026-10-25 已修正）`resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串會丟例外：超過 6 位數的全數字字串改當成裝置名稱或 UID。
 
 #### F. 沒有測試涵蓋的部分
 
@@ -248,5 +237,5 @@
 - FFmpeg：與 Windows 同版本（8.1.3，LGPL、動態連結），從原始碼編（ffmpeg.org 的 tarball，SHA-256 寫在腳本裡；ffmpeg.org 沒有公布 SHA-256，這個值是寫腳本時下載的檔案的），只開引擎需要的 demuxer / decoder（沒有專屬解碼器的格式：M4A / ALAC / AAC、Ogg、Opus、APE、WavPack、WMA、TTA…）。`--install-name-dir=@rpath`，所以核心連到的是 `@rpath/libavcodec.62.dylib` 等，打包時照這些名字複製。沒有 FFmpeg 時這些格式在 Mac 上不能播（測試機的音樂庫有 46 首 ALAC）。
 - CMake：macOS / Linux 的 FFmpeg 原本只用 pkg-config 找（測試機的 ssh 環境找不到 pkg-config），改成也可以指定資料夾（`DAPHNE_FFMPEG_DIR`，含 `include/` 和 `lib/`）；Windows 的路徑不變。
 - 每個 arch 分開編（`build-mac-arm64/`、`build-mac-x86_64/`，最低 macOS 11.0），因為 MIKU 的安裝包也是每個 arch 一份。打包後刪掉所有絕對路徑的 rpath，檢查 `otool -L` 只剩 `@rpath/` 和系統的函式庫，ad-hoc 簽章（`install_name_tool` 會讓簽章失效；MIKU 的安裝包會再簽一次），在本機 arch 上啟動 helper 確認 hello。
-- `bin/` 只放程式（MIKU 的安裝包會簽 `bin/` 裡的每個檔案）；FFmpeg 的授權（`FFmpeg-COPYING.LGPLv2.1`）與原始碼位置（`FFmpeg-SOURCE.txt`）、nlohmann/json 的 MIT 授權（`nlohmann-json-LICENSE.MIT`，編進了核心與 helper）和 `LICENSE` 一起放在模組根目錄。Windows 的 `build_for_miku.ps1` 也放同樣的四個（FFmpeg 的是 `FFmpeg-LICENSE.txt` 與寫著 BtbN 套件和 FFmpeg commit 的 `FFmpeg-SOURCE.txt`），MikuDeploy 跟著 DLL 一起帶進 MIKU。FFmpeg 換版本時兩邊都重新取得：Mac 以 `FF_VER` 與 configure 選項寫 `daphne-ffmpeg.stamp`，不同就重編（沒有 stamp 的舊編譯結果第一次會重編一次）；Windows 比對 `third_party\ffmpeg\SOURCE.txt` 與 `fetch_ffmpeg.ps1` 的套件檔名。`.gitattributes` 讓 `*.sh` 在每個 checkout 都是 LF：Windows（`core.autocrlf`）checkout 的 CRLF 腳本複製到 Mac 會在 `set -o pipefail` 失敗（`pipefail\r`）。
+- `bin/` 只放程式（MIKU 的安裝包會簽 `bin/` 裡的每個檔案）；FFmpeg 的授權（`FFmpeg-COPYING.LGPLv2.1`）與原始碼位置（`FFmpeg-SOURCE.txt`）、nlohmann/json 的 MIT 授權（`nlohmann-json-LICENSE.MIT`，編進了核心與 helper）和 `LICENSE` 一起放在模組根目錄。Windows 的 `build_for_miku.ps1` 也放同樣的四個（FFmpeg 的是 `FFmpeg-LICENSE.txt` 與寫著 BtbN 套件和 FFmpeg commit 的 `FFmpeg-SOURCE.txt`），MikuDeploy 跟著 DLL 一起帶進 MIKU。FFmpeg 換版本時兩邊都重新取得：Mac 以 `FF_VER` 與 configure 選項寫 `daphne-ffmpeg.stamp`，不同就重編（沒有 stamp 的舊編譯結果第一次會重編一次）；Windows 比對 `third_party\ffmpeg\SOURCE.txt` 與 `fetch_ffmpeg.ps1` 的套件檔名。`.gitattributes` 讓 `*.sh` 在每個 checkout 都是 LF：Windows（`core.autocrlf`）checkout 的 CRLF 腳本複製到 Mac 會在 `set -o pipefail` 失敗（`pipefail\r`）。2026-10-26 在 Intel Mac 上實測：沒有 stamp 的舊 FFmpeg 重編（3 分 15 秒），第二次沿用（4.8 秒）；輸出路徑含空白、授權檔四個、rpath 只剩 `@loader_path`、六個檔案的 ad hoc 簽章有效、打包的 helper 回報 abi 5；以一個會失敗的 helper 跑最後的檢查，腳本印出 helper 自己的錯誤（`dyld: Library not loaded`）再結束。
 - 結果（Intel Mac）：每個 arch 約 4 MB；arm64 版全是 arm64、x64 版全是 x86_64；x64 的 helper 回報 `{"abi":3,"e":"hello","version":"daphne 0.1.0"}`。arm64 版要在 Apple Silicon 的 Mac 上試。
