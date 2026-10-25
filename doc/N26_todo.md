@@ -250,7 +250,6 @@
 #### F. 沒有測試涵蓋的部分
 
 - 打包腳本不在 CI：`pack-mac.sh`、`build_for_miku.ps1`、`fetch_*.ps1`，以及 C# 擴充的建置。
-- `miku/*.js` 沒有任何檢查，連 `node --check` 都沒有。
 - macOS 的 CI 沒有以 FFmpeg 建置（`DAPHNE_FFMPEG_DIR`）。
 - 取消：
   - 快取打開時取消濾波器設計，快取裡不能留下檔案。
