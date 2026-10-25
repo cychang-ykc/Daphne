@@ -1211,6 +1211,38 @@ TEST_CASE("Player: an output that can resample is asked to only after the device
     }
 }
 
+TEST_CASE("Player: a DSF file stopped while its DoP output opens is not converted to PCM", "[player][dsd]") {
+    // the stop comes during the DoP open (a slow driver): the start ends there, with no PCM conversion and no
+    // further open of the device (in shared mode that would be the probe of the mixer rate)
+    Rig r;
+    std::atomic<bool> opening{false};
+    auto d = r.deps();
+    const auto inner = d.open_output;
+    d.open_output = [&, inner](const OutputRequest& q, std::string* e) {
+        opening = true;
+        sleep_s(0.3);
+        return inner(q, e);
+    };
+    r.player = std::make_unique<Player>(d);
+    const auto path = write_dsf("daphne_player_cancel.dsf", 2822400 / 8 / 2 / 5);   // 0.1 s per channel
+    Settings s;
+    s.output.dsd_lead_in_ms = 20;
+    std::atomic<bool> ok{true};
+    std::thread starter([&] {
+        std::string e;
+        ok = r.player->start(path, s, OutputChoice{}, r.callbacks(), &e);
+    });
+    while (!opening) sleep_s(0.001);
+    r.player->stop();
+    starter.join();
+    CHECK_FALSE(ok);
+    CHECK_FALSE(r.saw("converting the DSD file to PCM"));
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST_CASE("Player: DoP never goes through a converter or a mixer", "[player][dsd][convert]") {
     const int64_t bytes = 2822400 / 8 / 2 / 5;   // 0.1 s per channel
     auto no_dop = [](const std::vector<uint8_t>& b) {
