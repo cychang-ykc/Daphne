@@ -34,6 +34,9 @@ struct FakeDevice {
     int buffer_frames = 512;
     double speed = 0;                                // 0: as fast as the player fills; else x real time
     int lock_rate = 0;                               // nonzero: every PCM open locks this rate, with a note why
+    bool can_convert = false;                        // with lock_rate: an open with OutputRequest::convert resamples
+                                                     // to it (format() the rate asked for, system_rate() lock_rate)
+    int mixer_rate = 0;                              // nonzero: a shared mixer at this rate resamples every stream
     std::atomic<bool> request_reset{false};          // the "driver" asks to be reopened
 
     size_t frames() {
@@ -68,9 +71,16 @@ public:
             fmt_.type = daphne::SampleType::Dsd8Msb, fmt_.container_bits = fmt_.valid_bits = 8;
         } else {
             fmt_.type = d_->type, fmt_.container_bits = d_->container_bits, fmt_.valid_bits = d_->valid_bits;
-            if (d_->lock_rate > 0 && d_->lock_rate != r.rate) {
-                fmt_.rate = d_->lock_rate;
-                notes_.push_back("fake: stays at " + std::to_string(d_->lock_rate) + " Hz");
+            if (d_->mixer_rate > 0 && d_->mixer_rate != r.rate) {
+                system_rate_ = d_->mixer_rate;
+            } else if (d_->lock_rate > 0 && d_->lock_rate != r.rate) {
+                if (r.convert && d_->can_convert) {
+                    system_rate_ = d_->lock_rate;
+                    notes_.push_back("fake: converts to " + std::to_string(d_->lock_rate) + " Hz");
+                } else {
+                    fmt_.rate = d_->lock_rate;
+                    notes_.push_back("fake: stays at " + std::to_string(d_->lock_rate) + " Hz");
+                }
             }
         }
         std::lock_guard<std::mutex> l(d_->m);
@@ -86,6 +96,7 @@ public:
     std::string device_name() const override { return "fake"; }
     double latency_ms() const override { return 1000.0 * d_->buffer_frames / fmt_.rate; }
     int buffer_frames() const override { return d_->buffer_frames; }
+    int system_rate() const override { return system_rate_; }
 
     bool start(daphne::ByteRing* ring, const std::atomic<bool>* eof, std::string*) override {
         ring_ = ring, eof_ = eof;
@@ -106,6 +117,7 @@ public:
     std::vector<std::string> take_notes() override { return std::exchange(notes_, {}); }
 
 private:
+    int system_rate_ = 0;
     void loop() {
         const int n = d_->buffer_frames;
         const size_t need = static_cast<size_t>(n) * fmt_.block_align();

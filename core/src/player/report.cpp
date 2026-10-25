@@ -21,6 +21,7 @@ void Report::bit_perfect(const DspChain* c) {
     if (src.dsd_pcm) rep.not_bit_perfect_reason = "DSD converted to PCM";
     else if (!src.lossless_int) rep.not_bit_perfect_reason = "source is not integer PCM";
     else if (!c->transparent()) rep.not_bit_perfect_reason = "DSP active";
+    else if (rep.system_rate > 0) rep.not_bit_perfect_reason = "the system resamples to the device's " + std::to_string(rep.system_rate) + " Hz";
     else if (shared_mix) rep.not_bit_perfect_reason = "shared mode (system mixer)";
     else if (effective_bits(rep.device) < src.bits)
         rep.not_bit_perfect_reason =

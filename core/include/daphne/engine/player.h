@@ -30,6 +30,7 @@ struct PlayReport {
     AudioInfo source;
     DeviceFormat device;
     std::string device_name;
+    int system_rate = 0;              // the device's own rate when the output converts to it (AudioOutput::system_rate); 0 = none
     bool bit_perfect = false;
     std::string not_bit_perfect_reason;
     int64_t frames_played = 0;   // device frames written
@@ -68,6 +69,9 @@ struct OutputRequest {
     int rate = 0;
     int channels = 0;
     bool dsd = false;      // native DSD (ASIO)
+    // the output may resample to a rate the device has when it does not offer this one (OutputCaps::converts); the
+    // player asks for it only as the last PCM attempt, never for DoP
+    bool convert = false;
 };
 using OutputOpener = std::function<std::unique_ptr<AudioOutput>(const OutputRequest&, std::string* error)>;
 using DecoderOpener = std::function<std::unique_ptr<Decoder>(const std::filesystem::path&, std::string* error)>;
@@ -78,6 +82,7 @@ struct OutputCaps {
     bool native_dsd = false;        // takes DSD as is (ASIO); otherwise DoP or PCM
     bool shared_mix = false;        // a system mixer at its own rate: never bit-perfect, no DSD (WASAPI shared)
     bool takes_buffer_ms = true;    // output.buffer_ms sets its buffer (ASIO: the driver's own setting)
+    bool converts = false;          // takes OutputRequest::convert (Core Audio exclusive: AudioConverter)
 };
 using OutputCapsQuery = std::function<OutputCaps(const OutputChoice&)>;
 

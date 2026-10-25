@@ -310,7 +310,7 @@ void Player::Impl::run_playback() {
             if (caps().shared_mix) {
                 std::string pe;
                 if (auto probe = open_output({out, s.output.buffer_ms, dsdf->info().dsd_rate / 16, dsdf->info().channels, false}, &pe)) {
-                    const int mix = probe->format().rate;
+                    const int mix = probe->system_rate() > 0 ? probe->system_rate() : probe->format().rate;
                     if (mix > 0 && dsdf->info().dsd_rate % (mix * 8) == 0) dsd_pcm_rate = mix;
                 }
             } else if (dop_locked > 0) {

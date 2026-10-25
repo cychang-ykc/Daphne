@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.CoreAudioApi;
@@ -181,7 +182,7 @@ public sealed partial class DaphneEngine : IAudioEngine
                 Log.Info("[daphne] " + m);
                 _loaded = false;
                 _playing = false;
-                Failed?.Invoke("Daphne 內核：" + m);
+                Failed?.Invoke("Daphne 內核：" + ReadableError(m));
                 Changed?.Invoke();
                 break;
             }
@@ -335,6 +336,28 @@ public sealed partial class DaphneEngine : IAudioEngine
         await enter;
     }
 
+    // The core's messages are English (they go to the log as they are); the common ones are shown to the user in
+    // MIKU's language, anything else as it came. The same table as miku/engine.js, plus WASAPI's HRESULTs.
+    static readonly (Regex re, Func<Match, string> text)[] Readable =
+    {
+        (new Regex(@"cannot open (FLAC|WAV/AIFF|MP3) file|FFmpeg: (cannot open file|no stream info|no audio stream)|not a DSF or DFF file|file too short"),
+            _ => "檔案損毀，或不是支援的音訊格式"),
+        (new Regex(@"cannot map (\d+) source channels to (\d+)"), m => $"裝置有 {m.Groups[2].Value} 個聲道，無法播放 {m.Groups[1].Value} 聲道的檔案"),
+        (new Regex(@"is in exclusive use by another application|HRESULT 0x8889000A"), _ => "另一個程式正在獨佔這個裝置"),
+        (new Regex(@"does not offer exclusive \(hog\) mode|HRESULT 0x8889000E"), _ => "這個裝置不提供獨佔模式"),
+    };
+
+    static string ReadableError(string err)
+    {
+        string s = err ?? "";
+        foreach (var r in Readable)
+        {
+            var m = r.re.Match(s);
+            if (m.Success) return r.text(m);
+        }
+        return s;
+    }
+
     int Fail(int code, string err)
     {
         if (code == DaphneNative.ErrCancelled)   // stopped while it loaded: nothing to report
@@ -345,7 +368,7 @@ public sealed partial class DaphneEngine : IAudioEngine
         LastFailureWasDevice = code == DaphneNative.ErrDevice;
         _signal = null;
         Log.Info($"[daphne] load failed ({code}): {err}");
-        Failed?.Invoke(code == DaphneNative.ErrDevice ? "Daphne 內核無法開啟輸出裝置：" + err : "Daphne 內核無法播放：" + err);
+        Failed?.Invoke(code == DaphneNative.ErrDevice ? "Daphne 內核無法開啟輸出裝置：" + ReadableError(err) : "Daphne 內核無法播放：" + ReadableError(err));
         return code;
     }
 
@@ -557,6 +580,8 @@ public sealed partial class DaphneEngine : IAudioEngine
         bool dop = filter.Contains("DoP");
         bool dsdOut = nativeDsd || dop;
         int devRate = dev.GetProperty("rate").GetInt32();
+        // the core's output rate; WASAPI shared may convert it to the mixer's rate (system_rate) after that
+        int sysRate = _report.TryGetProperty("system_rate", out var sr) && sr.ValueKind == JsonValueKind.Number ? sr.GetInt32() : 0;
         int srcRate = dsdRate > 0 ? dsdRate : src.GetProperty("rate").GetInt32();
         string mode = _s.OutputMode switch { "asio" => "ASIO", "shared" => "WASAPI 共享", _ => "WASAPI 獨佔" };
         // a DSD file sent as DSD: the core's own word for it. A DSD file converted to PCM may still leave as DSD again
@@ -579,8 +604,8 @@ public sealed partial class DaphneEngine : IAudioEngine
             Dop = dop,
             DsdDirect = dsdOut,
             DsdTransport = nativeDsd ? "Native" : dop ? "Dop" : null,
-            Resampled = isDsd ? !sentDirect : dsdOut || devRate != srcRate,   // DSD → PCM (→ DSD), PCM → DSD, another rate
-            OutputRate = devRate,
+            Resampled = isDsd ? !sentDirect : dsdOut || devRate != srcRate || sysRate > 0,   // DSD → PCM (→ DSD), PCM → DSD, another rate
+            OutputRate = sysRate > 0 ? sysRate : devRate,
             OutputFormat = format,
             OutputBits = nativeDsd ? 1 : dev.GetProperty("bits").GetInt32(),
             Mode = mode,
@@ -596,6 +621,8 @@ public sealed partial class DaphneEngine : IAudioEngine
         var notes = new List<string>();
         if (_s.Dsp != null && _s.Dsp.Enabled && (Math.Abs(_s.Dsp.Balance) > 0.001 || _s.Dsp.Invert))
             notes.Add("Daphne 內核沒有平衡 / 反相，這兩項設定不會作用。");
+        if (sysRate > 0)
+            notes.Add($"裝置目前是 {Khz(sysRate)} kHz，由 Windows 把 {Khz(devRate)} kHz 轉成裝置的取樣率。");
         if (dsdFile && volumeMode == "none")
             notes.Add("DSD 直送時無法使用數位音量，DAC 會以原始音量輸出，請用 DAC 的音量旋鈕調整。");
         long clipped = _report.TryGetProperty("clipped", out var cl) ? cl.GetInt64() : 0;

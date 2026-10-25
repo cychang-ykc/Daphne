@@ -19,6 +19,15 @@ const { buildSignal, nowPlaying } = require('./signal');
 
 const DC_ERR_DEVICE = -4;
 const DC_ERR_CANCELLED = -7;   // the load was cancelled by a stop: not a failure
+// The core's messages are English (they go to the log as they are); the common ones are shown to the user in MIKU's
+// language, anything else as it came
+const Readable = [
+  [/cannot open (FLAC|WAV\/AIFF|MP3) file|FFmpeg: (cannot open file|no stream info|no audio stream)|not a DSF or DFF file|file too short/, () => '檔案損毀，或不是支援的音訊格式'],
+  [/cannot map (\d+) source channels to (\d+)/, (m, a, b) => `裝置有 ${b} 個聲道，無法播放 ${a} 聲道的檔案`],
+  [/is in exclusive use by another application/, () => '另一個程式正在獨佔這個裝置'],
+  [/does not offer exclusive \(hog\) mode/, () => '這個裝置不提供獨佔模式'],
+];
+const readable = err => { const s = String(err || ''); for (const [re, f] of Readable) { const m = s.match(re); if (m) return f(...m); } return s; };
 
 /** The core's "designing ..." message in the page's words. */
 function describeDesign(t) {
@@ -149,7 +158,7 @@ class DaphneEngine extends EventEmitter {
         this.log(m);
         this.loaded = false; this.playing = false;
         this.syncHeld();
-        this.emit('failed', 'Daphne 內核：' + m);
+        this.emit('failed', 'Daphne 內核：' + readable(m));
         this.emit('changed');
         break;
       }
@@ -222,7 +231,7 @@ class DaphneEngine extends EventEmitter {
     this.syncHeld();
     this.loadFailed = true; this.loading = false; this.signal = null;
     this.log(`load failed (${code}): ${err}`);
-    this.emit('failed', code === DC_ERR_DEVICE ? 'Daphne 內核無法開啟輸出裝置：' + err : 'Daphne 內核無法播放：' + err);
+    this.emit('failed', code === DC_ERR_DEVICE ? 'Daphne 內核無法開啟輸出裝置：' + readable(err) : 'Daphne 內核無法播放：' + readable(err));
     this.emit('changed');
   }
 

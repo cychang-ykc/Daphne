@@ -74,7 +74,7 @@ json report_json(const daphne::PlayReport& r) {
                 {"dsd_rate", r.source.dsd_rate}, {"frames", r.source.frames}, {"lossless", r.source.lossless_int}};
     json dev = {{"rate", r.device.rate}, {"channels", r.device.channels}, {"type", daphne::sample_type_name(r.device.type)},
                 {"bits", r.device.valid_bits}, {"container", r.device.container_bits}, {"text", daphne::describe(r.device)}};
-    return {{"source", src},           {"device", dev},       {"device_name", r.device_name}, {"bit_perfect", r.bit_perfect},
+    return {{"source", src},           {"device", dev},       {"device_name", r.device_name}, {"system_rate", r.system_rate}, {"bit_perfect", r.bit_perfect},
             {"reason", r.not_bit_perfect_reason}, {"filter", r.filter}, {"chain", r.chain},  {"latency_ms", r.latency_ms},
             {"underruns", r.underruns}, {"clipped", r.clipped}, {"realtime", r.realtime_factor}};
 }

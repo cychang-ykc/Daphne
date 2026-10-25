@@ -1134,3 +1134,142 @@ TEST_CASE("Player: a disk that stalls during playback is not heard while the rea
     CHECK(gap >= 512);   // the fake device records one buffer of silence per underrun, not the time it waited
     std::filesystem::remove(path);
 }
+
+TEST_CASE("Player: an output that can resample is asked to only after the device's own rates failed", "[player][convert]") {
+    // Core Audio exclusive (OutputCaps::converts): its converter is the last PCM attempt, never the first
+    SECTION("a DAC without the track's family (48 kHz only) plays a 44.1 kHz track resampled to 48 kHz") {
+        Rig r;
+        r.caps.converts = true;
+        r.dev->lock_rate = 48000;
+        r.dev->can_convert = true;
+        r.sources["a"] = int24_noise(44100, 2, 44100 / 5, 1);
+        REQUIRE(r.start("a", Settings{}));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(r.dev->opens.size() == 2);
+        CHECK_FALSE(r.dev->opens[0].convert);   // the device's own rates first
+        CHECK(r.dev->opens[1].convert);
+        CHECK(r.dev->opens[1].rate == 44100);
+        CHECK(rep.device.rate == 44100);        // the stream's rate (the chain plays it unchanged)
+        CHECK(rep.system_rate == 48000);        // what the device runs at
+        CHECK_FALSE(rep.bit_perfect);
+        CHECK(rep.not_bit_perfect_reason == "the system resamples to the device's 48000 Hz");
+        CHECK(r.saw("trying 44100 Hz (resampled by the system)"));
+        CHECK(r.dev->frames() >= 44100u / 5);   // (the last buffer padded)
+    }
+    SECTION("a 192 kHz track on a DAC that stops at 96 kHz is resampled down by the output") {
+        Rig r;
+        r.caps.converts = true;
+        r.dev->lock_rate = 96000;
+        r.dev->can_convert = true;
+        r.sources["a"] = int24_noise(192000, 2, 192000 / 5, 2);
+        REQUIRE(r.start("a", Settings{}));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK(rep.device.rate == 192000);
+        CHECK(rep.system_rate == 96000);
+    }
+    SECTION("upsampling that steps down within the family is not resampled") {
+        Rig r;
+        use_float_device(*r.dev);
+        r.caps.converts = true;
+        r.dev->lock_rate = 176400;
+        r.dev->can_convert = true;
+        r.sources["sine"] = sine(44100, 1000.0, 0.3);
+        Settings s;
+        s.output.rate = "auto";   // 705.6 kHz asked, 176.4 kHz locked: the chain upsamples 4x
+        s.filter.taps = 256;
+        REQUIRE(r.start("sine", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(r.dev->opens.size() == 1);
+        CHECK_FALSE(r.dev->opens[0].convert);
+        CHECK(rep.device.rate == 176400);
+        CHECK(rep.system_rate == 0);
+    }
+    SECTION("a device that does not open is not tried again with the converter") {
+        Rig r;
+        r.caps.converts = true;
+        std::vector<OutputRequest> tried;
+        r.dev->accept = [&](const OutputRequest& q) {
+            tried.push_back(q);
+            return false;
+        };
+        r.sources["a"] = int24_noise(44100, 2, 4410, 3);
+        CHECK_FALSE(r.start("a", Settings{}));
+        REQUIRE(tried.size() == 1);
+        CHECK_FALSE(tried[0].convert);
+    }
+    SECTION("an output that cannot resample is not asked to") {
+        Rig r;
+        r.dev->lock_rate = 48000;
+        r.dev->can_convert = true;   // (the fake would, but the caps say no: WASAPI exclusive, ASIO)
+        r.sources["a"] = int24_noise(44100, 2, 4410, 4);
+        CHECK_FALSE(r.start("a", Settings{}));
+        REQUIRE(r.dev->opens.size() == 1);
+        CHECK_FALSE(r.dev->opens[0].convert);
+    }
+}
+
+TEST_CASE("Player: DoP never goes through a converter or a mixer", "[player][dsd][convert]") {
+    const int64_t bytes = 2822400 / 8 / 2 / 5;   // 0.1 s per channel
+    auto no_dop = [](const std::vector<uint8_t>& b) {
+        const auto m = dop_markers(b, 2);
+        size_t dop = 0;
+        for (size_t i = 1; i < m.size(); ++i) dop += (m[i] == 0x05 && m[i - 1] == 0xFA) || (m[i] == 0xFA && m[i - 1] == 0x05);
+        return dop < 4;
+    };
+    SECTION("exclusive with a converter: the DoP open is not converted, the DSF file goes to PCM at the rate locked") {
+        Rig r;
+        r.caps.converts = true;
+        r.dev->lock_rate = 88200;
+        r.dev->can_convert = true;
+        const auto path = write_dsf("daphne_player_conv_dop.dsf", bytes);
+        Settings s;
+        s.output.dsd_lead_in_ms = 20;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK(r.dev->opens[0].rate == 176400);   // the DoP attempt, not converted
+        CHECK_FALSE(r.dev->opens[0].convert);
+        CHECK(rep.device.rate == 88200);
+        CHECK(rep.system_rate == 0);
+        CHECK(r.saw("converting at 88200 Hz, the rate the device locked"));
+        CHECK(no_dop(r.dev->take()));
+        r.player.reset();
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+    SECTION("a shared mixer gets PCM, not DoP (at its own rate when that divides the DSD rate)") {
+        for (int mixer : {48000, 44100}) {
+            INFO("mixer " << mixer);
+            Rig r;
+            r.caps.shared_mix = true;
+            r.dev->mixer_rate = mixer;
+            const auto path = write_dsf("daphne_player_shared_dop.dsf", bytes);
+            Settings s;
+            s.output.dsd_lead_in_ms = 20;
+            REQUIRE(r.start(platform::path_to_utf8(path), s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            CHECK(r.saw("DSD cannot be sent directly (shared mode mixes everything to PCM)"));
+            CHECK(rep.source.dsd_pcm);
+            CHECK(rep.device.rate == (mixer == 44100 ? 44100 : 176400));
+            CHECK(rep.system_rate == (mixer == 44100 ? 0 : 48000));
+            CHECK(no_dop(r.dev->take()));
+            r.player.reset();
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    }
+    SECTION("the dsd core does not take an output that resamples") {
+        Rig r;
+        r.dev->mixer_rate = 48000;   // (an output reporting a system rate in exclusive mode)
+        r.sources["sine"] = sine(44100, 1000.0, 0.2);
+        Settings s;
+        s.core = CoreMode::Dsd;
+        s.modulator.osr = 64;
+        CHECK_FALSE(r.start("sine", s));
+    }
+}

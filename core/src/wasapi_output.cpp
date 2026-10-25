@@ -205,7 +205,9 @@ bool WasapiOutput::open(const WasapiOptions& opt, int rate, int channels, std::s
         const bool ok = classify_mix(mix, fmt_);
         // ask Windows to resample to the mixer when the rates differ (shared mode is never
         // bit-perfect anyway), so the stream plays at the right speed
+        system_rate_ = 0;
         if (ok && rate > 0 && fmt_.rate != rate) {
+            system_rate_ = fmt_.rate;   // the mixer's rate: what the device plays (the report, MIKU's signal path)
             fmt_.rate = rate;
             impl_->autoconvert = true;
         }

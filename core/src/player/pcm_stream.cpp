@@ -11,6 +11,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
     struct Attempt {
         int rate, osr;
         bool native;
+        bool convert = false;   // the output may resample to a rate the device has (OutputRequest::convert)
     };
     std::vector<Attempt> rates;
     if (s.core == CoreMode::Dsd) {
@@ -38,13 +39,18 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         if (s.core == CoreMode::Pcm)
             for (int r = rates[0].rate / 2; r >= src.rate && r % src.rate == 0; r /= 2) rates.push_back({r, 0, false});
     }
+    // the device ran at a rate the chain could not use (a DAC without the track's rate family: 48 kHz only for
+    // 44.1 kHz, or 96 kHz at most for 192 kHz): one more attempt at the source rate, resampled by the output to the
+    // device's (Core Audio exclusive). Only after the device's own rates failed, so a DAC that steps down within the
+    // family is never converted; a device that did not open at all (busy, no hog mode) is not tried again
+    bool wrong_rate = false;
     want = requested_rate(s, src.rate);
     auto what = [&](size_t i) {
         return s.core == CoreMode::Dsd ? "DSD" + std::to_string(rates[i].osr) + (rates[i].native ? " (native)" : " (DoP)")
-                                       : std::to_string(rates[i].rate) + " Hz";
+                                       : std::to_string(rates[i].rate) + " Hz" + (rates[i].convert ? " (resampled by the system)" : "");
     };
     for (size_t attempt = 0; attempt < rates.size(); ++attempt) {
-        const bool last = attempt + 1 == rates.size();
+        bool last = attempt + 1 == rates.size();
         std::string e;
         if (cancel) {   // stopped while starting (dc_stop during dc_load): no further rate is tried
             io.dev.reset();
@@ -54,6 +60,10 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         // the last failure is the error; one before it goes to the log, so the host sees why the next was tried
         auto fail_attempt = [&]() {
             io.dev.reset();
+            if (last && wrong_rate && caps().converts && s.core == CoreMode::Pcm && !rates[attempt].convert) {
+                rates.push_back({src.rate, 0, false, true});
+                last = false;
+            }
             if (last && error) *error = e;
             // cancelled: the next round returns without trying the next rate, so the log does not say it does
             if (!last && !cancel) event("the output at " + what(attempt) + " failed (" + e + "): trying " + what(attempt + 1));
@@ -70,7 +80,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         xf.clear();
         take_warm();   // a crossfade warming up: the chain is built anew for the settings below
         cross_join.clear();
-        io.dev = open_output({out, s.output.buffer_ms, rates[attempt].rate, src.channels, rates[attempt].native}, &e);
+        io.dev = open_output({out, s.output.buffer_ms, rates[attempt].rate, src.channels, rates[attempt].native, rates[attempt].convert}, &e);
         if (!io.dev) {
             if (fail_attempt()) return false;
             continue;
@@ -89,6 +99,8 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         }
         rep.device = io.dev->format();
         rep.device_name = io.dev->device_name();
+        rep.system_rate = io.dev->system_rate();
+        if (rep.device.rate != rates[attempt].rate) wrong_rate = true;
         report.shared_mix = caps().shared_mix;
         rep.latency_ms = io.dev->latency_ms();
         io.note_buffer_fallback(report, s.output.buffer_ms);
@@ -100,8 +112,9 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
             const int osr = rates[attempt].osr;
             run_osr = osr;
             const bool native = rates[attempt].native;
-            if (rep.device.rate != (native ? dsd_clock(osr) : dop_rate(dsd_clock(osr)))) {
-                e = "the device locked " + std::to_string(rep.device.rate) + " Hz, not the DSD" + std::to_string(osr) + " rate";
+            if (rep.device.rate != (native ? dsd_clock(osr) : dop_rate(dsd_clock(osr))) || rep.system_rate > 0) {
+                e = "the device locked " + std::to_string(rep.system_rate > 0 ? rep.system_rate : rep.device.rate) + " Hz, not the DSD" +
+                    std::to_string(osr) + " rate";
                 if (fail_attempt()) return false;
                 continue;
             }

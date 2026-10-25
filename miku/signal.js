@@ -56,7 +56,7 @@ function volumeRow(s, volumeMode, dsdFile) {
 
 /** The card's sections. */
 function buildPath(ctx) {
-  const { s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, mode, format, volumeMode, rg, notes, host } = ctx;
+  const { s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, sysRate, mode, format, volumeMode, rg, notes, host } = ctx;
   const dsdFile = sentDirect, dsdPcm = isDsd && !sentDirect;
   const src = r.source, dev = r.device;
   const pcmRate = src.rate, channels = src.channels;
@@ -162,6 +162,9 @@ function buildPath(ctx) {
     const word = deviceWord(dev.type, dev.bits, dev.container);
     const conv = chain.includes('quantizer') ? null : !isFloat(dev.type) ? '64-bit 浮點轉回裝置的整數格式，數值不變' : '64-bit 浮點轉成裝置的浮點格式';
     outRows.push(row('格式', pcm(word, devRate), false, conv, ca));
+    // Core Audio resamples what Daphne hands it (shared: the system's rate; exclusive: a DAC without the track's rate)
+    if (sysRate > 0) outRows.push(row('系統轉換', `${khz(devRate)} → ${khz(sysRate)} kHz`, true,
+      SM.exclusive(s) ? 'Core Audio 的取樣率轉換器：裝置沒有這首歌的取樣率' : '系統混音器重新取樣到裝置目前的取樣率'));
   }
   sections.push({ title: '輸出', rows: outRows });
   return { ext: 'daphne', sections, notes };
@@ -175,7 +178,8 @@ function buildSignal(host, s, o, t, r) {
   const dsdRate = src.dsd_rate || 0;
   const isDsd = dsdRate > 0 || (host.isDsd ? host.isDsd(t) : false);
   const dop = filter.includes('DoP');
-  const devRate = dev.rate, srcRate = dsdRate > 0 ? dsdRate : src.rate;
+  // the core's output rate; Core Audio may convert it to the device's own rate (system_rate) after that
+  const devRate = dev.rate, sysRate = +r.system_rate || 0, srcRate = dsdRate > 0 ? dsdRate : src.rate;
   const mode = SM.exclusive(s) ? 'Core Audio 獨佔' : 'Core Audio 共享';
   const sentDirect = isDsd && filter.startsWith('none (DSD file sent directly)');
   const dsp = chain.filter(x => x === 'eq' || x === 'crossfeed').map(x => (x === 'eq' ? 'EQ' : 'Crossfeed'));
@@ -187,19 +191,20 @@ function buildSignal(host, s, o, t, r) {
   const info = {
     codec: t.codec, sourceRate: srcRate, sourceBits: isDsd ? 1 : t.bits, dsd: isDsd,
     dsdLabel: isDsd && srcRate > 0 ? dsdName(srcRate) : null, lossy, dop, dsdDirect: dop, dsdTransport: dop ? 'Dop' : null,
-    resampled: isDsd ? !sentDirect : dop || devRate !== srcRate,
-    outputRate: devRate, outputFormat: format, outputBits: dev.bits, mode, device: r.device_name,
+    resampled: isDsd ? !sentDirect : dop || devRate !== srcRate || sysRate > 0,
+    outputRate: sysRate || devRate, outputFormat: format, outputBits: dev.bits, mode, device: r.device_name,
     dspActive: dsp.length > 0, dspSummary: dsp.length ? dsp.join(' · ') : null, replayGainDb: Math.abs(rg) > 1e-9 ? rg : null,
     decoder: 'Daphne', sourceChannels: src.channels, volumeMode,
   };
   const notes = [];
   const d = s.dsp || {};
   if (d.enabled && (Math.abs(+d.balance || 0) > 0.001 || d.invert)) notes.push('Daphne 內核沒有平衡 / 反相，這兩項設定不會作用。');
+  if (sysRate > 0) notes.push(`裝置目前是 ${khz(sysRate)} kHz，由 macOS 把 ${khz(devRate)} kHz 轉成裝置的取樣率。`);
   if (sentDirect && volumeMode === 'none') notes.push('DSD 直送時無法使用數位音量，DAC 會以原始音量輸出，請用 DAC 的音量旋鈕調整。');
   const clipped = +r.clipped || 0;
   if (clipped > 0) notes.push(`已有 ${clipped.toLocaleString('en-US')} 個樣本超過滿刻度被削波；請調低數位音量或 EQ 前級。`);
   info.note = notes.length ? notes.join('\n') : null;
-  info.custom = buildPath({ s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, mode, format, volumeMode, rg, notes, host });
+  info.custom = buildPath({ s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, sysRate, mode, format, volumeMode, rg, notes, host });
   info.quality = lossy ? 'low' : !SM.exclusive(s) ? 'high' : dop ? (sentDirect ? 'bitperfect' : 'enhanced') : r.bit_perfect ? 'bitperfect' : 'enhanced';
   return info;
 }
