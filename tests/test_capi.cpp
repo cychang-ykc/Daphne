@@ -67,6 +67,11 @@ TEST_CASE("C API: dc_load_utf8 reads a file whose name is not ASCII", "[capi]") 
     std::filesystem::remove(p, ec);
 }
 
+TEST_CASE("C API: dc_live_socket tells a NULL path from the source that is not implemented yet", "[capi]") {
+    CHECK(dc_live_socket(nullptr, 48000) == DC_ERR_ARG);
+    CHECK(dc_live_socket("/tmp/daphne-test.sock", 48000) == 0);
+}
+
 TEST_CASE("C API: an error message cut to the caller's buffer ends on a whole UTF-8 character", "[capi]") {
     // the settings error names the unknown field, here in Chinese: every buffer size gives a prefix of the message
     // that stops before a character, never inside one

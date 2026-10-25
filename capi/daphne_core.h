@@ -139,7 +139,8 @@ DC_API int dc_devices(char* json, int len);
  * Layout: uint32 write index in frames (wraps) | 12 bytes reserved | float32 stereo frames (cap_frames). The
  * producer writes the frames first, then the index with a release (or seq_cst) atomic store. The memory must stay
  * valid until dc_live_bus(NULL, 0, 0) (or another ring) returns: it returns once no read is left in the previous
- * ring, so the host may free it then, even while a live track plays. Call it from one thread only. A new ring is
+ * ring, so the host may free it then, even while a live track plays. Calls from several threads run one at a time;
+ * a cap_frames of 0 or less is taken as no ring (as NULL). A new ring is
  * read from its writer on (the decoder syncs to it, as at the start: N2), whatever its write index. rate: the producer's
  * sample rate (dc_live_rate when it changes). While a live track plays, dc_state has
  *   "live": {"fill": s buffered in the ring, "read": s read, "resyncs": n, "starves": n, "adjust": x,
@@ -147,7 +148,7 @@ DC_API int dc_devices(char* json, int len);
  * (seconds from the producer to the DAC: fill + read - position + latency_ms / 1000). */
 DC_API void dc_live_bus(void* base, int cap_frames, int rate);
 DC_API void dc_live_rate(int rate);
-/* Reserved, not implemented yet (returns 0): the producer's frames on a Unix socket (path UTF-8) instead of a
+/* Reserved, not implemented yet (returns 0; DC_ERR_ARG for a NULL path): the producer's frames on a Unix socket (path UTF-8) instead of a
  * shared ring (macOS MIKU's live-relay.js). dc_live_bus(NULL, 0, 0) would end it. */
 DC_API int dc_live_socket(const char* path, int rate);
 
