@@ -38,7 +38,9 @@ extern "C" {
 typedef struct dc_player dc_player;
 
 /* 1: the first version; 2: the UTF-8 path functions (*_utf8); 3: dc_keep_device, dc_release_device, dc_device_kept;
- * 4: dc_cancel, a dc_stop that cancels a dc_load in progress (DC_ERR_CANCELLED), dc_state's "loading". */
+ * 4: dc_cancel, a dc_stop that cancels a dc_load in progress (DC_ERR_CANCELLED), dc_state's "loading".
+ * 5: dc_load returns DC_ERR_INTERNAL when the engine fails inside (before: DC_ERR_FILE); DC_ERR_INTERNAL itself came
+ *    with ABI 4 without a version of its own. */
 DC_API int dc_abi_version(void);
 DC_API const char* dc_version(void);
 

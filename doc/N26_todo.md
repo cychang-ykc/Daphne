@@ -117,66 +117,12 @@
 
 #### A. 會讓程序結束或播出錯誤聲音的問題
 
-**R1. 取樣率為 0 的 PCM 檔讓整個程序結束**（重現）
-
-- 問題：程序因 `SIGFPE` 結束，`try` / `catch` 攔不到這個訊號。如果這個檔案是無縫的下一首，正在播的那首也一起結束。
-- 原因：dr_flac 接受 `STREAMINFO` 裡的取樣率 0，`open_decoder` 也不拒絕。接著 `pcm_stream.cpp` 以取樣率做整數除法。無縫播放的背景預備（`common.cpp` 的 `same_output`）也做同樣的除法。
-- 修正：在 `open_decoder` 之後，拒絕取樣率或聲道數 ≤ 0 的檔案。`fuzz_decoder` 也要檢查 `info()`，目前它只開檔、讀取。
-
-
-**R5. MIKU 結束後，`SIGPIPE` 讓 helper 結束，helper 不還原裝置**（重現：Linux 上結束碼 141）
-
-- 問題：取樣率與 DAC 格式停在 Daphne 設的值。hog mode 由 macOS 放掉。
-- 原因：helper 沒有忽略 `SIGPIPE`。MIKU 意外結束時，stdin 讀到結尾，helper 開始 `quit` 的清理，約需 0.8 – 1.7 s。這段期間 helper 可能把事件或濾波器設計進度寫到已關閉的 stdout，`SIGPIPE` 就讓 helper 結束。
-- 修正：呼叫 `signal(SIGPIPE, SIG_IGN)`。寫出失敗時，做與 `quit` 相同的步驟。
 
 #### B. 取消載入（#45 – #51）
 
-**R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）
 
-- 測試：假裝置在 `start()` 之後等 300 ms，測試在這段等待中呼叫 `dc_cancel`。
-- 問題：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes。事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。
-- 影響：實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定會留下。
-- 修正：取消時清掉事件與報告。另一種作法是不送 `started`。
-
-**R7. 取消落在啟動完成之後、`load()` 公開 player 之前時，引擎忽略這次取消**（讀程式）
-
-- 問題：`dc_load` 回傳 `DC_OK`，照常播放。`dc_stop` 之後仍會停掉它，但回傳值是 OK。
-- 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
-- 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
-
-**R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
-
-- 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。
-- 修正：`dc_cancel` 遞增一個計數，`dc_load` 開始時記下這個計數。這樣取消就不會遺失。
-
-**R9. 被取消的 DSD 直送會繼續走轉 PCM 的流程**（讀程式）
-
-- 問題：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入轉 PCM 的流程，log 顯示 `DSD cannot be sent directly (cancelled): converting to PCM`。共享模式下，引擎還會為了探測混音器的取樣率再開一次裝置。這次開啟可能卡在驅動裡，而這正是取消要避免的。
-- 修正：取消旗標為真時，立刻結束載入。
-
-**R10. Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（讀程式）
-
-- 問題：舊的那首在濾波器設計完後開始播，但不設 `_loaded`。暫停、跳轉、電平都失效，只有停止能結束它。
-- 原因：`LoadAsync` 先遞增 `_loadSeq`。即時輸入的頁面還沒好（`!LiveBus.Ready`）時，`LoadAsync` 在 `dc_cancel` 之前就返回。舊的那首看到序號變了，就不設 `_loaded`。
-
-**R11. Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（讀程式。只有 MIKU 在換歌時同時呼叫 `ReconfigureAsync` 才會發生）
-
-- 問題：`ReconfigureAsync` 在 `_gate` 外記下目前的歌，停止後重新載入這首。這段期間使用者選的新歌拿到較舊的序號，於是被舊歌的重新載入取代。
-- #50 之前，兩者依閘門的順序執行，新歌最後播。
-
-**R12. 引擎把內部錯誤回報成檔案錯誤**（讀程式）
-
-- 問題：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`。同樣的錯誤，`dc_apply` 已經回傳 `DC_ERR_INTERNAL`。
-- ABI：新增 `DC_ERR_INTERNAL`（−6）時沒有提高 ABI 版本。現有的宿主不受影響，因為它們把 ≤ 0 都當成失敗。
 
 #### C. MIKU 的 Mac 外殼與打包
-
-**R13. 連續兩次快速改 DSD 播放方式時，外殼忽略第二次**（讀程式）
-
-- 問題：檔案以第一次的設定播放，`loadedDsd` 卻記成第二次的設定。之後的比較都錯，直到下一首。
-- 原因：`engine.js` 的 `load()` 在 `await` 之後才以當時的設定算 `loadedDsd`。第一次的重新載入還沒完成就改第二次時，`applyOutput()` 看到 `loaded == false`，只送 `changed`。
-- 修正：以外殼實際送出的設定算 key。載入完成後再比對一次 key。
 
 **R14. 打包沒有帶齊授權檔**（讀程式）
 
@@ -224,7 +170,6 @@
 #### F. 沒有測試涵蓋的部分
 
 - 打包腳本不在 CI：`pack-mac.sh`、`build_for_miku.ps1`、`fetch_*.ps1`，以及 C# 擴充的建置。
-- `miku/*.js` 沒有任何檢查，連 `node --check` 都沒有。
 - macOS 的 CI 沒有以 FFmpeg 建置（`DAPHNE_FFMPEG_DIR`）。
 - 取消：
   - 快取打開時取消濾波器設計，快取裡不能留下檔案。

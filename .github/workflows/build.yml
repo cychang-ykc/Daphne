@@ -34,3 +34,9 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      # the Mac shell (miku/*.js): its syntax, and the engine against a fake helper client
+      - name: Mac shell (JavaScript)
+        if: matrix.name == 'linux'
+        run: |
+          for f in miku/*.js; do node --check "$f"; done
+          node tests/miku_engine.js
