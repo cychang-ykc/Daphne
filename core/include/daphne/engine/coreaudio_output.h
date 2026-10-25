@@ -62,7 +62,8 @@ public:
 
     bool start(ByteRing* ring, const std::atomic<bool>* eof, std::string* error) override;
     bool drained() const override { return drained_.load(); }
-    void rearm() override { drained_ = false; }
+    // (also resets the converter, on the IO thread before its next use: a seek calls it)
+    void rearm() override;
     bool failed() const override { return failed_.load(); }
     std::string failure() const override;
     // Another application changed the device rate (exclusive: the player reopens it where it was).
