@@ -235,7 +235,9 @@ private:
 void set_live_bus(void* base, int cap_frames, int rate) {
     // off the old ring first, and no read left in it, before the new one (with its capacity) is published
     g_base.store(nullptr);
-    while (g_readers.load(std::memory_order_acquire) != 0) std::this_thread::yield();
+    // seq_cst, not acquire: with an acquire load Apple clang (-mcpu=apple-m1) emits ldapr, which ARMv8.3 lets
+    // pass the stlr above; this could then see no reader while a reader still holds the old pointer
+    while (g_readers.load() != 0) std::this_thread::yield();
     g_cap = base ? cap_frames : 0;
     if (rate > 8000) g_rate = rate;
     g_base.store(static_cast<uint8_t*>(base));
