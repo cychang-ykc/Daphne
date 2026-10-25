@@ -1,5 +1,6 @@
 # Builds daphne_core.dll for MIKU's Daphne extension (src/Daphne.Extension, MikuDeploy) and copies it with the
-# FFmpeg DLLs to -Out. Fetches FFmpeg and the ASIO SDK on the first build.
+# FFmpeg DLLs and the licenses (Daphne, nlohmann/json, FFmpeg and where its source is) to -Out. Fetches FFmpeg and the
+# ASIO SDK on the first build, and FFmpeg again when fetch_ffmpeg.ps1 names another package.
 # The build tools are taken from this machine first and downloaded into -Tools only when missing:
 #   MSVC   this shell's x64 developer environment, an installed Visual Studio with the C++ tools, else fetch_msvc.ps1
 #   CMake  PATH (3.25+), the one in that Visual Studio, else fetch_cmake.ps1
@@ -13,7 +14,14 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Tools) { $Tools = Join-Path $root ".tools" }
-if (-not (Test-Path (Join-Path $root "third_party\ffmpeg\include\libavcodec\avcodec.h"))) { & (Join-Path $PSScriptRoot "fetch_ffmpeg.ps1") }
+# FFmpeg: fetched when missing, or when fetch_ffmpeg.ps1 names another package than the one there (its SOURCE.txt):
+# the DLLs copied below and FFmpeg-SOURCE.txt must name the same build
+$ffDir = Join-Path $root "third_party\ffmpeg"
+$ffWant = [regex]::Match((Get-Content -Raw (Join-Path $PSScriptRoot "fetch_ffmpeg.ps1")), '\[string\]\$Url = "([^"]+)"').Groups[1].Value
+$ffHave = if (Test-Path (Join-Path $ffDir "SOURCE.txt")) { (Get-Content (Join-Path $ffDir "SOURCE.txt") | Select-Object -First 1).Trim() } else { "" }
+# (by the package's file name: the same package has been downloaded from BtbN and from this repository's release)
+if (-not (Test-Path (Join-Path $ffDir "include\libavcodec\avcodec.h")) -or
+    ($ffWant -and [IO.Path]::GetFileName($ffHave) -ne [IO.Path]::GetFileName($ffWant))) { & (Join-Path $PSScriptRoot "fetch_ffmpeg.ps1") }
 if (-not (Test-Path (Join-Path $root "third_party\asiosdk\common\iasiodrv.h"))) { & (Join-Path $PSScriptRoot "fetch_asiosdk.ps1") }
 
 # ── MSVC ──
@@ -97,4 +105,17 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $bin = Join-Path $bd "bin"
 Copy-Item (Join-Path $bin "daphne_core.dll") $Out -Force
 Get-ChildItem $bin -Filter "*.dll" | Where-Object { $_.Name -match '^(avformat|avcodec|avutil|swresample)-' } | Copy-Item -Destination $Out -Force
+# the licenses, as miku/pack-mac.sh puts them in the Mac module: Daphne's (GPL), the JSON library's (MIT, compiled into
+# daphne_core.dll), FFmpeg's (LGPL) and where its source is
+Copy-Item (Join-Path $root "LICENSE") (Join-Path $Out "LICENSE") -Force
+Copy-Item (Join-Path $root "third_party\nlohmann\LICENSE.MIT") (Join-Path $Out "nlohmann-json-LICENSE.MIT") -Force
+Copy-Item (Join-Path $ffDir "LICENSE.txt") (Join-Path $Out "FFmpeg-LICENSE.txt") -Force
+$ffPkg = (Get-Content (Join-Path $ffDir "SOURCE.txt") | Select-Object -First 1).Trim()
+$ffCommit = [regex]::Match($ffPkg, '-g([0-9a-f]{7,40})-').Groups[1].Value
+$ffSrc = if ($ffCommit) { "FFmpeg source: commit $ffCommit, https://github.com/FFmpeg/FFmpeg/commit/$ffCommit" } else { "FFmpeg source: https://ffmpeg.org/download.html" }
+Set-Content -Path (Join-Path $Out "FFmpeg-SOURCE.txt") -Encoding utf8 -Value @(
+    "FFmpeg (LGPL, the DLLs avcodec / avformat / avutil / swresample next to this file), unmodified build: $ffPkg",
+    "It is BtbN's FFmpeg-Builds package (https://github.com/BtbN/FFmpeg-Builds, its build scripts), kept as a release of",
+    "https://github.com/cychang-ykc/Daphne (scripts/fetch_ffmpeg.ps1).",
+    $ffSrc)
 Write-Host "daphne_core.dll deployed to $Out"

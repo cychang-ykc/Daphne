@@ -115,26 +115,7 @@
 
 每一項修正另開分支，並附回歸測試。測試草稿保留在 review 的工作區。
 
-2026-10-26 狀態：R1、R3 – R13、R17 – R19 已修正並合併（#59 – #67、#69；R2 由 #57 修正），修正後的行為寫在 N2、N4、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。剩下的都要 Mac 實機驗證：R14 – R16 的修正在 #68（Windows 的一半已實測，`pack-mac.sh` 沒有在 Mac 上跑過），R20 – R23 的部分修正在 #70（只確認 macOS 編譯通過）。
-
-#### C. 打包（#68，待 Mac 實機）
-
-**R14. 打包沒有帶齊授權檔**（讀程式）
-
-- 問題：Windows 給 MIKU 的打包（`MikuDeploy`）只複製 DLL 與 `web/`，沒有 Daphne 的 GPL `LICENSE`、FFmpeg 的 LGPL 授權與 FFmpeg 的原始碼位置。兩邊的打包都沒有 nlohmann/json 的 MIT 授權。核心與 helper 都編進了這個函式庫，MIT 要求附上授權文字。
-- 修正：複製 `LICENSE` 與 `third_party/nlohmann/LICENSE.MIT`。Windows 另外複製 FFmpeg 的授權與 `SOURCE.txt`。
-
-**R15. FFmpeg 版本改了之後，打包腳本沿用舊的 FFmpeg 編譯結果**（讀程式）
-
-- 問題：`bin/` 裡是舊版的 FFmpeg，授權與原始碼位置卻寫新版，所以 LGPL 的原始碼位置是錯的。
-- 原因：`pack-mac.sh` 只檢查 `build-mac-<arch>/ffmpeg/lib/libavcodec.dylib` 是否存在，不比對 `FF_VER` 或 configure 選項。Windows 的 `build_for_miku.ps1` 也只在 `avcodec.h` 不存在時才下載 FFmpeg。
-- 修正：以版本與選項寫一個 stamp 檔。
-
-**R16. `pack-mac.sh` 的另外三個問題**（讀程式）
-
-1. checkout 路徑含空白時，`for rp in $(otool …)` 會把 rpath 切開，`install_name_tool` 失敗，腳本中止。FFmpeg 的 configure 本來也不接受含空白的路徑，但至少會明確地報錯。
-2. 最後一行啟動 helper，確認它能執行。在 `set -o pipefail` 下，helper 失敗時腳本直接結束，看不到 helper 自己的錯誤訊息。
-3. `codesign … 2>/dev/null` 藏起了簽章失敗的原因。
+2026-10-26 狀態：R1、R3 – R19 已修正並合併（#59 – #69；R2 由 #57 修正），修正後的行為寫在 N2、N4、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。剩下的都要 Mac 實機驗證：R14 – R16 的修正（#68）只有 Windows 的一半實測過，`pack-mac.sh` 要在 Mac 上打包一次確認；R20 – R23 的部分修正在 #70（只確認 macOS 編譯通過）。
 
 #### E. Core Audio（#70，待 Mac 實機，讀程式推論）
 
@@ -267,5 +248,5 @@
 - FFmpeg：與 Windows 同版本（8.1.3，LGPL、動態連結），從原始碼編（ffmpeg.org 的 tarball，SHA-256 寫在腳本裡；ffmpeg.org 沒有公布 SHA-256，這個值是寫腳本時下載的檔案的），只開引擎需要的 demuxer / decoder（沒有專屬解碼器的格式：M4A / ALAC / AAC、Ogg、Opus、APE、WavPack、WMA、TTA…）。`--install-name-dir=@rpath`，所以核心連到的是 `@rpath/libavcodec.62.dylib` 等，打包時照這些名字複製。沒有 FFmpeg 時這些格式在 Mac 上不能播（測試機的音樂庫有 46 首 ALAC）。
 - CMake：macOS / Linux 的 FFmpeg 原本只用 pkg-config 找（測試機的 ssh 環境找不到 pkg-config），改成也可以指定資料夾（`DAPHNE_FFMPEG_DIR`，含 `include/` 和 `lib/`）；Windows 的路徑不變。
 - 每個 arch 分開編（`build-mac-arm64/`、`build-mac-x86_64/`，最低 macOS 11.0），因為 MIKU 的安裝包也是每個 arch 一份。打包後刪掉所有絕對路徑的 rpath，檢查 `otool -L` 只剩 `@rpath/` 和系統的函式庫，ad-hoc 簽章（`install_name_tool` 會讓簽章失效；MIKU 的安裝包會再簽一次），在本機 arch 上啟動 helper 確認 hello。
-- `bin/` 只放程式（MIKU 的安裝包會簽 `bin/` 裡的每個檔案）；FFmpeg 的授權（`FFmpeg-COPYING.LGPLv2.1`）與原始碼位置（`FFmpeg-SOURCE.txt`）和 `LICENSE` 一起放在模組根目錄。`.gitattributes` 讓 `*.sh` 在每個 checkout 都是 LF：Windows（`core.autocrlf`）checkout 的 CRLF 腳本複製到 Mac 會在 `set -o pipefail` 失敗（`pipefail\r`）。
+- `bin/` 只放程式（MIKU 的安裝包會簽 `bin/` 裡的每個檔案）；FFmpeg 的授權（`FFmpeg-COPYING.LGPLv2.1`）與原始碼位置（`FFmpeg-SOURCE.txt`）、nlohmann/json 的 MIT 授權（`nlohmann-json-LICENSE.MIT`，編進了核心與 helper）和 `LICENSE` 一起放在模組根目錄。Windows 的 `build_for_miku.ps1` 也放同樣的四個（FFmpeg 的是 `FFmpeg-LICENSE.txt` 與寫著 BtbN 套件和 FFmpeg commit 的 `FFmpeg-SOURCE.txt`），MikuDeploy 跟著 DLL 一起帶進 MIKU。FFmpeg 換版本時兩邊都重新取得：Mac 以 `FF_VER` 與 configure 選項寫 `daphne-ffmpeg.stamp`，不同就重編（沒有 stamp 的舊編譯結果第一次會重編一次）；Windows 比對 `third_party\ffmpeg\SOURCE.txt` 與 `fetch_ffmpeg.ps1` 的套件檔名。`.gitattributes` 讓 `*.sh` 在每個 checkout 都是 LF：Windows（`core.autocrlf`）checkout 的 CRLF 腳本複製到 Mac 會在 `set -o pipefail` 失敗（`pipefail\r`）。
 - 結果（Intel Mac）：每個 arch 約 4 MB；arm64 版全是 arm64、x64 版全是 x86_64；x64 的 helper 回報 `{"abi":3,"e":"hello","version":"daphne 0.1.0"}`。arm64 版要在 Apple Silicon 的 Mac 上試。
