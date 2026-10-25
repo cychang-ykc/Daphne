@@ -120,19 +120,6 @@
 
 #### B. 取消載入（#45 – #51）
 
-**R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）
-
-- 測試：假裝置在 `start()` 之後等 300 ms，測試在這段等待中呼叫 `dc_cancel`。
-- 問題：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes。事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。
-- 影響：實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定會留下。
-- 修正：取消時清掉事件與報告。另一種作法是不送 `started`。
-
-**R7. 取消落在啟動完成之後、`load()` 公開 player 之前時，引擎忽略這次取消**（讀程式）
-
-- 問題：`dc_load` 回傳 `DC_OK`，照常播放。`dc_stop` 之後仍會停掉它，但回傳值是 OK。
-- 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
-- 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
-
 **R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
 
 - 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。
@@ -152,11 +139,6 @@
 
 - 問題：`ReconfigureAsync` 在 `_gate` 外記下目前的歌，停止後重新載入這首。這段期間使用者選的新歌拿到較舊的序號，於是被舊歌的重新載入取代。
 - #50 之前，兩者依閘門的順序執行，新歌最後播。
-
-**R12. 引擎把內部錯誤回報成檔案錯誤**（讀程式）
-
-- 問題：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`。同樣的錯誤，`dc_apply` 已經回傳 `DC_ERR_INTERNAL`。
-- ABI：新增 `DC_ERR_INTERNAL`（−6）時沒有提高 ABI 版本。現有的宿主不受影響，因為它們把 ≤ 0 都當成失敗。
 
 #### C. MIKU 的 Mac 外殼與打包
 
