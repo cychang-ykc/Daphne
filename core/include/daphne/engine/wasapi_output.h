@@ -38,6 +38,7 @@ public:
     std::string device_name() const override { return name_; }
     double latency_ms() const override { return latency_ms_; }
     int buffer_frames() const override { return buffer_frames_; }
+    int system_rate() const override { return system_rate_; }
     // The buffer asked for (WasapiOptions::buffer_ms) failed to initialize; the default is used.
     bool buffer_fallback() const override { return buffer_fallback_; }
 
@@ -64,6 +65,7 @@ private:
     std::string name_;
     double latency_ms_ = 0;
     int buffer_frames_ = 0;
+    int system_rate_ = 0;   // shared mode at another rate than the mixer's: the mixer's (Windows converts)
     bool buffer_fallback_ = false;
     ByteRing* ring_ = nullptr;
     const std::atomic<bool>* eof_ = nullptr;

@@ -18,7 +18,7 @@ OutputOpener platform_output_opener() {
             return nullptr;
         }
         auto c = std::make_unique<CoreAudioOutput>();
-        if (!c->open({r.out.device, r.out.api == OutputApi::CoreAudioExclusive, r.buffer_ms}, r.rate, r.channels, error)) return nullptr;
+        if (!c->open({r.out.device, r.out.api == OutputApi::CoreAudioExclusive, r.buffer_ms, r.convert}, r.rate, r.channels, error)) return nullptr;
         return c;
     };
 }
@@ -31,6 +31,7 @@ OutputCapsQuery platform_output_caps() {
         c.native_dsd = false;
         c.shared_mix = o.api == OutputApi::CoreAudioShared;
         c.takes_buffer_ms = true;
+        c.converts = o.api == OutputApi::CoreAudioExclusive;
         return c;
     };
 }

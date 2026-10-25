@@ -50,8 +50,11 @@ bool Player::Impl::open_dsd(int64_t from, std::string* error) {
         return false;
     }
     if (caps().native_dsd && s.output.dsd != DsdMode::Dop) at.push_back({di.dsd_rate, true});
-    if (s.output.dsd != DsdMode::Native) at.push_back({di.dsd_rate / 16, false});
-    std::string e = at.empty() ? "output.dsd = native needs an ASIO driver with a DSD mode" : "";
+    // DoP only where it reaches the DAC untouched: a shared output mixes and resamples it into noise
+    if (s.output.dsd != DsdMode::Native && !caps().shared_mix) at.push_back({di.dsd_rate / 16, false});
+    std::string e = at.empty() ? (caps().shared_mix ? "shared mode mixes everything to PCM"
+                                                    : "output.dsd = native needs an ASIO driver with a DSD mode")
+                               : "";
     auto what = [&](const Attempt& a) {
         return "DSD" + std::to_string(multiple) + (a.native ? " (native)" : " (DoP, " + std::to_string(a.rate) + " Hz)");
     };
@@ -74,10 +77,13 @@ bool Player::Impl::open_dsd(int64_t from, std::string* error) {
             next();
             continue;
         }
-        if (io.dev->format().rate != a.rate || io.dev->format().channels != di.channels) {
-            if (!a.native && io.dev->format().rate < a.rate) dop_locked = io.dev->format().rate;
-            e = "the device locked " + describe(io.dev->format()) + " instead of " + std::to_string(a.rate) + " Hz, " +
-                std::to_string(di.channels) + " ch";
+        // (an output that resamples reports the rate asked for: the device's own is system_rate)
+        const int locked = io.dev->system_rate() > 0 ? io.dev->system_rate() : io.dev->format().rate;
+        if (locked != a.rate || io.dev->format().channels != di.channels) {
+            if (!a.native && locked < a.rate) dop_locked = locked;
+            DeviceFormat f = io.dev->format();
+            f.rate = locked;
+            e = "the device locked " + describe(f) + " instead of " + std::to_string(a.rate) + " Hz, " + std::to_string(di.channels) + " ch";
             next();
             continue;
         }

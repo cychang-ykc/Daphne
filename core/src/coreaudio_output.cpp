@@ -149,9 +149,9 @@ struct CoreAudioOutput::Impl {
     int tmp_frames = 0;
     std::vector<float> f32;    // one callback's frames as float32, at the device rate
 
-    // Shared mode at a rate the device does not run at and Daphne's chain cannot reach by a whole factor (48 kHz on a
-    // 44.1 kHz device): Core Audio's converter resamples in the callback, as Windows does for WASAPI shared
-    // (AUTOCONVERTPCM). The player sees the rate it asked for.
+    // A rate the device does not run at and Daphne's chain cannot reach by a whole factor (48 kHz on a 44.1 kHz
+    // device): Core Audio's converter resamples in the callback, as Windows does for WASAPI shared (AUTOCONVERTPCM).
+    // Shared mode, or exclusive when asked (CoreAudioOptions::convert). The player sees the rate it asked for.
     AudioConverterRef conv = nullptr;
     std::vector<float> conv_in;   // what the converter last took, float32 at the stream rate
 
@@ -572,10 +572,16 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     m.tmp_frames = std::min(m.tmp_frames, 65536);
     m.tmp.assign(static_cast<size_t>(m.tmp_frames) * static_cast<size_t>(channels), 0);
     m.f32.assign(m.tmp.size(), 0.0f);
-    // a device rate the chain cannot reach by a whole factor (shared: the system's rate; exclusive: a DAC without the
-    // track's rate family, e.g. 48 kHz only): Core Audio's converter resamples (Impl::conv), as MIKU's own core does
+    // a device rate the chain cannot reach by a whole factor: Core Audio's converter resamples (Impl::conv). Shared:
+    // the system's rate. Exclusive only when the player asks for it (opt.convert, its last PCM attempt, after the
+    // device's own rates failed: a DAC without the track's rate family, e.g. 48 kHz only); never for DoP, which must
+    // reach the DAC untouched. A kept device may still have the last track's converter.
+    if (m.conv) {
+        AudioConverterDispose(m.conv);   // (no callback uses it: nothing owns the output while it opens)
+        m.conv = nullptr;
+    }
     const int dev_rate = static_cast<int>(m.rate + 0.5);
-    if (!ca::same_rate(m.rate, rate) && (dev_rate < rate || dev_rate % rate != 0)) {
+    if ((!m.exclusive || opt.convert) && !ca::same_rate(m.rate, rate) && (dev_rate < rate || dev_rate % rate != 0)) {
         const auto in = float_pcm(rate, channels), outf = float_pcm(m.rate, channels);
         if (AudioConverterNew(&in, &outf, &m.conv) != noErr || !m.conv) return fail("could not create a sample rate converter for " + name_);
         const UInt32 q = kAudioConverterQuality_Max;

@@ -34,6 +34,9 @@ struct CoreAudioOptions {
     bool exclusive = true;   // hog mode, device rate = the request, DAC format with enough integer bits
     // IO buffer in ms (the HAL's buffer frame size), 0 = the device's default; clamped to the device's range.
     int buffer_ms = 0;
+    // exclusive: when the device has no rate the chain can reach by a whole factor (48 kHz only for a 44.1 kHz track),
+    // Core Audio's converter resamples to the device's rate (system_rate()). Shared mode always converts.
+    bool convert = false;
 };
 
 class CoreAudioOutput final : public AudioOutput {
@@ -45,8 +48,9 @@ public:
 
     // Opens the device and starts its IO (silent until start()). Exclusive: the rate requested when the
     // device offers it, else the same family's highest rate below it, else the device's highest rate
-    // (matches_request() false then). Shared: the device's current rate, or the request when the device
-    // rate is not a whole multiple of it (the output converts).
+    // (matches_request() false then), or the request with opt.convert when that rate is not a whole multiple
+    // of it (the output converts). Shared: the device's current rate, or the request when the device rate is
+    // not a whole multiple of it (the output converts).
     bool open(const CoreAudioOptions& opt, int rate, int channels, std::string* error);
     const DeviceFormat& format() const override { return fmt_; }
     bool matches_request() const override { return matched_; }

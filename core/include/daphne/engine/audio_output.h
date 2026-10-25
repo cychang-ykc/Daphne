@@ -32,8 +32,8 @@ public:
     virtual std::string device_name() const = 0;
     virtual double latency_ms() const = 0;
     virtual int buffer_frames() const = 0;
-    // The device's own rate when the output converts the stream to it (Core Audio's converter); 0 when it plays the
-    // stream's rate (format().rate).
+    // The device's own rate when the output converts the stream to it (Core Audio's converter, WASAPI shared's
+    // AUTOCONVERTPCM); 0 when the device plays the stream's rate (format().rate).
     virtual int system_rate() const { return 0; }
 
     // Start reading from ring. When eof is set and the ring runs dry, drained() becomes true
