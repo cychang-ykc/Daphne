@@ -139,8 +139,8 @@ DC_API int dc_devices(char* json, int len);
  * Layout: uint32 write index in frames (wraps) | 12 bytes reserved | float32 stereo frames (cap_frames). The
  * producer writes the frames first, then the index with a release (or seq_cst) atomic store. The memory must stay
  * valid until dc_live_bus(NULL, 0, 0) (or another ring) returns: it returns once no read is left in the previous
- * ring, so the host may free it then, even while a live track plays. Call it from one thread only; start a new
- * ring's write index at 0 (the decoder keeps its read position across rings, N2). rate: the producer's
+ * ring, so the host may free it then, even while a live track plays. Call it from one thread only. A new ring is
+ * read from its writer on (the decoder syncs to it, as at the start: N2), whatever its write index. rate: the producer's
  * sample rate (dc_live_rate when it changes). While a live track plays, dc_state has
  *   "live": {"fill": s buffered in the ring, "read": s read, "resyncs": n, "starves": n, "adjust": x,
  *            "target": s of jitter buffer aimed for now (0.15, up to 0.30 after starves)}
