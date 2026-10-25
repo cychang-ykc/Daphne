@@ -56,7 +56,7 @@
 - [x] 外接 DAC 驗證（USB DAC，44.1–384 kHz、DSD128）：隱藏測試 4 個、CLI 44.1–384 kHz 連播 bit-perfect、`auto` 升頻到 352.8 kHz、DoP DSD64 / DSD128（DAC 顯示 D64 / D128）、`miku_shell.js` 獨佔 / 共享、`helper.py`，全部通過（N24「驗證」）。
 - [x] 其他程式改取樣率：共享時在原位置以新的取樣率重開；獨佔時 macOS 拒絕其他程序的變更（`'!hog'`），照常播完（N24「驗證」）。
 - [x] 共享模式的取樣率轉換（分支 `coreaudio-shared-src`）：裝置取樣率不是要求值的整數倍時（48 k 在 44.1 kHz 的裝置上），原本直接失敗；改成輸出在 IO 回呼裡用 `AudioConverter` 轉換，與 WASAPI 共享的 `AUTOCONVERTPCM` 相同。順便修正共享模式回報 bit-perfect 的問題（Windows 的 WASAPI 共享也一樣）：改回報「shared mode (system mixer)」。
-- [x] bit-perfect 錄音比對：BlackHole 2ch 當 loopback，隱藏測試 `daphne_tests "[.blackhole]"`（PCM 44.1–384 kHz int24 逐樣本相同、DoP DSD64 / DSD128 標記完整，2026-10-16 全過）。錄音要麥克風權限：沒有權限只會錄到全零、不報錯；使用者在桌面上給「終端機」權限後，從 ssh 執行的同一個測試程式也錄得到。BlackHole 存 float32，不涵蓋真 DAC 上 float → 整數的轉換。
+- [x] bit-perfect 錄音比對：BlackHole 2ch 當 loopback，隱藏測試 `daphne_tests "[.blackhole]"`（PCM 44.1–384 kHz int24 逐樣本相同、DoP DSD64 / DSD128 標記完整，2026-10-16、2026-10-26 全過）。BlackHole 的音量要是 1.0、不靜音：它把音量與靜音套在迴送的訊號上，靜音時只錄到全零（看起來和沒有麥克風權限一樣）。錄音要麥克風權限：沒有權限只會錄到全零、不報錯；使用者在桌面上給「終端機」權限後，從 ssh 執行的同一個測試程式也錄得到。BlackHole 存 float32，不涵蓋真 DAC 上 float → 整數的轉換。
 - [x] DSD 在 DoP 鎖不到時轉成 PCM，配合 DAC 鎖定的取樣率（分支 `dsd-pcm-at-locked-rate`）：2026-10-16 USB DAC 拔掉再接回去後，MIKU 播 DSD64 時 DAC 要 176.4 kHz 卻鎖在 88.2 kHz，轉 PCM 又固定用 176.4 kHz，鏈只能往上升頻，所以「not an integer multiple」整首播不出來（連續 6 次）；之後再拔插兩次都沒重現，DAC 一接回來就回報完整的 44.1–384 kHz。改成：獨佔模式下 DoP 被鎖在較低的取樣率時，若它低於平常的 176.4 / 192 kHz 而且能整除 DSD 取樣率，就用它轉 PCM（共享模式本來就配合混音器）。同時把 DoP 嘗試時輸出端的說明（取樣率改不過去等）寫進 log，下次再發生可以看到原因。這也讓最高只到 96 kHz 的 DAC 能在獨佔模式播 DSD 檔（原本一定失敗）。
 - [x] 播放中拔除 DAC（2026-10-16，使用者在 MIKU 裡以 Daphne 獨佔播放時拔掉 USB DAC）：MIKU 的進度再走幾秒，接著顯示 Daphne 的錯誤「the output device was removed」，沒有卡住。Daphne 在 HAL 通知 `kAudioDevicePropertyDeviceIsAlive` 變成 0 時立刻標記失敗，播放器每一圈（幾 ms）都檢查，所以那幾秒應該是 macOS 從拔除到發出通知的時間（從程式判斷，沒有量）。
 - [ ] 外殼 `probeDevice(null)` 在停止後的頭 1–3 秒會讀到內建輸出（獨佔時 macOS 把系統輸出移走，放掉後才移回）：可改成沿用最後一次播放的裝置，或在外殼裡也套用 core 的「剛放掉的系統輸出」規則。只影響顯示：core 開裝置時已套用該規則，停止後馬上播下一首仍送到 DAC。只有 macOS 有這個現象（Windows 的 WASAPI 獨佔不會更改預設輸出，ASIO 與預設裝置無關）。暫緩：等 MIKU 介面內的整合測試（7d）時，真的看到顯示閃一下再處理。`verify/miku_shell.js` 偶爾在停止後讀到 88.2 kHz 也是同一件事（查過，不是 bug）：外殼的 `stop()` 送出就不等回覆，0.5 s 後的 probe 讀到的是還沒關完的裝置。helper 的 `stop` 平常 0.84 s（USB DAC 在 IO 運轉中改回取樣率約 0.83 s，內建輸出約 0.33 s）。如果剛送了要換取樣率的 `apply` 就馬上 stop，stop 要 1.7 s：從時間看，是 stop 等那次重開先把排隊的聲音放完、淡出（`restart()` 的 drain，約 0.7 s），再加上還原取樣率的 0.84 s。最後取樣率都正確還原、hog 也放掉（每 10 ms 監看確認）。
@@ -115,7 +115,7 @@
 
 每一項修正另開分支，並附回歸測試。測試草稿保留在 review 的工作區。
 
-2026-10-26 狀態：R1 – R20、R22 已修正並合併（#59 – #70；R2 由 #57 修正），修正後的行為寫在 N2、N4、N24、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。打包（#68）與 Core Audio（#70）在 Intel Mac（macOS 11.7）上實測過：`pack-mac.sh` 兩次（沒有 stamp 的舊 FFmpeg 重編 3 分 15 秒，之後沿用 4.8 秒），R20 以內建輸出重現並確認修正（N24「驗證」）。剩下 R21、R23 的一部分（要特定的 DAC），以及 `[.blackhole]`：從 ssh 執行時錄到全零（main 與 10-16 的舊測試程式也一樣，麥克風權限），要在 Mac 的桌面上跑一次。
+2026-10-26 狀態：R1 – R20、R22 已修正並合併（#59 – #70；R2 由 #57 修正），修正後的行為寫在 N2、N4、N24、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。打包（#68）與 Core Audio（#70）在 Intel Mac（macOS 11.7）上實測過：`pack-mac.sh` 兩次（沒有 stamp 的舊 FFmpeg 重編 3 分 15 秒，之後沿用 4.8 秒），R20 以內建輸出重現並確認修正（N24「驗證」）。`[.blackhole]` 2 個也全過（#70 與它之前的 main 都是）：第一次錄到全零，原因是 BlackHole 自己的音量是 0、靜音（輸出與輸入都是），不是麥克風權限（同一個 ssh 程序錄內建麥克風有聲音，TCC 裡 `sshd-keygen-wrapper` 有權限）；暫時調成 1.0、不靜音跑完再改回。剩下 R21、R23 的一部分，要特定的 DAC。
 
 #### E. Core Audio（待 Mac 實機）
 
