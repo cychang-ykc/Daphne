@@ -167,16 +167,6 @@
 - 問題：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入轉 PCM 的流程，log 顯示 `DSD cannot be sent directly (cancelled): converting to PCM`。共享模式下，引擎還會為了探測混音器的取樣率再開一次裝置。這次開啟可能卡在驅動裡，而這正是取消要避免的。
 - 修正：取消旗標為真時，立刻結束載入。
 
-**R10. Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（讀程式）
-
-- 問題：舊的那首在濾波器設計完後開始播，但不設 `_loaded`。暫停、跳轉、電平都失效，只有停止能結束它。
-- 原因：`LoadAsync` 先遞增 `_loadSeq`。即時輸入的頁面還沒好（`!LiveBus.Ready`）時，`LoadAsync` 在 `dc_cancel` 之前就返回。舊的那首看到序號變了，就不設 `_loaded`。
-
-**R11. Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（讀程式。只有 MIKU 在換歌時同時呼叫 `ReconfigureAsync` 才會發生）
-
-- 問題：`ReconfigureAsync` 在 `_gate` 外記下目前的歌，停止後重新載入這首。這段期間使用者選的新歌拿到較舊的序號，於是被舊歌的重新載入取代。
-- #50 之前，兩者依閘門的順序執行，新歌最後播。
-
 **R12. 引擎把內部錯誤回報成檔案錯誤**（讀程式）
 
 - 問題：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`。同樣的錯誤，`dc_apply` 已經回傳 `DC_ERR_INTERNAL`。
