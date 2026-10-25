@@ -122,6 +122,21 @@ TEST_CASE("a file that is not an MP3 fails to open without a leak", "[decoder]")
     std::filesystem::remove(p);
 }
 
+TEST_CASE("a FLAC file with a sample rate of 0 does not open", "[decoder]") {
+    // STREAMINFO only: block sizes 4096, rate 0, 2 ch, 16-bit, 44100 frames, no MD5; dr_flac opens it
+    unsigned char f[42] = {'f', 'L', 'a', 'C', 0x80, 0, 0, 34, 0x10, 0, 0x10, 0};
+    const uint64_t props = (uint64_t(1) << 41) | (uint64_t(15) << 36) | 44100;
+    for (int i = 0; i < 8; ++i) f[18 + i] = static_cast<unsigned char>(props >> (56 - 8 * i));
+    const auto p = temp_path("daphne_test_rate0.flac");
+    FILE* h = daphne::platform::open_file(p, "wb");
+    std::fwrite(f, 1, sizeof f, h);
+    std::fclose(h);
+    std::string err;
+    CHECK_FALSE(daphne::open_decoder(p, &err));
+    CHECK_FALSE(err.empty());
+    std::filesystem::remove(p);
+}
+
 TEST_CASE("WAV float64 decodes bit-exactly", "[decoder]") {
     const auto p = temp_path("daphne_test_f64.wav");
     drwav_data_format fmt{};

@@ -37,6 +37,7 @@ struct FakeDevice {
     bool can_convert = false;                        // with lock_rate: an open with OutputRequest::convert resamples
                                                      // to it (format() the rate asked for, system_rate() lock_rate)
     int mixer_rate = 0;                              // nonzero: a shared mixer at this rate resamples every stream
+    double start_s = 0;                              // start() returns this long after the device runs (a slow driver)
     std::atomic<bool> request_reset{false};          // the "driver" asks to be reopened
 
     size_t frames() {
@@ -103,6 +104,7 @@ public:
         drained_ = false, stop_ = false;
         feeder_.configure(fmt_);
         th_ = std::thread([this] { loop(); });
+        if (d_->start_s > 0) std::this_thread::sleep_for(std::chrono::duration<double>(d_->start_s));
         return true;
     }
     bool drained() const override { return drained_; }

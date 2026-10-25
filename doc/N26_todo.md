@@ -117,70 +117,10 @@
 
 #### A. 會讓程序結束或播出錯誤聲音的問題
 
-**R1. 取樣率為 0 的 PCM 檔讓整個程序結束**（重現）
-
-- 問題：程序因 `SIGFPE` 結束，`try` / `catch` 攔不到這個訊號。如果這個檔案是無縫的下一首，正在播的那首也一起結束。
-- 原因：dr_flac 接受 `STREAMINFO` 裡的取樣率 0，`open_decoder` 也不拒絕。接著 `pcm_stream.cpp` 以取樣率做整數除法。無縫播放的背景預備（`common.cpp` 的 `same_output`）也做同樣的除法。
-- 修正：在 `open_decoder` 之後，拒絕取樣率或聲道數 ≤ 0 的檔案。`fuzz_decoder` 也要檢查 `info()`，目前它只開檔、讀取。
-
-**R3. 宿主換環之後，解碼器讀到從沒寫過的記憶體**（重現）
-
-- 問題：解碼器讀到新環裡沒有音訊的部分。測試中這些部分是 NaN，輸出有 12404 個 NaN 樣本，解碼器一次也沒有重新同步。NaN 進了 IIR 濾波器（EQ、交叉饋送）或限幅器後會一直留著。
-- 原因：解碼器沿用舊環的讀取位置（`read_`、`synced_`、`primed_`）。新環的寫入位置在前方又不到一整圈時，解碼器不重新同步。
-- 修正：`set_live_bus` 遞增一個世代號。解碼器看到世代號改變時，必須重新同步。
-
-**R4. 在 Apple Silicon 上，宿主卸離即時輸入之後，解碼器可能讀到已釋放的環**（讀程式：編譯結果）
-
-- 問題：解碼器還在使用舊環時，`set_live_bus` 就可能返回。宿主接著釋放記憶體，解碼器讀到已釋放的記憶體。
-- 原因：卸離端以 `seq_cst` 清掉指標，再以 `acquire` 讀租約計數。這種 Dekker 式交握的兩邊讀取都需要 `seq_cst`。以 `-mcpu=apple-m1`（Apple clang 在 arm64 的預設）編譯時，`acquire` 讀取編成 `ldapr`，ARMv8.3 允許 `ldapr` 排到前面的 `stlr` 之前。
-- 目前的影響：沒有。x86 與一般 ARM64（`ldar`）沒有這個問題，而且 Mac 外殼不支援即時輸入（`supportsLive = false`）。
-- 修正：租約計數改用 `seq_cst` 讀取。`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改。
-
-**R5. MIKU 結束後，`SIGPIPE` 讓 helper 結束，helper 不還原裝置**（重現：Linux 上結束碼 141）
-
-- 問題：取樣率與 DAC 格式停在 Daphne 設的值。hog mode 由 macOS 放掉。
-- 原因：helper 沒有忽略 `SIGPIPE`。MIKU 意外結束時，stdin 讀到結尾，helper 開始 `quit` 的清理，約需 0.8 – 1.7 s。這段期間 helper 可能把事件或濾波器設計進度寫到已關閉的 stdout，`SIGPIPE` 就讓 helper 結束。
-- 修正：呼叫 `signal(SIGPIPE, SIG_IGN)`。寫出失敗時，做與 `quit` 相同的步驟。
 
 #### B. 取消載入（#45 – #51）
 
-**R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）
 
-- 測試：假裝置在 `start()` 之後等 300 ms，測試在這段等待中呼叫 `dc_cancel`。
-- 問題：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes。事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。
-- 影響：實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定會留下。
-- 修正：取消時清掉事件與報告。另一種作法是不送 `started`。
-
-**R7. 取消落在啟動完成之後、`load()` 公開 player 之前時，引擎忽略這次取消**（讀程式）
-
-- 問題：`dc_load` 回傳 `DC_OK`，照常播放。`dc_stop` 之後仍會停掉它，但回傳值是 OK。
-- 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
-- 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
-
-**R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
-
-- 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。
-- 修正：`dc_cancel` 遞增一個計數，`dc_load` 開始時記下這個計數。這樣取消就不會遺失。
-
-**R9. 被取消的 DSD 直送會繼續走轉 PCM 的流程**（讀程式）
-
-- 問題：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入轉 PCM 的流程，log 顯示 `DSD cannot be sent directly (cancelled): converting to PCM`。共享模式下，引擎還會為了探測混音器的取樣率再開一次裝置。這次開啟可能卡在驅動裡，而這正是取消要避免的。
-- 修正：取消旗標為真時，立刻結束載入。
-
-**R10. Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（讀程式）
-
-- 問題：舊的那首在濾波器設計完後開始播，但不設 `_loaded`。暫停、跳轉、電平都失效，只有停止能結束它。
-- 原因：`LoadAsync` 先遞增 `_loadSeq`。即時輸入的頁面還沒好（`!LiveBus.Ready`）時，`LoadAsync` 在 `dc_cancel` 之前就返回。舊的那首看到序號變了，就不設 `_loaded`。
-
-**R11. Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（讀程式。只有 MIKU 在換歌時同時呼叫 `ReconfigureAsync` 才會發生）
-
-- 問題：`ReconfigureAsync` 在 `_gate` 外記下目前的歌，停止後重新載入這首。這段期間使用者選的新歌拿到較舊的序號，於是被舊歌的重新載入取代。
-- #50 之前，兩者依閘門的順序執行，新歌最後播。
-
-**R12. 引擎把內部錯誤回報成檔案錯誤**（讀程式）
-
-- 問題：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`。同樣的錯誤，`dc_apply` 已經回傳 `DC_ERR_INTERNAL`。
-- ABI：新增 `DC_ERR_INTERNAL`（−6）時沒有提高 ABI 版本。現有的宿主不受影響，因為它們把 ≤ 0 都當成失敗。
 
 #### C. MIKU 的 Mac 外殼與打包
 
@@ -287,7 +227,7 @@
 
 **步驟 5（`live-bus`）**
 
-- 租約只包住 `produce()`（真正碰環的地方），不包住 `read()` 等待來源的 2 ms sleep：卸離最多等一次內插的時間。讀取端 `fetch_add` 之後才讀指標、卸離端清掉指標之後才讀計數；這種交握要兩邊的讀取都是循序一致（seq_cst），「讀取端拿到舊指標」與「卸離端看到計數為 0」才不會同時成立。目前卸離端的計數讀取是 acquire，不夠（見「已知問題」）。
+- 租約只包住 `produce()`（真正碰環的地方），不包住 `read()` 等待來源的 2 ms sleep：卸離最多等一次內插的時間。讀取端 `fetch_add` 之後才讀指標、卸離端清掉指標之後才讀計數；這種交握要兩邊的讀取都是循序一致（seq_cst），「讀取端拿到舊指標」與「卸離端看到計數為 0」才不會同時成立。卸離端的計數讀取原本是 acquire，不夠：Apple clang 以 `-mcpu=apple-m1` 編成 `stlr`（清指標）接 `ldapr`（讀計數），ARMv8.3 允許 `ldapr` 排到 `stlr` 之前；一般 ARM64 是 `ldar`，x86 的 seq_cst store 是 `xchg`，都沒有這個問題。2026-10-25 改成 seq_cst，編譯結果變成 `ldar`（以 zig 0.16 內含的 clang 編 `aarch64-macos` 確認）。這種重排在單元測試裡抓不到。
 - 換環時先清掉指標、等計數歸零，再設定新容量、最後放上新指標：讀取端不會拿到新指標配舊容量（原本 `g_cap` 與 `g_base` 分開寫，換環的一瞬間可能錯配）。
 - 壓力測試要確認真的抓得到錯誤：暫時拿掉等待那一行後，第一版（寫入方每 1 ms 推進 2400 frame）6 次只失敗 1～2 次，因為讀取端很快讀完，大部分時間在 `read()` 的 sleep 裡（Windows 上一次約 15.6 ms），卸離很少撞上讀取。改成每 10 µs 推進 48 frame 的細流之後，讀取端幾乎一直在環裡，拿掉等待時 6 次全部失敗（其中兩次直接存取已釋放的記憶體而當掉）；恢復等待後 10 次全部通過。
 - 測試的等待用 `steady_clock` 忙等，不用 `sleep_for(1 ms)`：Windows 沒有提高計時器解析度時那是 15.6 ms，第一版測試因此跑了 25 秒（現在約 1.6 秒）。

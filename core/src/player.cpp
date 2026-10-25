@@ -69,6 +69,7 @@ void Player::set_next(const std::filesystem::path& path, std::optional<double> h
 
 bool Player::ended() const { return impl_->ended_flag; }
 bool Player::last_failure_was_device() const { return impl_->device_fail; }
+bool Player::last_failure_was_internal() const { return impl_->internal_fail; }
 
 std::vector<int> Player::asio_rates() const {
     return impl_->report.asio_rates();

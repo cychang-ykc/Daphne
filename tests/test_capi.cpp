@@ -258,6 +258,56 @@ TEST_CASE("C API: dc_cancel cancels a load at once and leaves what plays alone",
     dc_internal_player_deps(nullptr);
 }
 
+TEST_CASE("C API: a cancel while the device starts leaves no started event and no report", "[capi]") {
+    // the device runs before its start() returns (here 300 ms later): a cancel then is too late to keep it silent,
+    // but the host must not see the track as started
+    SlowRig rig;
+    rig.dev->start_s = 0.3;
+    const auto deps = rig.deps(0.0);
+    dc_internal_player_deps(&deps);
+    dc_player* pl = dc_create();
+    REQUIRE(pl);
+    std::atomic<int> code{1};
+    std::thread loader([&] {
+        char err[256] = {};
+        code = dc_load_utf8(pl, "a.test", R"({"output": {"rate": "native"}})", 0.0, 1, err, sizeof err);
+    });
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (rig.dev->frames() == 0 && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    REQUIRE(rig.dev->frames() > 0);   // the device runs, its start() has not returned
+    dc_cancel(pl);
+    loader.join();
+    CHECK(code == DC_ERR_CANCELLED);
+    std::vector<char> b(1 << 16);
+    std::vector<std::string> events;
+    for (int n; (n = dc_poll_event(pl, b.data(), static_cast<int>(b.size()))) > 0;) events.emplace_back(b.data(), static_cast<size_t>(n));
+    for (const auto& e : events) CHECK(e.find("\"started\"") == std::string::npos);
+    const int n = dc_state(pl, b.data(), static_cast<int>(b.size()));
+    REQUIRE(n > 0);
+    const std::string st(b.data(), static_cast<size_t>(n));
+    INFO(st);
+    CHECK(state_of(pl) == "idle");
+    CHECK(st.find("\"duration\":0") != std::string::npos);
+    dc_destroy(pl);
+    dc_internal_player_deps(nullptr);
+}
+
+TEST_CASE("C API: an exception inside the start is DC_ERR_INTERNAL, not a file error", "[capi]") {
+    SlowRig rig;
+    auto deps = rig.deps(0.0);
+    deps.open_output = [](const daphne::OutputRequest&, std::string*) -> std::unique_ptr<daphne::AudioOutput> {
+        throw std::runtime_error("test: no memory");
+    };
+    dc_internal_player_deps(&deps);
+    dc_player* pl = dc_create();
+    REQUIRE(pl);
+    char err[256] = {};
+    CHECK(dc_load_utf8(pl, "a.test", R"({"output": {"rate": "native"}})", 0.0, 1, err, sizeof err) == DC_ERR_INTERNAL);
+    CHECK(std::string(err).find("test: no memory") != std::string::npos);
+    dc_destroy(pl);
+    dc_internal_player_deps(nullptr);
+}
+
 TEST_CASE("C API: loads and stops and queries from several threads at once", "[capi]") {
     // no crash, no deadlock, no race (the tsan job): every load is played or cancelled
     SlowRig rig;
