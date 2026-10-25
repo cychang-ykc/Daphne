@@ -33,6 +33,10 @@ public:
 #endif
         }
         if (r != 0 || d_.info.channels <= 0) {
+            // mp3dec_ex_open_cb does not free what it allocated when it fails (the file variant does); a header
+            // without channels is freed here too
+            mp3dec_ex_close(&d_);
+            cur_.reset(nullptr);
             if (error) *error = "minimp3: cannot open MP3 file";
             return false;
         }
