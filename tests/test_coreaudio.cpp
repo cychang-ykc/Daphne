@@ -332,14 +332,14 @@ std::string blackhole_uid() {
 
 // a short track through the player in exclusive mode while the capture runs
 PlayReport play_captured(const std::string& uid, const std::shared_ptr<test::Signal>& sig, const Settings& s, Capture& cap,
-                         double seconds) {
+                         double seconds, OutputApi api = OutputApi::CoreAudioExclusive) {
     PlayerDeps deps;
     deps.open_decoder = [sig](const std::filesystem::path&, std::string*) -> std::unique_ptr<Decoder> {
         return std::make_unique<test::MemoryDecoder>(sig);
     };
     Player p(deps);
     std::string e;
-    REQUIRE(p.start("signal", s, OutputChoice{OutputApi::CoreAudioExclusive, uid}, {}, &e));
+    REQUIRE(p.start("signal", s, OutputChoice{api, uid}, {}, &e));
     REQUIRE(cap.start(device_of(uid), static_cast<size_t>(seconds * 768000 * 2)));
     PlayReport rep;
     REQUIRE(p.wait(&rep, &e));
@@ -385,6 +385,35 @@ TEST_CASE("Core Audio: PCM reaches a loopback device bit-perfectly, exclusive", 
         for (size_t i = 0; i < src.size(); ++i) wrong += got[at + i] != src[i];
         CHECK(wrong == 0);
     }
+}
+
+TEST_CASE("Core Audio: the converter plays a track to its last sample and counts its delay (shared)", "[.blackhole]") {
+    // 44.1 kHz on BlackHole at 48 kHz: Core Audio's converter. The track ends in a tone; what the converter still holds
+    // when the ring runs dry must be heard before the output is closed (on macOS 11.7 it holds nothing: PrimeInfo is
+    // 0 + 0 frames and the tone came back whole before the tail handling too; the test keeps it so)
+    const std::string uid = blackhole_uid();
+    if (uid.empty()) SKIP("BlackHole is not installed");
+    const int dev = find(uid).rate;
+    if (dev % 44100 == 0) SKIP("BlackHole runs at a multiple of 44.1 kHz (" << dev << " Hz): no converter");
+    auto sig = std::make_shared<test::Signal>();
+    sig->info.rate = 44100, sig->info.channels = 2, sig->info.codec = "test";
+    const int quiet = 44100 / 2, tone = 44100 * 3 / 10;
+    for (int i = 0; i < quiet + tone; ++i) {
+        const double v = i < quiet ? 0.0 : 0.5 * std::sin(2 * kPi * 1000.0 * i / 44100.0);
+        sig->x.push_back(v), sig->x.push_back(v);
+    }
+    sig->info.frames = quiet + tone;
+    Capture cap;
+    const auto rep = play_captured(uid, sig, Settings{}, cap, 3.0, OutputApi::CoreAudioShared);
+    REQUIRE(rep.system_rate == dev);
+    // the tone from its first to its last sample above a tenth of its level, in device frames
+    size_t first = SIZE_MAX, last = 0;
+    for (size_t f = 0; 2 * f < cap.n.load(); ++f)
+        if (std::fabs(cap.buf[2 * f]) > 0.05f) first = std::min(first, f), last = f;
+    REQUIRE(first != SIZE_MAX);
+    const double want = static_cast<double>(tone) * dev / 44100.0, got = static_cast<double>(last - first + 1);
+    std::fprintf(stderr, "converter: tone %.0f device frames of %.0f, latency_ms %.2f\n", got, want, rep.latency_ms);
+    CHECK(got >= want - static_cast<double>(dev) / 1000.0);   // within 1 ms (a cycle's zero crossing at each end)
 }
 
 TEST_CASE("Core Audio: DoP reaches a loopback device with its markers intact", "[.blackhole]") {

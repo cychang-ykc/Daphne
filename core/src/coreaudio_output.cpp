@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -154,6 +155,12 @@ struct CoreAudioOutput::Impl {
     // Shared mode, or exclusive when asked (CoreAudioOptions::convert). The player sees the rate it asked for.
     AudioConverterRef conv = nullptr;
     std::vector<float> conv_in;   // what the converter last took, float32 at the stream rate
+    // What the converter still holds when the ring runs dry (its filter, kAudioConverterPrimeInfo), in device frames:
+    // drained() waits for that much more output, or the track's last milliseconds would stay in it.
+    int conv_tail = 0;
+    bool conv_ended = false;   // IO thread: the ring ran dry at the end of the stream (pull)
+    int conv_left = 0;         // IO thread: device frames still to come out of the converter after that
+    std::atomic<bool> conv_reset{false};   // start() / rearm() (a seek): reset on the IO thread before the next use
 
     std::atomic<bool> armed{false};
     std::atomic<int> in_render{0};   // stop() waits for a callback still reading the ring
@@ -182,8 +189,22 @@ struct CoreAudioOutput::Impl {
     // frames from the ring into tmp (int24-in-32)
     void pull(int frames) {
         CoreAudioOutput* o = owner.load(std::memory_order_relaxed);   // set while armed
-        if (o->feeder_.fill(reinterpret_cast<uint8_t*>(tmp.data()), frames, ring, eof->load(std::memory_order_acquire), o->stats_))
-            o->drained_ = true;
+        if (o->feeder_.fill(reinterpret_cast<uint8_t*>(tmp.data()), frames, ring, eof->load(std::memory_order_acquire), o->stats_)) {
+            if (!conv) o->drained_ = true;
+            else if (!conv_ended) conv_ended = true, conv_left = conv_tail;   // the converter's tail still to play
+        }
+    }
+
+    // Silence for the converter's first conversion in open() (it allocates then, not on the IO thread).
+    static OSStatus conv_silence(AudioConverterRef, UInt32* packets, AudioBufferList* io, AudioStreamPacketDescription**, void* ctx) {
+        auto* m = static_cast<Impl*>(ctx);
+        const int frames = std::min(static_cast<int>(*packets), m->tmp_frames);
+        std::fill(m->conv_in.begin(), m->conv_in.end(), 0.0f);
+        io->mBuffers[0].mData = m->conv_in.data();
+        io->mBuffers[0].mDataByteSize = static_cast<UInt32>(static_cast<size_t>(frames) * static_cast<size_t>(m->channels) * 4);
+        io->mBuffers[0].mNumberChannels = static_cast<UInt32>(m->channels);
+        *packets = static_cast<UInt32>(frames);
+        return noErr;
     }
 
     // The converter asks for input (from inside render): up to tmp_frames from the ring, as float32.
@@ -228,14 +249,20 @@ struct CoreAudioOutput::Impl {
             int frames = static_cast<int>(out->mBuffers[slots[0].buffer].mDataByteSize / slots[0].stride);
             frames = std::min(frames, tmp_frames);
             if (conv) {
+                if (conv_reset.exchange(false)) {   // a start or a seek: nothing of the last stream comes out after it
+                    AudioConverterReset(conv);
+                    conv_ended = false;
+                }
                 AudioBufferList abl;
                 abl.mNumberBuffers = 1;
                 abl.mBuffers[0].mNumberChannels = static_cast<UInt32>(channels);
                 abl.mBuffers[0].mDataByteSize = static_cast<UInt32>(static_cast<size_t>(frames) * static_cast<size_t>(channels) * 4);
                 abl.mBuffers[0].mData = f32.data();
                 UInt32 n = static_cast<UInt32>(frames);
+                const bool ended = conv_ended;
                 if (AudioConverterFillComplexBuffer(conv, &Impl::conv_input, this, &n, &abl, nullptr) != noErr) n = 0;
                 frames = static_cast<int>(n);
+                if (ended && (conv_left -= frames) <= 0) o->drained_ = true;   // the converter's tail has played
             } else {
                 pull(frames);
                 // int24-in-32 → float32: every 24-bit value exactly (x / 2^31)
@@ -589,13 +616,35 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
         m.conv = nullptr;
     }
     const int dev_rate = static_cast<int>(m.rate + 0.5);
+    double conv_delay_ms = 0;
     if ((!m.exclusive || opt.convert) && !ca::same_rate(m.rate, rate) && (dev_rate < rate || dev_rate % rate != 0)) {
         const auto in = float_pcm(rate, channels), outf = float_pcm(m.rate, channels);
         if (AudioConverterNew(&in, &outf, &m.conv) != noErr || !m.conv) return fail("could not create a sample rate converter for " + name_);
         const UInt32 q = kAudioConverterQuality_Max;
         AudioConverterSetProperty(m.conv, kAudioConverterSampleRateConverterQuality, sizeof q, &q);
         m.conv_in.assign(m.tmp.size(), 0.0f);
-        m.note(std::string(m.exclusive ? "exclusive mode" : "shared mode") + ": Core Audio converts " + khz(rate) + " to the device's " + khz(m.rate));
+        // its delay and what it holds at the end, in stream frames (leading: the delay; leading + trailing: the tail)
+        AudioConverterPrimeInfo pi{};
+        UInt32 psz = sizeof pi;
+        const bool have_pi = AudioConverterGetProperty(m.conv, kAudioConverterPrimeInfo, &psz, &pi) == noErr;
+        const double lead = have_pi ? pi.leadingFrames : 0, tail = have_pi ? pi.leadingFrames + pi.trailingFrames : 512.0 * rate / m.rate;
+        m.conv_tail = static_cast<int>(std::ceil(tail * m.rate / rate)) + 2;
+        conv_delay_ms = 1000.0 * lead / rate;
+        // the first conversion allocates what the converter needs: here, while no callback uses it (the IO runs, but
+        // owner is not set yet), on silence, then it starts over
+        {
+            AudioBufferList abl;
+            abl.mNumberBuffers = 1;
+            abl.mBuffers[0].mNumberChannels = static_cast<UInt32>(channels);
+            abl.mBuffers[0].mDataByteSize = static_cast<UInt32>(m.f32.size() * 4);
+            abl.mBuffers[0].mData = m.f32.data();
+            UInt32 n = static_cast<UInt32>(m.tmp_frames);
+            AudioConverterFillComplexBuffer(m.conv, &Impl::conv_silence, &m, &n, &abl, nullptr);
+            AudioConverterReset(m.conv);
+        }
+        m.note(std::string(m.exclusive ? "exclusive mode" : "shared mode") + ": Core Audio converts " + khz(rate) + " to the device's " + khz(m.rate) +
+               " (its delay " + std::to_string(have_pi ? static_cast<int>(pi.leadingFrames) : -1) + " + " +
+               std::to_string(have_pi ? static_cast<int>(pi.trailingFrames) : -1) + " frames)");
         // callbacks come at the device's rate: in frames of the stream's rate (format()), each one is this many
         buffer_frames_ = std::max(1, static_cast<int>(bf * rate / m.rate + 0.5));
     }
@@ -606,7 +655,7 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     ca::get(m.dev, kAudioDevicePropertyLatency, lat, kAudioObjectPropertyScopeOutput);
     ca::get(m.dev, kAudioDevicePropertySafetyOffset, safety, kAudioObjectPropertyScopeOutput);
     if (!m.streams.empty()) ca::get(m.streams[0], kAudioStreamPropertyLatency, slat);
-    latency_ms_ = 1000.0 * (lat + safety + slat + bf) / m.rate;
+    latency_ms_ = 1000.0 * (lat + safety + slat + bf) / m.rate + conv_delay_ms;   // (the converter's delay too)
 
     fmt_ = {};
     fmt_.rate = m.conv ? rate : dev_rate;
@@ -629,9 +678,15 @@ bool CoreAudioOutput::start(ByteRing* ring, const std::atomic<bool>* eof, std::s
     impl_->ring = ring;
     impl_->eof = eof;
     drained_ = false;
+    impl_->conv_reset = true;
     feeder_.configure(fmt_);
     impl_->armed.store(true);
     return true;
+}
+
+void CoreAudioOutput::rearm() {
+    drained_ = false;
+    if (impl_) impl_->conv_reset = true;
 }
 
 void CoreAudioOutput::stop() {

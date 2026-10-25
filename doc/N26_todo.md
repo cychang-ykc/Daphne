@@ -115,22 +115,14 @@
 
 每一項修正另開分支，並附回歸測試。測試草稿保留在 review 的工作區。
 
-2026-10-26 狀態：R1 – R20、R22 已修正並合併（#59 – #70；R2 由 #57 修正），修正後的行為寫在 N2、N4、N24、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。打包（#68）與 Core Audio（#70）在 Intel Mac（macOS 11.7）上實測過：`pack-mac.sh` 兩次（沒有 stamp 的舊 FFmpeg 重編 3 分 15 秒，之後沿用 4.8 秒），R20 以內建輸出重現並確認修正（N24「驗證」）。`[.blackhole]` 2 個也全過（#70 與它之前的 main 都是）：第一次錄到全零，原因是 BlackHole 自己的音量是 0、靜音（輸出與輸入都是），不是麥克風權限（同一個 ssh 程序錄內建麥克風有聲音，TCC 裡 `sshd-keygen-wrapper` 有權限）；暫時調成 1.0、不靜音跑完再改回。剩下 R21、R23 的一部分，要特定的 DAC。
+2026-10-26 狀態：R1 – R20、R22、R23 已修正並合併（#59 – #70、R23 #74；R2 由 #57 修正），修正後的行為寫在 N2、N4、N24、N25、N27，這裡刪除。R8 的修正在宿主端：引擎仍只取消進行中的載入，helper（每 20 ms）與 Windows 擴充（每 50 ms）在較新的載入或停止出現後重複呼叫 `dc_cancel`（N4）。打包（#68）與 Core Audio（#70）在 Intel Mac（macOS 11.7）上實測過：`pack-mac.sh` 兩次（沒有 stamp 的舊 FFmpeg 重編 3 分 15 秒，之後沿用 4.8 秒），R20 以內建輸出重現並確認修正（N24「驗證」）。`[.blackhole]` 2 個也全過（#70 與它之前的 main 都是）：第一次錄到全零，原因是 BlackHole 自己的音量是 0、靜音（輸出與輸入都是），不是麥克風權限（同一個 ssh 程序錄內建麥克風有聲音，TCC 裡 `sshd-keygen-wrapper` 有權限）；暫時調成 1.0、不靜音跑完再改回。R23 的轉換器結尾與延遲在 macOS 11.7 上量不到問題（PrimeInfo 0 + 0 frames，修正前後結尾都完整），處理仍加上（N24）。剩下 R21，要一台只有 16 bit 的 DAC。
 
-#### E. Core Audio（待 Mac 實機）
+#### E. Core Audio（R21 待只有 16 bit 的 DAC）
 
 **R21. 沒有 24 bit 以上的整數格式時，輸出仍宣稱 `int24-in-32`**
 
 - 2026-10-25 已修正一半：`raise_physical` 不再選少於 24 bit 的格式（原本目前的實體格式是浮點、或是另一個取樣率時 `cur_bits` 為 0，16 bit 也會被選上），找不到時寫進 log（「the DAC offers no integer format of 24 bits or more」）、不改格式。
 - 還沒處理：這時開啟也不失敗，輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的可能只有 16 bit。要改成回報實際的位元數（量化級跟著抖動到 16 bit、DoP 不可用），需要在 Mac 上用只有 16 bit 的 DAC 驗證。
-
-**R23. 共享模式轉換器的小問題**（獨佔時要求轉換的也一樣）
-
-- `AudioConverterFillComplexBuffer` 在 IO 執行緒上執行。N24 說 IO 回呼不配置記憶體，但這個函式不保證。
-- 轉換器還留著幾個 frame 時，`drained()` 就成立，曲子最後幾 ms 沒有播出。
-- 跳轉時沒有重設轉換器。
-- `latency_ms` 不含轉換器的延遲。
-- （2026-10-25 已修正）`resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串會丟例外：超過 6 位數的全數字字串改當成裝置名稱或 UID。
 
 #### F. 沒有測試涵蓋的部分
 
@@ -209,7 +201,7 @@
 **DAC 驗證後的修正（`coreaudio-shared-src`）**
 
 - 共享模式失敗的原因：WASAPI 共享在取樣率不同時請 Windows 轉換（`AUTOCONVERTPCM`），播放器從來不會遇到非整數倍；Core Audio 的 IOProc 直接寫裝置，必須是裝置的取樣率，而播放器的鏈只會整數倍升頻（`chain.cpp`「not an integer multiple」）。之前的共享測試都用 44.1 k 的檔案，所以沒發現。
-- 只有非整數倍才交給 `AudioConverter`：整數倍仍由 Daphne 自己的升頻濾波器做（品質較好，這是 Mac 與 Windows 不同的地方：WASAPI 共享只要取樣率不同就交給 Windows）。轉換器在 IO 回呼裡向環要資料（`conv_input`，一次最多 `tmp_frames`），建立與配置都在 `open()`，回呼裡不配置記憶體。
+- 只有非整數倍才交給 `AudioConverter`：整數倍仍由 Daphne 自己的升頻濾波器做（品質較好，這是 Mac 與 Windows 不同的地方：WASAPI 共享只要取樣率不同就交給 Windows）。轉換器在 IO 回呼裡向環要資料（`conv_input`，一次最多 `tmp_frames`），建立與配置都在 `open()`（第一次轉換也是，N24）。
 - DSD 檔在共享模式轉 PCM 時，`core.cpp` 用輸出回報的取樣率決定 DSD → PCM 的取樣率。轉換器的條件是「裝置取樣率低於要求值，或不是它的整數倍」，而探測時要求的是 DoP 取樣率（DSD64 為 176.4 kHz），所以 44.1 與 48 kHz 的裝置都回報 176.4 k：DSD 先轉成 176.4 k，再由 `AudioConverter` 降成裝置取樣率（48 kHz 的裝置之前會失敗）。原本寫的「44.1 kHz 的裝置仍是 44.1 k」與程式不符（2026-10-25 review）；改由 Daphne 直接轉成 44.1 k 需要另一種方式取得裝置本身的取樣率。
 - bit-perfect 的判斷原本不看共享模式（`Report::bit_perfect`），Windows 的 WASAPI 共享也回報 yes；MIKU 的頁面自己判斷品質（共享一律是 high），所以畫面沒錯，只有 CLI 與 report 錯。Windows 擴充的 `DaphnePath.cs` 用 `bit_perfect` 判斷「64-bit 浮點轉成裝置的浮點格式，數值不變」，原因是共享模式時也視為數值不變（交給混音器的樣本本身沒變）。
 - 其他程式改取樣率的測試工具：在 Mac 上編一個小程式，用 `kAudioDevicePropertyNominalSampleRate` 改取樣率（與「音訊 MIDI 設定」相同的方式），播放中執行。
