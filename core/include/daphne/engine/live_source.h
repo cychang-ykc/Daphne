@@ -35,7 +35,9 @@ inline bool is_live_path(const std::filesystem::path& p) { return p == std::file
 
 // The host's shared ring (base = nullptr detaches it) and the producer's sample rate. Returns once no read
 // is left in the previous ring: the host may free that memory then, even while a live track plays (the
-// decoder reads silence until a ring is shared again).
+// decoder reads silence until a ring is shared again; after 20 ms that counts as a starve, which raises the
+// learned target). Call it from one thread only. A new ring is read from the old ring's read position (N2):
+// start its write index at 0. The producer writes the frames, then publishes the index with a release store.
 void set_live_bus(void* base, int cap_frames, int rate);
 // Reserved, not implemented yet (always false, N26): the producer's frames arriving on a Unix socket instead
 // (macOS MIKU's live-relay.js, used only when its settings say "ytThroughCore": true; by default the YouTube

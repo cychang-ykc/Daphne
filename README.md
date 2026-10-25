@@ -151,7 +151,10 @@ dc_destroy(p);
 | `core/` | `daphne_engine`: decoders, the processing chain, device outputs, the player |
 | `capi/` | `daphne_core.dll`, the C API (`dc_*`) |
 | `cli/` | `daphne.exe` |
+| `helper/` | `daphne-helper`: the player as a child process speaking JSON lines (used by MIKU on macOS) |
 | `tests/` | Catch2 unit tests |
+| `fuzz/` | libFuzzer targets for the file readers (run in CI with the sanitizers) |
+| `scripts/` | Windows build scripts: `build.cmd`, `build_for_miku.ps1`, and the pinned downloads (FFmpeg, ASIO SDK, a portable MSVC / CMake / Ninja) |
 | `verify/` | end-to-end measurements in Python (numpy, soundfile; live tests through a virtual cable) |
 | `tools/` | `sdm_design.py`, the modulator coefficient design |
 | `src/Daphne.Extension/` | the MIKU player extension module (Windows) |
