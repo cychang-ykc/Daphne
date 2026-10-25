@@ -292,6 +292,22 @@ TEST_CASE("C API: a cancel while the device starts leaves no started event and n
     dc_internal_player_deps(nullptr);
 }
 
+TEST_CASE("C API: an exception inside the start is DC_ERR_INTERNAL, not a file error", "[capi]") {
+    SlowRig rig;
+    auto deps = rig.deps(0.0);
+    deps.open_output = [](const daphne::OutputRequest&, std::string*) -> std::unique_ptr<daphne::AudioOutput> {
+        throw std::runtime_error("test: no memory");
+    };
+    dc_internal_player_deps(&deps);
+    dc_player* pl = dc_create();
+    REQUIRE(pl);
+    char err[256] = {};
+    CHECK(dc_load_utf8(pl, "a.test", R"({"output": {"rate": "native"}})", 0.0, 1, err, sizeof err) == DC_ERR_INTERNAL);
+    CHECK(std::string(err).find("test: no memory") != std::string::npos);
+    dc_destroy(pl);
+    dc_internal_player_deps(nullptr);
+}
+
 TEST_CASE("C API: loads and stops and queries from several threads at once", "[capi]") {
     // no crash, no deadlock, no race (the tsan job): every load is played or cancelled
     SlowRig rig;

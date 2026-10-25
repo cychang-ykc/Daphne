@@ -153,7 +153,8 @@ extern "C" {
 // 2: the UTF-8 path functions (dc_load_utf8, dc_set_next_utf8, dc_set_next_gain_utf8, dc_filter_cache_dir_utf8)
 // 3: dc_keep_device, dc_release_device, dc_device_kept
 // 4: dc_cancel; dc_stop cancels a load in progress (DC_ERR_CANCELLED); dc_state "loading"
-DC_API int dc_abi_version(void) { return 4; }
+// 5: dc_load returns DC_ERR_INTERNAL for a failure inside the engine (before: DC_ERR_FILE)
+DC_API int dc_abi_version(void) { return 5; }
 DC_API const char* dc_version(void) { return "daphne 0.1.0"; }
 
 DC_API dc_player* dc_create(void) {
@@ -306,12 +307,13 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
             std::lock_guard<std::mutex> g(p->m);
             p->error = e;
             p->failed = true;
+            if (player->last_failure_was_internal()) return DC_ERR_INTERNAL;
             return player->last_failure_was_device() ? DC_ERR_DEVICE : DC_ERR_FILE;
         }
         return DC_OK;
-    } catch (const std::exception& ex) {
+    } catch (const std::exception& ex) {   // not the file's: the engine failed (memory, ...), as dc_apply says
         put(err, err_len, ex.what());
-        return DC_ERR_FILE;
+        return DC_ERR_INTERNAL;
     } catch (...) {   // anything else must not cross the C boundary (it would end the host)
         put(err, err_len, "unknown error");
         return DC_ERR_INTERNAL;
