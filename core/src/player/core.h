@@ -116,6 +116,7 @@ struct Player::Impl {
     std::atomic<double> meter_l{0.0}, meter_r{0.0};
     bool end_queued = false;           // the stream end (DSD silence) is queued
     std::atomic<bool> device_fail{false};
+    std::atomic<bool> internal_fail{false};   // start() failed by an exception (abort_run)
     int run_osr = 0;                   // dsd core: the DSD multiple the device runs
     std::vector<uint8_t> dsd_bytes;
     bool flushed = false;

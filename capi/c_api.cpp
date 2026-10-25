@@ -1,6 +1,7 @@
 #include "daphne_core.h"
 #include "internal.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -152,7 +153,8 @@ extern "C" {
 // 2: the UTF-8 path functions (dc_load_utf8, dc_set_next_utf8, dc_set_next_gain_utf8, dc_filter_cache_dir_utf8)
 // 3: dc_keep_device, dc_release_device, dc_device_kept
 // 4: dc_cancel; dc_stop cancels a load in progress (DC_ERR_CANCELLED); dc_state "loading"
-DC_API int dc_abi_version(void) { return 4; }
+// 5: dc_load returns DC_ERR_INTERNAL for a failure inside the engine (before: DC_ERR_FILE)
+DC_API int dc_abi_version(void) { return 5; }
 DC_API const char* dc_version(void) { return "daphne 0.1.0"; }
 
 DC_API dc_player* dc_create(void) {
@@ -277,9 +279,12 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
         const bool started = player->start(path, s, out, cb, &e, seconds);
         bool cancelled = false;
         {
+            // checked and published in one section: a dc_cancel lands before (seen here) or after the player is
+            // published (it plays on, as after any finished load); never in between, where nothing would stop it
             std::lock_guard<std::mutex> g(p->pm);
             p->starting.reset();
             cancelled = p->stop_requested;
+            if (started && !cancelled) p->player = player;   // queries see it from now on
         }
         if (cancelled) {   // dc_stop came during the start: not published, not an error of the file or the device
             if (started) {
@@ -287,6 +292,12 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
                 daphne::PlayReport r;
                 std::string we;
                 player->wait(&r, &we);
+                // a cancel as the device started: it ran for a moment, but the host must not see the track as
+                // started (both hosts update their signal path on "started")
+                const std::string started_event = json{{"type", "started"}}.dump();
+                std::lock_guard<std::mutex> g(p->m);
+                p->events.erase(std::remove(p->events.begin(), p->events.end(), started_event), p->events.end());
+                p->report = {};
             }
             put(err, err_len, "cancelled (dc_stop or dc_cancel)");
             return DC_ERR_CANCELLED;
@@ -296,16 +307,13 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
             std::lock_guard<std::mutex> g(p->m);
             p->error = e;
             p->failed = true;
+            if (player->last_failure_was_internal()) return DC_ERR_INTERNAL;
             return player->last_failure_was_device() ? DC_ERR_DEVICE : DC_ERR_FILE;
         }
-        {
-            std::lock_guard<std::mutex> g(p->pm);   // published: queries see it from now on
-            p->player = std::move(player);
-        }
         return DC_OK;
-    } catch (const std::exception& ex) {
+    } catch (const std::exception& ex) {   // not the file's: the engine failed (memory, ...), as dc_apply says
         put(err, err_len, ex.what());
-        return DC_ERR_FILE;
+        return DC_ERR_INTERNAL;
     } catch (...) {   // anything else must not cross the C boundary (it would end the host)
         put(err, err_len, "unknown error");
         return DC_ERR_INTERNAL;

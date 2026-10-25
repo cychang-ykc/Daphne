@@ -254,6 +254,7 @@ void Player::Impl::abort_run(const std::string& what) {
     {
         std::lock_guard<std::mutex> l(m);
         if (!start_done) {   // start() is waiting: it returns the error
+            internal_fail = true;
             start_done = true;
             start_ok = false;
             start_err = e;
