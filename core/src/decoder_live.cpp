@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace daphne {
@@ -39,6 +40,7 @@ inline uint32_t load_acquire(uint32_t* p) {
 std::atomic<uint8_t*> g_base{nullptr};
 std::atomic<int> g_cap{0};
 std::atomic<int> g_readers{0};   // reads inside the ring right now (set_live_bus waits for them to leave)
+std::mutex g_bus_m;              // set_live_bus, one call at a time
 std::atomic<uint32_t> g_gen{0};  // one more per set_live_bus: a decoder that sees it change syncs to the new writer
 std::atomic<int> g_rate{48000};
 std::atomic<double> g_reserve{0};   // set_live_reserve
@@ -151,6 +153,7 @@ private:
         const uint32_t gen = g_gen.load();
         if (base && gen != gen_) gen_ = gen, synced_ = false;
         const int n = base ? produce_from(base, out, frames) : 0;
+        if (!base) g_fill = 0;   // detached: dc_state's "fill" is not the last ring's
         g_readers.fetch_sub(1, std::memory_order_release);
         return n;
     }
@@ -167,7 +170,12 @@ private:
         // short of a full ring that counts as lapped (signed: a ring under 4096 frames would wrap the unsigned one)
         const int64_t ahead = static_cast<int32_t>(w - read_);
         const int64_t margin = std::min<int64_t>(4096, cap / 2);
-        if (!synced_ || ahead < 0 || ahead > static_cast<int64_t>(cap) - margin) {
+        // index i lives in slot i % cap, and at the wrap the writer goes back to slot 0. cap need not divide 2^32
+        // (MIKU's 96000 does not: 2^32 % 96000 = 23296), so while the reader is still before the wrap and the writer
+        // past it, the writer's frames 0 .. w lie in the slots the reader reads next (read_ % cap up to 2^32 % cap)
+        const bool across = w < read_ && ahead > 0;
+        const bool overwritten = across && static_cast<uint64_t>((read_ - 1) % cap) < static_cast<uint64_t>(w) + static_cast<uint64_t>(margin);
+        if (!synced_ || ahead < 0 || ahead > static_cast<int64_t>(cap) - margin || overwritten) {
             // first read, page reloaded (the writer went back), or the writer lapped us: restart close to the writer
             if (synced_) g_resyncs++;
             read_ = w, frac_ = 0, synced_ = true, primed_ = false, adj_ = 0;
@@ -239,6 +247,10 @@ private:
 }  // namespace
 
 void set_live_bus(void* base, int cap_frames, int rate) {
+    // one call at a time: two threads at once could leave one ring's pointer with the other's capacity
+    std::lock_guard<std::mutex> l(g_bus_m);
+    // a ring with no capacity is no ring: as a capacity it would become 0xFFFFFFFF.. and be read outside the memory
+    if (cap_frames <= 0) base = nullptr;
     // off the old ring first, and no read left in it, before the new one (with its capacity) is published
     g_base.store(nullptr);
     // seq_cst, not acquire: with an acquire load Apple clang (-mcpu=apple-m1) emits ldapr, which ARMv8.3 lets
