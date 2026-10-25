@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "daphne/engine/decoder.h"
+#include "daphne/engine/file_bytes.h"
 
 namespace daphne {
 namespace {
@@ -19,12 +20,23 @@ public:
 
     bool open(const std::filesystem::path& path, std::string* error) override {
         close();
-        #ifdef _WIN32
-        const int r = mp3dec_ex_open_w(&d_, path.c_str(), MP3D_SEEK_TO_SAMPLE);
+        int r = 0;
+        if (auto bytes = FileBytes::open(path)) {   // read ahead (file_bytes.h)
+            cur_.reset(std::move(bytes));
+            io_ = {on_read, &cur_, on_seek, &cur_};
+            r = mp3dec_ex_open_cb(&d_, &io_, MP3D_SEEK_TO_SAMPLE);
+        } else {
+#ifdef _WIN32
+            r = mp3dec_ex_open_w(&d_, path.c_str(), MP3D_SEEK_TO_SAMPLE);
 #else
-        const int r = mp3dec_ex_open(&d_, path.c_str(), MP3D_SEEK_TO_SAMPLE);
+            r = mp3dec_ex_open(&d_, path.c_str(), MP3D_SEEK_TO_SAMPLE);
 #endif
+        }
         if (r != 0 || d_.info.channels <= 0) {
+            // mp3dec_ex_open_cb does not free what it allocated when it fails (the file variant does); a header
+            // without channels is freed here too
+            mp3dec_ex_close(&d_);
+            cur_.reset(nullptr);
             if (error) *error = "minimp3: cannot open MP3 file";
             return false;
         }
@@ -41,6 +53,7 @@ public:
     void close() override {
         if (open_) mp3dec_ex_close(&d_);
         open_ = false;
+        cur_.reset(nullptr);
     }
 
     int read(double* out, int frames) override {
@@ -62,6 +75,11 @@ public:
     }
 
 private:
+    static size_t on_read(void* buf, size_t n, void* u) { return static_cast<FileCursor*>(u)->read(buf, n); }
+    static int on_seek(uint64_t at, void* u) { return static_cast<FileCursor*>(u)->seek(static_cast<int64_t>(at), 0) ? 0 : -1; }
+
+    FileCursor cur_;
+    mp3dec_io_t io_{};
     mp3dec_ex_t d_{};
     bool open_ = false;
     std::vector<mp3d_sample_t> buf_;

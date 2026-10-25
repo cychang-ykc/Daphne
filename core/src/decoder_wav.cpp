@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "daphne/engine/decoder.h"
+#include "daphne/engine/file_bytes.h"
 
 namespace daphne {
 namespace {
@@ -26,11 +27,17 @@ public:
 
     bool open(const std::filesystem::path& path, std::string* error) override {
         close();
-        #ifdef _WIN32
-        const bool opened = drwav_init_file_w(&w_, path.c_str(), nullptr);
+        bool opened = false;
+        if (auto bytes = FileBytes::open(path)) {   // read ahead (file_bytes.h)
+            cur_.reset(std::move(bytes));
+            opened = drwav_init(&w_, on_read, on_seek, on_tell, &cur_, nullptr);
+        } else {
+#ifdef _WIN32
+            opened = drwav_init_file_w(&w_, path.c_str(), nullptr);
 #else
-        const bool opened = drwav_init_file(&w_, path.c_str(), nullptr);
+            opened = drwav_init_file(&w_, path.c_str(), nullptr);
 #endif
+        }
         if (!opened) {
             if (error) *error = "dr_wav: cannot open WAV/AIFF file";
             return false;
@@ -56,6 +63,7 @@ public:
     void close() override {
         if (open_) drwav_uninit(&w_);
         open_ = false;
+        cur_.reset(nullptr);
     }
 
     int read(double* out, int frames) override {
@@ -86,6 +94,16 @@ public:
     }
 
 private:
+    static size_t on_read(void* u, void* out, size_t n) { return static_cast<FileCursor*>(u)->read(out, n); }
+    static drwav_bool32 on_seek(void* u, int off, drwav_seek_origin o) {
+        return static_cast<FileCursor*>(u)->seek(off, o == DRWAV_SEEK_CUR ? 1 : o == DRWAV_SEEK_END ? 2 : 0);
+    }
+    static drwav_bool32 on_tell(void* u, drwav_int64* at) {
+        *at = static_cast<FileCursor*>(u)->tell();
+        return DRWAV_TRUE;
+    }
+
+    FileCursor cur_;
     drwav w_{};
     bool open_ = false;
     bool float32_ = false, float64_ = false;

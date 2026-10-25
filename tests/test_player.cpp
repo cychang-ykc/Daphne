@@ -17,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "daphne/engine/file_bytes.h"
 #include "daphne/engine/live_source.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/settings.h"
@@ -1084,4 +1085,52 @@ TEST_CASE("Player: an exception while opening, playing or preparing the next tra
         CHECK(rig.tracks == 0);
         CHECK(rig.saw("the next track could not be opened (open failure)"));   // why, for the host's log
     }
+}
+
+TEST_CASE("Player: a disk that stalls during playback is not heard while the read ahead covers it", "[player][file_bytes]") {
+    // a 16-bit WAV on disk through the real decoder, played in real time; from 1 s into the playback every disk read
+    // waits until 2.5 s (a USB disk spinning up). The 64 MiB window read the whole file before: no gap. With a 64 KiB
+    // window (0.37 s) and the ring (0.5 s) the stall is heard: the test can see the gap it guards against.
+    const auto path = test::temp_path("daphne_player_stall.wav");
+    {
+        drwav_data_format f{};
+        f.container = drwav_container_riff, f.format = DR_WAVE_FORMAT_PCM, f.channels = 2, f.sampleRate = 44100, f.bitsPerSample = 16;
+        drwav w;
+        REQUIRE(test::wav_write_open(&w, path, &f));
+        std::vector<int16_t> x(44100 * 4 * 2);
+        for (size_t i = 0; i < x.size() / 2; ++i) x[2 * i] = x[2 * i + 1] = static_cast<int16_t>(std::lround(16384 * std::sin(2 * kPi * 1000.0 * i / 44100)));
+        REQUIRE(drwav_write_pcm_frames(&w, x.size() / 2, x.data()) == x.size() / 2);
+        drwav_uninit(&w);
+    }
+    auto run = [&](int64_t window, size_t* gap) {
+        FileBytes::set_window_for_tests(window);
+        auto t0 = std::make_shared<std::atomic<std::chrono::steady_clock::rep>>(0);   // 0: not started
+        FileBytes::set_read_hook_for_tests([t0](int64_t, size_t) {
+            if (!t0->load()) return;
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            const auto from = std::chrono::steady_clock::duration(t0->load()) + std::chrono::milliseconds(1000);
+            const auto to = from + std::chrono::milliseconds(1500);
+            if (now >= from && now < to) std::this_thread::sleep_for(to - now);
+        });
+        Rig r;
+        use_float_device(*r.dev);
+        r.dev->speed = 1.0;
+        t0->store(std::chrono::steady_clock::now().time_since_epoch().count());
+        REQUIRE(r.start(platform::path_to_utf8(path), Settings{}));
+        const auto rep = r.finish();
+        FileBytes::set_read_hook_for_tests(nullptr);
+        FileBytes::set_window_for_tests(0);
+        CHECK(r.ended);
+        const auto y = r.dev->samples_f32();
+        REQUIRE(y.size() / 2 >= 44100u * 4);
+        *gap = longest_quiet(y, 2, 100, 44100 * 4 - 100);
+        UNSCOPED_INFO("window " << window << ": longest gap " << *gap << " frames, " << rep.underruns << " underruns");
+        return rep.underruns;
+    };
+    size_t gap = 0;
+    CHECK(run(0, &gap) == 0);
+    CHECK(gap < 10);
+    CHECK(run(64 * 1024, &gap) > 0);
+    CHECK(gap >= 512);   // the fake device records one buffer of silence per underrun, not the time it waited
+    std::filesystem::remove(path);
 }

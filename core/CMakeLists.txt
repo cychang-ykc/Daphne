@@ -21,6 +21,7 @@ add_library(daphne_engine STATIC
     src/decoder_wav.cpp
     src/decoder_mp3.cpp
     src/decoder_ffmpeg.cpp
+    src/file_bytes.cpp
     src/dsd_file.cpp
     src/dsd_output.cpp
     src/filters.cpp

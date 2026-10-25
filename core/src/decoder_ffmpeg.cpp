@@ -11,6 +11,8 @@
 
 #ifdef DAPHNE_HAVE_FFMPEG
 
+#include "daphne/engine/file_bytes.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -59,6 +61,19 @@ public:
             close();
             return false;
         };
+        if (auto bytes = FileBytes::open(path)) {   // read ahead (file_bytes.h): FFmpeg reads memory
+            cur_.reset(std::move(bytes));
+            constexpr int kIoBuffer = 1 << 16;
+            auto* buf = static_cast<unsigned char*>(av_malloc(kIoBuffer));
+            if (buf) io_ = avio_alloc_context(buf, kIoBuffer, 0, &cur_, on_read, nullptr, on_seek);
+            if (!io_) {
+                av_free(buf);
+                return fail("cannot set up reading");
+            }
+            fmt_ = avformat_alloc_context();
+            if (!fmt_) return fail("cannot set up reading");
+            fmt_->pb = io_;   // custom IO: avformat_close_input leaves it to close()
+        }
         if (avformat_open_input(&fmt_, platform::path_to_utf8(path).c_str(), nullptr, nullptr) < 0) return fail("cannot open file");
         if (avformat_find_stream_info(fmt_, nullptr) < 0) return fail("no stream info");
         const AVCodec* codec = nullptr;
@@ -124,6 +139,11 @@ public:
         if (swr_) swr_free(&swr_);
         if (ctx_) avcodec_free_context(&ctx_);
         if (fmt_) avformat_close_input(&fmt_);
+        if (io_) {
+            av_freep(&io_->buffer);
+            avio_context_free(&io_);
+        }
+        cur_.reset(nullptr);
         if (pkt_) av_packet_free(&pkt_);
         if (frame_) av_frame_free(&frame_);
         pending_.clear();
@@ -243,6 +263,19 @@ private:
         return got > 0;
     }
 
+    static int on_read(void* u, uint8_t* buf, int n) {
+        const size_t got = static_cast<FileCursor*>(u)->read(buf, static_cast<size_t>(std::max(n, 0)));
+        return got > 0 ? static_cast<int>(got) : AVERROR_EOF;
+    }
+    static int64_t on_seek(void* u, int64_t off, int whence) {
+        auto* c = static_cast<FileCursor*>(u);
+        whence &= ~AVSEEK_FORCE;
+        if (whence == AVSEEK_SIZE) return c->size();
+        return c->seek(off, whence) ? c->tell() : AVERROR(EINVAL);
+    }
+
+    FileCursor cur_;
+    AVIOContext* io_ = nullptr;
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* ctx_ = nullptr;
     SwrContext* swr_ = nullptr;
