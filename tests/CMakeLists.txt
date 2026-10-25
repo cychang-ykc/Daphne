@@ -30,6 +30,10 @@ if(APPLE)
     target_include_directories(daphne_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/src)
 endif()
 add_test(NAME daphne_tests COMMAND daphne_tests)
+# the helper outlives a host that closed its stdout first (POSIX: SIGPIPE; Windows has no such signal)
+if(UNIX)
+    add_test(NAME helper_closed_stdout COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/helper_closed_stdout.sh $<TARGET_FILE:daphne-helper>)
+endif()
 # a test that hangs (a file-parsing loop, a deadlock) fails instead of holding CI until the job's own limit
 set_tests_properties(daphne_tests PROPERTIES TIMEOUT 1200)
 # Catch2 defines wmain when UNICODE is set (it is, project-wide).
