@@ -107,52 +107,182 @@
 
 ### 2026-10-25 review（PR #17 – #52）發現的問題
 
-依據：**重現**＝在 Linux 上以單元測試或實際執行重現；**確認**＝讀程式或編譯結果確認，沒有執行；**待確認**＝只在 macOS / Windows 實機上才能確認的推論。修正時每一項另開分支、附回歸測試（測試草稿保留在 review 的工作區）。
+每一項標有下列其中一種依據：
 
-**會讓主程式結束或播出錯誤聲音的**
+- **重現**：在 Linux 上以單元測試或實際執行看到問題。
+- **讀程式**：讀程式或編譯結果確認，沒有執行。
+- **待 Mac 實機**：讀程式推論，只有在真的 Mac 上測試才能確認。
 
-- **取樣率為 0 的 PCM 檔讓整個程序結束**（重現）：dr_flac 接受 STREAMINFO 的取樣率 0，`open_decoder` 照樣成功，播放器在 `pcm_stream.cpp` 以取樣率求倍數時整數除以零（SIGFPE，`try` / `catch` 攔不到）；當成無縫的下一首時在背景預備（`common.cpp` 的 `same_output`）同樣發生，正在播的那首也一起結束。修正：在 `open_decoder` 之後統一拒絕取樣率或聲道數 ≤ 0；`fuzz_decoder` 也檢查 `info()`（現在只開檔、讀取）。
-- ✅ 已修正（#53 的後續，分支 `claude/coreaudio-convert`）：**共享模式播 DSD 檔會把 DoP 送進系統混音器**（重現，以假裝置）：`open_dsd` 不看 `shared_mix` 就試 DoP，原本靠「裝置鎖定的取樣率 ≠ DoP 取樣率」讓它失敗；WASAPI 共享（從第一版起，`AUTOCONVERTPCM`）與 Core Audio 共享（#23 的轉換器起）都回報要求的取樣率，檢查因此通過：DoP 資料被當成 PCM 轉換、混音，聽起來是雜音，報告還寫 bit-perfect。修正：`shared_mix` 時不試 DoP，直接轉 PCM。
-- **即時輸入換環後讀到沒寫過的記憶體**（重現）：解碼器換環時沿用舊環的讀取位置（`read_`、`synced_`、`primed_`），新環的寫入位置在前方又不到一整圈時不重新同步，把新環裡從沒寫過的部分當成音訊讀出：測試中新環未寫的部分是 NaN，輸出有 12404 個 NaN 樣本，重新同步 0 次。NaN 進了處理鏈的 IIR（EQ、交叉饋送）或限幅器會一直留著。修正：`set_live_bus` 遞增一個世代號，解碼器看到世代改變就重新同步。
-- **即時輸入的卸離在 Apple Silicon 上可能讀到已釋放的環**（確認：編譯結果）：卸離端清掉指標（seq_cst）之後以 acquire 讀取租約計數。Dekker 式的交握要兩邊的讀取都是 seq_cst；以 `-mcpu=apple-m1`（Apple clang 在 arm64 的預設）編譯時這個讀取是 `ldapr`，ARMv8.3 允許它排到前面的 `stlr` 之前，所以讀取端可能還拿著舊指標、卸離端卻已看到計數 0 而返回，主程式接著釋放記憶體。x86 與一般 ARM64（`ldar`）沒有這個問題；目前 Mac 外殼不支援即時輸入（`supportsLive = false`）。修正：計數改用 seq_cst 讀取（`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改）。
-- **helper 在 MIKU 結束後被 `SIGPIPE` 結束、不還原裝置**（重現：Linux 上 stdout 的讀取端先關閉，helper 下一次寫出時結束，結束碼 141）：helper 沒有忽略 `SIGPIPE`；MIKU 當掉時 stdin 讀到結尾、開始 `quit` 的清理（約 0.8 – 1.7 s），期間任何事件或設計進度寫到已關閉的 stdout，程序就結束，取樣率與 DAC 格式停在 Daphne 設的值（hog 由系統放掉）。修正：`signal(SIGPIPE, SIG_IGN)`，寫出失敗視同 quit。
+每一項修正另開分支，並附回歸測試。測試草稿保留在 review 的工作區。
 
-**取消載入（#45 – #51）**
+#### A. 會讓程序結束或播出錯誤聲音的問題
 
-- **取消落在裝置啟動的那一刻，仍會出聲並留下 `started`**（重現：假裝置的 `start()` 之後加 300 ms 延遲，延遲中 `dc_cancel`）：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes，事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定留下。修正：取消時清掉事件與報告（或不送 `started`）。
-- **取消落在啟動完成之後、公開 player 之前會被忽略**（確認）：`load()` 檢查 `stop_requested` 與 `p->player = player` 在兩段不同的 `pm` 區段裡，中間 `starting` 已經清掉，`dc_cancel` 只設旗標、什麼都沒停，`dc_load` 回傳 `DC_OK` 照常播放（`dc_stop` 最後仍會停掉，只是回傳值是 OK）。修正：在同一段 `pm` 裡檢查並公開。
-- **`dc_load` 還沒拿到 `op` 之前的 `dc_cancel` 不會被記下**（確認，限制）：取消只在 `loading` 成立時記錄。helper（比對世代到 `dc_load` 之間）與 C# 擴充（`Task.Run` 裡的檢查到 `dc_load` 之間）各有這個空窗；可以改成 `dc_cancel` 遞增計數、`dc_load` 進來時記下，取消就不會遺失。
-- **被取消的 DSD 直送會繼續走轉 PCM 的流程**（確認）：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入「DSD cannot be sent directly (cancelled): converting to PCM」，共享模式還會為了探測混音器取樣率再開一次裝置（可能卡在驅動裡，正是取消要避免的）。修正：`cancel` 成立時直接結束。
-- **Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（確認，由 review 讀程式）：`LoadAsync` 先遞增 `_loadSeq`，即時輸入的頁面還沒好（`!LiveBus.Ready`）時在 `dc_cancel` 之前就返回；前一首設計完照樣開始播，但它看到序號變了就不設 `_loaded`，暫停、跳轉、電平都失效，只有停止能結束它。
-- **Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（確認，由 review 讀程式；要 MIKU 在換歌時同時呼叫它）：它在 `_gate` 外記下目前的歌，停止後重新載入；期間使用者選的新歌拿到較舊的序號，被重新載入的舊歌取代。#50 之前兩者依閘門順序執行，新歌最後播。
-- **內部錯誤回報成檔案錯誤**（確認）：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`，`dc_apply` 則已回傳 `DC_ERR_INTERNAL`；`DC_ERR_INTERNAL`（−6）新增時也沒有提高 ABI 版本（現有宿主把 ≤ 0 都當失敗，不受影響）。
+**R1. 取樣率為 0 的 PCM 檔讓整個程序結束**（重現）
 
-**macOS MIKU 外殼與打包**
+- 問題：程序因 `SIGFPE` 結束，`try` / `catch` 攔不到這個訊號。如果這個檔案是無縫的下一首，正在播的那首也一起結束。
+- 原因：dr_flac 接受 `STREAMINFO` 裡的取樣率 0，`open_decoder` 也不拒絕。接著 `pcm_stream.cpp` 以取樣率做整數除法。無縫播放的背景預備（`common.cpp` 的 `same_output`）也做同樣的除法。
+- 修正：在 `open_decoder` 之後，拒絕取樣率或聲道數 ≤ 0 的檔案。`fuzz_decoder` 也要檢查 `info()`，目前它只開檔、讀取。
 
-- **連續兩次改 DSD 播放方式，第二次被忽略**（確認）：`engine.js` 的 `load()` 在 `await` 之後才以當時的設定算 `loadedDsd`；第一次的重新載入還沒完成時改第二次，`applyOutput()` 看到 `loaded == false` 只送 `changed`，檔案以第一次的設定播放，`loadedDsd` 卻記成第二次的，之後的比較都錯，直到下一首。修正：以實際送出的設定算 key，載入完成後再比對一次。
-- **打包缺授權檔**（確認）：Windows 給 MIKU 的打包（`MikuDeploy`）只複製 DLL 與 `web/`，沒有 Daphne 的 GPL `LICENSE`、FFmpeg 的 LGPL 授權與原始碼位置；兩邊都沒有 nlohmann/json 的 MIT 授權（它編進了核心與 helper，MIT 要求附上）。修正：複製 `LICENSE`、`third_party/nlohmann/LICENSE.MIT`，Windows 再加 FFmpeg 的授權與 `SOURCE.txt`。
-- **`pack-mac.sh` 在 FFmpeg 版本改了之後沿用舊的編譯結果**（確認）：只檢查 `build-mac-<arch>/ffmpeg/lib/libavcodec.dylib` 存在，沒有綁定 `FF_VER` 或 configure 選項，`bin/` 是舊版、授權與原始碼位置卻寫新版（LGPL 的原始碼位置因此錯誤）。Windows 的 `build_for_miku.ps1` 也只在 `avcodec.h` 不存在時下載。修正：以版本與選項寫一個 stamp 檔。
-- **`pack-mac.sh` 的其他問題**（確認）：checkout 路徑含空白時，`for rp in $(otool …)` 會把 rpath 切開，`install_name_tool` 失敗而中止（FFmpeg 的 configure 本來也不接受含空白的路徑，至少是明確地失敗）；最後確認 helper 能啟動的那一行在 `set -o pipefail` 下，helper 當掉時腳本直接結束，看不到它自己的錯誤訊息；`codesign … 2>/dev/null` 也藏起了失敗的原因。
+**R3. 宿主換環之後，解碼器讀到從沒寫過的記憶體**（重現）
 
-**即時輸入的小問題**（確認）
+- 問題：解碼器讀到新環裡沒有音訊的部分。測試中這些部分是 NaN，輸出有 12404 個 NaN 樣本，解碼器一次也沒有重新同步。NaN 進了 IIR 濾波器（EQ、交叉饋送）或限幅器後會一直留著。
+- 原因：解碼器沿用舊環的讀取位置（`read_`、`synced_`、`primed_`）。新環的寫入位置在前方又不到一整圈時，解碼器不重新同步。
+- 修正：`set_live_bus` 遞增一個世代號。解碼器看到世代號改變時，必須重新同步。
 
-- `set_live_bus` 沒有鎖、也不檢查 `cap_frames`：兩條執行緒同時換環可能留下 A 的指標配 B 的容量；播放中傳入負的容量會變成 `0xFFFFFFFF`，讀到環外（`open()` 會拒絕 ≤ 0，已開啟的解碼器不會）。修正：加鎖，`base` 非 NULL 時拒絕 `cap_frames <= 0`。
-- 2³² 回繞那一刻環只剩 2³² % cap 個 frames，但「被追過」的判斷仍以整個容量計算：積壓超過那段（MIKU 的 96000：約 0.49 s）時讀到已被覆寫的部分而不重新同步，約 27 小時一次、一個雜音（N2）。
-- 卸離期間 `dc_state` 的 `live.fill` 等統計停在最後的值。`dc_live_socket` 在 `path` 為 NULL 與尚未實作時都回傳 0，分不出來。
+**R4. 在 Apple Silicon 上，宿主卸離即時輸入之後，解碼器可能讀到已釋放的環**（讀程式：編譯結果）
 
-**待確認（只能在 macOS 上確認，由 review 讀程式推論）**
+- 問題：解碼器還在使用舊環時，`set_live_bus` 就可能返回。宿主接著釋放記憶體，解碼器讀到已釋放的記憶體。
+- 原因：卸離端以 `seq_cst` 清掉指標，再以 `acquire` 讀租約計數。這種 Dekker 式交握的兩邊讀取都需要 `seq_cst`。以 `-mcpu=apple-m1`（Apple clang 在 arm64 的預設）編譯時，`acquire` 讀取編成 `ldapr`，ARMv8.3 允許 `ldapr` 排到前面的 `stlr` 之前。
+- 目前的影響：沒有。x86 與一般 ARM64（`ldar`）沒有這個問題，而且 Mac 外殼不支援即時輸入（`supportsLive = false`）。
+- 修正：租約計數改用 `seq_cst` 讀取。`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改。
 
-- 保留的裝置放開時取樣率可能不對：`raise_physical` 第一次調高實體格式時記下的舊格式含當時的取樣率，`rate_touched` 每次開啟重算、不累積；96 k 調高格式之後接 44.1 k（接手，`rate_touched` 為假），放開時還原舊格式會把 DAC 鎖回 96 kHz。目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒動過。
-- `raise_physical` 可能降低位元數：目前的實體格式是浮點或另一個取樣率時 `cur_bits` 為 0，任何整數格式（包括 16 bit）都會被選上；沒有 24 bit 以上的整數格式時也不失敗，輸出仍宣稱 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的是 16 bit。
-- 保留裝置的 `close()`：清掉 `owner`（release）之後以 acquire 讀 `in_render`，與 `render()` 的 `fetch_add` → 讀 `owner` 是同樣的 Dekker 式交握，需要 seq_cst；x86 上 store 可以排到 load 之後，回呼可能在物件釋放後寫入 `stats_`。
-- 共享模式轉換器的小問題（獨佔時要求轉換的也一樣）：`AudioConverterFillComplexBuffer` 在 IO 執行緒上執行（N24 說回呼不配置記憶體，它不保證）；`drained()` 在轉換器還留著幾個 frame 時就成立，最後幾 ms 被切掉；跳轉時轉換器沒有重設；`latency_ms` 不含轉換器的延遲。`resolve()` 的 `std::stoul` 遇到很長的全數字裝置字串會丟例外。
+**R5. MIKU 結束後，`SIGPIPE` 讓 helper 結束，helper 不還原裝置**（重現：Linux 上結束碼 141）
 
-**沒有測試涵蓋的**
+- 問題：取樣率與 DAC 格式停在 Daphne 設的值。hog mode 由 macOS 放掉。
+- 原因：helper 沒有忽略 `SIGPIPE`。MIKU 意外結束時，stdin 讀到結尾，helper 開始 `quit` 的清理，約需 0.8 – 1.7 s。這段期間 helper 可能把事件或濾波器設計進度寫到已關閉的 stdout，`SIGPIPE` 就讓 helper 結束。
+- 修正：呼叫 `signal(SIGPIPE, SIG_IGN)`。寫出失敗時，做與 `quit` 相同的步驟。
 
-- 打包（`pack-mac.sh`、`build_for_miku.ps1`、`fetch_*.ps1`、C# 擴充的建置）不在 CI；`miku/*.js` 沒有任何檢查（`node --check` 都沒有）；macOS 的 CI 沒有以 FFmpeg 建置（`DAPHNE_FFMPEG_DIR`）。
-- 取消：快取打開時取消設計、確認快取裡沒有檔案；`parallel_for` 的例外與取消；`dc_destroy` 遇上進行中的載入；helper 的佇列與世代；C# 的取代邏輯。
-- 輸出能力：`takes_buffer_ms = false` 時改 `buffer_ms` 不重開；`native_dsd` 與 dsd 核心、`output.dsd = dop`；`shared_mix` 與 DSF（上面的 DoP 問題）。
-- TSan job 只跑 `[player],[capi],[live]`，調變器的 worker 執行緒（`[modulator]`）不在內。
+#### B. 取消載入（#45 – #51）
+
+**R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）
+
+- 測試：假裝置在 `start()` 之後等 300 ms，測試在這段等待中呼叫 `dc_cancel`。
+- 問題：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes。事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。
+- 影響：實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定會留下。
+- 修正：取消時清掉事件與報告。另一種作法是不送 `started`。
+
+**R7. 取消落在啟動完成之後、`load()` 公開 player 之前時，引擎忽略這次取消**（讀程式）
+
+- 問題：`dc_load` 回傳 `DC_OK`，照常播放。`dc_stop` 之後仍會停掉它，但回傳值是 OK。
+- 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
+- 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
+
+**R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
+
+- 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。
+- 修正：`dc_cancel` 遞增一個計數，`dc_load` 開始時記下這個計數。這樣取消就不會遺失。
+
+**R9. 被取消的 DSD 直送會繼續走轉 PCM 的流程**（讀程式）
+
+- 問題：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入轉 PCM 的流程，log 顯示 `DSD cannot be sent directly (cancelled): converting to PCM`。共享模式下，引擎還會為了探測混音器的取樣率再開一次裝置。這次開啟可能卡在驅動裡，而這正是取消要避免的。
+- 修正：取消旗標為真時，立刻結束載入。
+
+**R10. Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（讀程式）
+
+- 問題：舊的那首在濾波器設計完後開始播，但不設 `_loaded`。暫停、跳轉、電平都失效，只有停止能結束它。
+- 原因：`LoadAsync` 先遞增 `_loadSeq`。即時輸入的頁面還沒好（`!LiveBus.Ready`）時，`LoadAsync` 在 `dc_cancel` 之前就返回。舊的那首看到序號變了，就不設 `_loaded`。
+
+**R11. Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（讀程式。只有 MIKU 在換歌時同時呼叫 `ReconfigureAsync` 才會發生）
+
+- 問題：`ReconfigureAsync` 在 `_gate` 外記下目前的歌，停止後重新載入這首。這段期間使用者選的新歌拿到較舊的序號，於是被舊歌的重新載入取代。
+- #50 之前，兩者依閘門的順序執行，新歌最後播。
+
+**R12. 引擎把內部錯誤回報成檔案錯誤**（讀程式）
+
+- 問題：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`。同樣的錯誤，`dc_apply` 已經回傳 `DC_ERR_INTERNAL`。
+- ABI：新增 `DC_ERR_INTERNAL`（−6）時沒有提高 ABI 版本。現有的宿主不受影響，因為它們把 ≤ 0 都當成失敗。
+
+#### C. MIKU 的 Mac 外殼與打包
+
+**R13. 連續兩次快速改 DSD 播放方式時，外殼忽略第二次**（讀程式）
+
+- 問題：檔案以第一次的設定播放，`loadedDsd` 卻記成第二次的設定。之後的比較都錯，直到下一首。
+- 原因：`engine.js` 的 `load()` 在 `await` 之後才以當時的設定算 `loadedDsd`。第一次的重新載入還沒完成就改第二次時，`applyOutput()` 看到 `loaded == false`，只送 `changed`。
+- 修正：以外殼實際送出的設定算 key。載入完成後再比對一次 key。
+
+**R14. 打包沒有帶齊授權檔**（讀程式）
+
+- 問題：Windows 給 MIKU 的打包（`MikuDeploy`）只複製 DLL 與 `web/`，沒有 Daphne 的 GPL `LICENSE`、FFmpeg 的 LGPL 授權與 FFmpeg 的原始碼位置。兩邊的打包都沒有 nlohmann/json 的 MIT 授權。核心與 helper 都編進了這個函式庫，MIT 要求附上授權文字。
+- 修正：複製 `LICENSE` 與 `third_party/nlohmann/LICENSE.MIT`。Windows 另外複製 FFmpeg 的授權與 `SOURCE.txt`。
+
+**R15. FFmpeg 版本改了之後，打包腳本沿用舊的 FFmpeg 編譯結果**（讀程式）
+
+- 問題：`bin/` 裡是舊版的 FFmpeg，授權與原始碼位置卻寫新版，所以 LGPL 的原始碼位置是錯的。
+- 原因：`pack-mac.sh` 只檢查 `build-mac-<arch>/ffmpeg/lib/libavcodec.dylib` 是否存在，不比對 `FF_VER` 或 configure 選項。Windows 的 `build_for_miku.ps1` 也只在 `avcodec.h` 不存在時才下載 FFmpeg。
+- 修正：以版本與選項寫一個 stamp 檔。
+
+**R16. `pack-mac.sh` 的另外三個問題**（讀程式）
+
+1. checkout 路徑含空白時，`for rp in $(otool …)` 會把 rpath 切開，`install_name_tool` 失敗，腳本中止。FFmpeg 的 configure 本來也不接受含空白的路徑，但至少會明確地報錯。
+2. 最後一行啟動 helper，確認它能執行。在 `set -o pipefail` 下，helper 失敗時腳本直接結束，看不到 helper 自己的錯誤訊息。
+3. `codesign … 2>/dev/null` 藏起了簽章失敗的原因。
+
+#### D. 即時輸入的小問題（讀程式）
+
+**R17. `set_live_bus` 沒有鎖，也不檢查 `cap_frames`**
+
+- 兩條執行緒同時換環時，可能留下環 A 的指標配環 B 的容量。
+- 播放中傳入負的容量會變成 `0xFFFFFFFF`，解碼器接著讀到環外。
+- `open()` 會拒絕 ≤ 0 的容量，但對已開啟的解碼器呼叫 `set_live_bus` 時不會拒絕。
+- 修正：加鎖。`base` 不是 NULL 時，拒絕 `cap_frames <= 0`。
+
+**R18. 2³² 回繞時，「被追過」的判斷用錯環的大小**
+
+- 回繞的那一刻，環只剩 2³² % cap 個 frames，但「被追過」的判斷仍以整個容量計算。
+- 積壓可能超過那一段。以 MIKU 的 96000 來說，界線約是 0.49 s。
+- 這時解碼器讀到宿主已經覆寫的資料，而且不重新同步。約 27 小時發生一次，出現一個雜音（N2）。
+
+**R19. 即時輸入的統計與 `dc_live_socket` 的回傳值不清楚**
+
+- 卸離期間，`dc_state` 的 `live.fill` 等統計停在最後的值。
+- `dc_live_socket` 在 `path` 為 NULL 時與尚未實作時都回傳 0，宿主分不出原因。
+
+#### E. 待 Mac 實機（讀程式推論）
+
+**R20. 引擎放開保留的裝置時，取樣率可能不對**
+
+- `raise_physical` 第一次調高實體格式時，記下舊的格式，而這個格式含當時的取樣率。引擎每次開啟都重算 `rate_touched`，值不累積。
+- 例：96 kHz 的那首調高了格式，接著 44.1 kHz 的那首接手裝置（`rate_touched` 為假）。放開時還原舊格式，會把 DAC 鎖回 96 kHz。
+- 目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒改過它。
+
+**R21. `raise_physical` 可能降低位元數**
+
+- 目前的實體格式是浮點、或是另一個取樣率時，`cur_bits` 為 0，`raise_physical` 會選上任何整數格式，包括 16 bit。
+- 沒有 24 bit 以上的整數格式時，開啟也不失敗。輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），但 DAC 收到的是 16 bit 的資料。
+
+**R22. 保留裝置的 `close()` 有與 R4 相同的交握問題**
+
+- `close()` 清掉 `owner`（release）之後，以 `acquire` 讀 `in_render`；`render()` 先 `fetch_add`，再讀 `owner`。這種 Dekker 式交握需要 `seq_cst`。
+- x86 上 store 可以排到 load 之後，所以 IO 回呼可能在物件釋放後寫入 `stats_`。
+
+**R23. 共享模式轉換器的小問題**（獨佔時要求轉換的也一樣）
+
+- `AudioConverterFillComplexBuffer` 在 IO 執行緒上執行。N24 說 IO 回呼不配置記憶體，但這個函式不保證。
+- 轉換器還留著幾個 frame 時，`drained()` 就成立，曲子最後幾 ms 沒有播出。
+- 跳轉時沒有重設轉換器。
+- `latency_ms` 不含轉換器的延遲。
+- `resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串時會丟例外。
+
+#### F. 沒有測試涵蓋的部分
+
+- 打包腳本不在 CI：`pack-mac.sh`、`build_for_miku.ps1`、`fetch_*.ps1`，以及 C# 擴充的建置。
+- `miku/*.js` 沒有任何檢查，連 `node --check` 都沒有。
+- macOS 的 CI 沒有以 FFmpeg 建置（`DAPHNE_FFMPEG_DIR`）。
+- 取消：
+  - 快取打開時取消濾波器設計，快取裡不能留下檔案。
+  - `parallel_for` 的例外與取消。
+  - 載入進行中呼叫 `dc_destroy`。
+  - helper 的佇列與世代號。
+  - C# 擴充的取代邏輯。
+- 輸出能力：
+  - `takes_buffer_ms = false` 時，改 `buffer_ms` 不能重開裝置。
+  - `native_dsd` 與 dsd 核心，以及 `output.dsd = dop`。
+- TSan job 只跑 `[player],[capi],[live]`，不跑調變器的 worker 執行緒（`[modulator]`）。
+
+#### 用語
+
+| 用語 | 本節的意思 |
+|---|---|
+| 宿主 | 使用引擎的程式：經 Mac 外殼的 MIKU，或 Windows 擴充。 |
+| Mac 外殼 | `miku/extension.js` 與 `engine.js`，在 macOS 上替 MIKU 啟動 helper。 |
+| helper | `daphne-helper`，從 stdin 讀 JSON，底下用 C API。 |
+| Windows 擴充 | MIKU 在 Windows 上載入的 C# 擴充（`src/Daphne.Extension`）。 |
+| 環 | 宿主把即時音訊交給解碼器的共用記憶體環（live bus）。 |
+| 租約計數 | `g_readers`，計算目前正在使用環的解碼器讀取。 |
+| 卸離 | 把環從解碼器拿掉（`set_live_bus` 傳 NULL 或新的環）。 |
+| 保留的裝置 | 引擎在兩首之間持有的 Core Audio 裝置（`dc_keep_device`）。 |
+| 共享模式 | 經系統混音器輸出（WASAPI 共享或 Core Audio 共享）。 |
+| `pm` 區段 | C API 裡持有 mutex `pm` 的程式段落。 |
 
 ## MIKU 擴充（`src/Daphne.Extension`，暫緩）
 
