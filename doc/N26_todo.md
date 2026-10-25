@@ -184,12 +184,6 @@
 
 #### C. MIKU 的 Mac 外殼與打包
 
-**R13. 連續兩次快速改 DSD 播放方式時，外殼忽略第二次**（讀程式）
-
-- 問題：檔案以第一次的設定播放，`loadedDsd` 卻記成第二次的設定。之後的比較都錯，直到下一首。
-- 原因：`engine.js` 的 `load()` 在 `await` 之後才以當時的設定算 `loadedDsd`。第一次的重新載入還沒完成就改第二次時，`applyOutput()` 看到 `loaded == false`，只送 `changed`。
-- 修正：以外殼實際送出的設定算 key。載入完成後再比對一次 key。
-
 **R14. 打包沒有帶齊授權檔**（讀程式）
 
 - 問題：Windows 給 MIKU 的打包（`MikuDeploy`）只複製 DLL 與 `web/`，沒有 Daphne 的 GPL `LICENSE`、FFmpeg 的 LGPL 授權與 FFmpeg 的原始碼位置。兩邊的打包都沒有 nlohmann/json 的 MIT 授權。核心與 helper 都編進了這個函式庫，MIT 要求附上授權文字。
