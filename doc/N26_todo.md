@@ -84,7 +84,7 @@
 ### 6. Linux ALSA 輸出（暫緩）
 
 - [ ] ALSA 輸出：`hw:`（獨佔、bit-perfect、DoP）與 `default`（共享，經 PipeWire / Pulse）；`libasound` 在建置時可有可無。
-- [ ] double-double 的 `WorkerPool` worker 優先權：處理執行緒拿到 `SCHED_FIFO` 時，worker 只是 `SCHED_OTHER`（「高於一般」的 nice −5 沒有權限時失敗），可能拖慢處理執行緒；改用 `RealtimeHelperScope`，並確認兩核心的機器不會被 FIFO 的 worker 佔滿。
+- [ ] double-double 的 `WorkerPool` worker 優先權：步驟 0 起 worker 替處理執行緒工作時已經進入 `RealtimeHelperScope`（Linux 為 `SCHED_FIFO`，見下方實作筆記）；還要在有即時權限的 Linux 上確認兩核心的機器不會被 FIFO 的 worker 佔滿（處理鏈比即時慢時）。
 
 ### 實作筆記
 
@@ -93,8 +93,8 @@
 **步驟 0（`output-caps`）**
 
 - 能力要在開裝置**之前**知道（`pcm_stream` / `dsd_stream` 依它排出要嘗試的取樣率，`core.cpp` 依它決定 DSD 檔轉 PCM 的取樣率），所以不放在 `AudioOutput` 物件上，而是與 `OutputOpener` 並列的 `OutputCapsQuery`（`PlayerDeps::output_caps`，以 `OutputChoice` 查詢）。`change_plan` 的 `Playing` 帶著目前輸出的能力。
-- 預設值 `OutputCaps{}`（沒有原生 DSD、不是共享、吃 `buffer_ms`）就是 WASAPI 獨占，也是測試假裝置原本的行為，所以既有的測試在三個平台都不變；macOS / Linux 的 `platform_output_caps()` 暫時回傳預設值。新增測試：假裝置宣告 `native_dsd` 時 DSF 直接以 DSD 開啟、宣告 `shared_mix` 時 dsd 核心拒絕。
-- 錯誤訊息裡仍寫著 ASIO / WASAPI（「output.dsd = native needs an ASIO driver with a DSD mode」等），在 Windows 上正確；加入 Core Audio 時改成不提 API 名稱的寫法。
+- 預設值 `OutputCaps{}`（沒有原生 DSD、不是共享、吃 `buffer_ms`）就是 WASAPI 獨占，也是測試假裝置原本的行為，所以既有的測試在三個平台都不變；Linux 的 `platform_output_caps()` 回傳預設值；macOS 的在 7a 加上 Core Audio 共享為 `shared_mix`（`output_mac.cpp`）。新增測試：假裝置宣告 `native_dsd` 時 DSF 直接以 DSD 開啟、宣告 `shared_mix` 時 dsd 核心拒絕。
+- 錯誤訊息裡仍寫著 ASIO / WASAPI（「output.dsd = native needs an ASIO driver with a DSD mode」、dsd 核心的「needs WASAPI exclusive or ASIO」），在 Windows 上正確；原本預定加入 Core Audio 時改成不提 API 名稱的寫法，7a 之後還沒改，macOS 的使用者會看到 Windows 的 API 名稱（`pcm_stream.cpp`、`dsd_stream.cpp`）。
 - worker 優先權沒有在建立時決定：每個重新取樣器有自己的 `WorkerPool`，背景預熱（N4）時替普通執行緒工作，換上之後替處理執行緒工作。改成 `run()` 記下呼叫者是否在 `RealtimeScope` 內（新的 `platform::in_realtime_scope()`，thread_local），worker 只在這個狀態改變時進入 / 離開 `RealtimeHelperScope`。這是三個平台共用的程式：Linux 的 worker 因此也會跟著拿 `SCHED_FIFO`（沒有權限時維持原狀），兩核心機器的實測仍待步驟 6；macOS 的 worker 拿 time-constraint，與 `RealtimeScope` 一起在步驟 7 重新檢查。
 
 ## 已知問題（暫不處理）
@@ -103,6 +103,55 @@
 - **helper 在 Mac 上實機確認**：✅ 2026-10-22，`e7db5e6`，Intel Mac（macOS 11.7）、Core Audio 獨佔、Audiobyte BLACK DRAGON（USB），以模擬 MIKU 的腳本驅動 helper（同 N4「helper 程序」的情境：1M taps 第一次設計中排第二首，再按停止，PCM 176.4 kHz）。連跑 4 次：排隊的那首 0 ms、設計中的那首 2 – 76 ms 回 `DC_ERR_CANCELLED`，停止 0.82 – 0.89 s，之後再載入正常播放；合併 #45 前的 helper（`adaa2b6`）在同一台 Mac（BlackHole）上停止要約 160 s，回覆時狀態已是 playing。DAC 在設計前就被 hog（要先設好取樣率才知道濾波器怎麼設計），但 `start()` 之前 IO 回呼只送靜音，取消後不會開始播；停止的 0.8 s 是把取樣率改回原本的 352.8 kHz 並等 DAC 確認（與一般停止相同）。沒有在 Mac 的 MIKU 介面裡操作（使用者決定不需要）。
 - **Windows 擴充在 MIKU 裡實機確認**：✅ 2026-10-22，本機 publish 的 MIKU 1.4.5（獨立的設定資料夾、WASAPI 獨佔、VB-Audio Hi-Fi Cable、1M taps、double-double、16 個設計執行緒、濾波器快取關閉），經 WebView2 遠端除錯呼叫頁面自己的 `Host.call`（與按鈕相同），每 50 ms 以 `SendMessageTimeout` 量 UI 執行緒。設計中停止：2 ms 返回，沒有出聲、沒有錯誤。設計中換歌（下一首、下一首、上一首，各隔 3 s）：被跳過的立刻取消，最後一首約 52 s（一次設計）後播放，沒有錯誤；修正前四首依序各設計一次，150 s 內沒有一首開始播。設計中關閉：視窗 0.11 – 0.13 s 消失、程序 0.2 s 內結束，與沒在播放時相同；修正前約 5 s（設計裡沒有檢查取消的段落，N4）。三種情境都沒有 UI 停頓（只有啟動時一次）。
 - **8 階 DSD64 的迴路重置**（N19）：沒有頻寬限制的過載直接送進調變器時，新的表比原本的表容易重置迴路（約 1.5 – 2 倍）：停在限幅器天花板的 40 Hz 方波 3 秒重置 410 次（原本 2 – 3 次）；4 倍滿刻度方波在 440 Hz、1 kHz（44.1 kHz 輸入）重置 526 – 1599 次（原本 0 次），50 / 100 Hz 兩者都會重置（原本約 1200 – 1300 次，新表約 2100 次）。處理鏈的升頻濾波器與限幅器讓這種輸入不會出現，處理鏈中的測試都是 0 次；若之後有不經升頻濾波器與限幅器的輸入路徑，要重新檢查。
+
+### 2026-10-25 review（PR #17 – #52）發現的問題
+
+依據：**重現**＝在 Linux 上以單元測試或實際執行重現；**確認**＝讀程式或編譯結果確認，沒有執行；**待確認**＝只在 macOS / Windows 實機上才能確認的推論。修正時每一項另開分支、附回歸測試（測試草稿保留在 review 的工作區）。
+
+**會讓主程式結束或播出錯誤聲音的**
+
+- **取樣率為 0 的 PCM 檔讓整個程序結束**（重現）：dr_flac 接受 STREAMINFO 的取樣率 0，`open_decoder` 照樣成功，播放器在 `pcm_stream.cpp` 以取樣率求倍數時整數除以零（SIGFPE，`try` / `catch` 攔不到）；當成無縫的下一首時在背景預備（`common.cpp` 的 `same_output`）同樣發生，正在播的那首也一起結束。修正：在 `open_decoder` 之後統一拒絕取樣率或聲道數 ≤ 0；`fuzz_decoder` 也檢查 `info()`（現在只開檔、讀取）。
+- **共享模式播 DSD 檔會把 DoP 送進系統混音器**（重現，以假裝置）：`open_dsd` 不看 `shared_mix` 就試 DoP，原本靠「裝置鎖定的取樣率 ≠ DoP 取樣率」讓它失敗；WASAPI 共享（從第一版起，`AUTOCONVERTPCM`）與 Core Audio 共享（#23 的轉換器起）都回報要求的取樣率，檢查因此通過：DoP 資料被當成 PCM 轉換、混音，聽起來是雜音，報告還寫 bit-perfect。修正：`shared_mix` 時不試 DoP，直接轉 PCM。
+- **即時輸入換環後讀到沒寫過的記憶體**（重現）：解碼器換環時沿用舊環的讀取位置（`read_`、`synced_`、`primed_`），新環的寫入位置在前方又不到一整圈時不重新同步，把新環裡從沒寫過的部分當成音訊讀出：測試中新環未寫的部分是 NaN，輸出有 12404 個 NaN 樣本，重新同步 0 次。NaN 進了處理鏈的 IIR（EQ、交叉饋送）或限幅器會一直留著。修正：`set_live_bus` 遞增一個世代號，解碼器看到世代改變就重新同步。
+- **即時輸入的卸離在 Apple Silicon 上可能讀到已釋放的環**（確認：編譯結果）：卸離端清掉指標（seq_cst）之後以 acquire 讀取租約計數。Dekker 式的交握要兩邊的讀取都是 seq_cst；以 `-mcpu=apple-m1`（Apple clang 在 arm64 的預設）編譯時這個讀取是 `ldapr`，ARMv8.3 允許它排到前面的 `stlr` 之前，所以讀取端可能還拿著舊指標、卸離端卻已看到計數 0 而返回，主程式接著釋放記憶體。x86 與一般 ARM64（`ldar`）沒有這個問題；目前 Mac 外殼不支援即時輸入（`supportsLive = false`）。修正：計數改用 seq_cst 讀取（`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改）。
+- **helper 在 MIKU 結束後被 `SIGPIPE` 結束、不還原裝置**（重現：Linux 上 stdout 的讀取端先關閉，helper 下一次寫出時結束，結束碼 141）：helper 沒有忽略 `SIGPIPE`；MIKU 當掉時 stdin 讀到結尾、開始 `quit` 的清理（約 0.8 – 1.7 s），期間任何事件或設計進度寫到已關閉的 stdout，程序就結束，取樣率與 DAC 格式停在 Daphne 設的值（hog 由系統放掉）。修正：`signal(SIGPIPE, SIG_IGN)`，寫出失敗視同 quit。
+
+**取消載入（#45 – #51）**
+
+- **取消落在裝置啟動的那一刻，仍會出聲並留下 `started`**（重現：假裝置的 `start()` 之後加 300 ms 延遲，延遲中 `dc_cancel`）：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes，事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定留下。修正：取消時清掉事件與報告（或不送 `started`）。
+- **取消落在啟動完成之後、公開 player 之前會被忽略**（確認）：`load()` 檢查 `stop_requested` 與 `p->player = player` 在兩段不同的 `pm` 區段裡，中間 `starting` 已經清掉，`dc_cancel` 只設旗標、什麼都沒停，`dc_load` 回傳 `DC_OK` 照常播放（`dc_stop` 最後仍會停掉，只是回傳值是 OK）。修正：在同一段 `pm` 裡檢查並公開。
+- **`dc_load` 還沒拿到 `op` 之前的 `dc_cancel` 不會被記下**（確認，限制）：取消只在 `loading` 成立時記錄。helper（比對世代到 `dc_load` 之間）與 C# 擴充（`Task.Run` 裡的檢查到 `dc_load` 之間）各有這個空窗；可以改成 `dc_cancel` 遞增計數、`dc_load` 進來時記下，取消就不會遺失。
+- **被取消的 DSD 直送會繼續走轉 PCM 的流程**（確認）：`open_dsd` 因取消而失敗時，`core.cpp` 照樣進入「DSD cannot be sent directly (cancelled): converting to PCM」，共享模式還會為了探測混音器取樣率再開一次裝置（可能卡在驅動裡，正是取消要避免的）。修正：`cancel` 成立時直接結束。
+- **Windows 擴充：較新的載入提早返回時，舊的載入沒人管**（確認，由 review 讀程式）：`LoadAsync` 先遞增 `_loadSeq`，即時輸入的頁面還沒好（`!LiveBus.Ready`）時在 `dc_cancel` 之前就返回；前一首設計完照樣開始播，但它看到序號變了就不設 `_loaded`，暫停、跳轉、電平都失效，只有停止能結束它。
+- **Windows 擴充：`ReconfigureAsync` 可能蓋掉使用者剛選的歌**（確認，由 review 讀程式；要 MIKU 在換歌時同時呼叫它）：它在 `_gate` 外記下目前的歌，停止後重新載入；期間使用者選的新歌拿到較舊的序號，被重新載入的舊歌取代。#50 之前兩者依閘門順序執行，新歌最後播。
+- **內部錯誤回報成檔案錯誤**（確認）：`open_and_start` 裡的例外（例如建鏈時記憶體不足）經 `abort_run` 回到 `dc_load` 時是 `DC_ERR_FILE`，`dc_apply` 則已回傳 `DC_ERR_INTERNAL`；`DC_ERR_INTERNAL`（−6）新增時也沒有提高 ABI 版本（現有宿主把 ≤ 0 都當失敗，不受影響）。
+
+**macOS MIKU 外殼與打包**
+
+- **連續兩次改 DSD 播放方式，第二次被忽略**（確認）：`engine.js` 的 `load()` 在 `await` 之後才以當時的設定算 `loadedDsd`；第一次的重新載入還沒完成時改第二次，`applyOutput()` 看到 `loaded == false` 只送 `changed`，檔案以第一次的設定播放，`loadedDsd` 卻記成第二次的，之後的比較都錯，直到下一首。修正：以實際送出的設定算 key，載入完成後再比對一次。
+- **打包缺授權檔**（確認）：Windows 給 MIKU 的打包（`MikuDeploy`）只複製 DLL 與 `web/`，沒有 Daphne 的 GPL `LICENSE`、FFmpeg 的 LGPL 授權與原始碼位置；兩邊都沒有 nlohmann/json 的 MIT 授權（它編進了核心與 helper，MIT 要求附上）。修正：複製 `LICENSE`、`third_party/nlohmann/LICENSE.MIT`，Windows 再加 FFmpeg 的授權與 `SOURCE.txt`。
+- **`pack-mac.sh` 在 FFmpeg 版本改了之後沿用舊的編譯結果**（確認）：只檢查 `build-mac-<arch>/ffmpeg/lib/libavcodec.dylib` 存在，沒有綁定 `FF_VER` 或 configure 選項，`bin/` 是舊版、授權與原始碼位置卻寫新版（LGPL 的原始碼位置因此錯誤）。Windows 的 `build_for_miku.ps1` 也只在 `avcodec.h` 不存在時下載。修正：以版本與選項寫一個 stamp 檔。
+- **`pack-mac.sh` 的其他問題**（確認）：checkout 路徑含空白時，`for rp in $(otool …)` 會把 rpath 切開，`install_name_tool` 失敗而中止（FFmpeg 的 configure 本來也不接受含空白的路徑，至少是明確地失敗）；最後確認 helper 能啟動的那一行在 `set -o pipefail` 下，helper 當掉時腳本直接結束，看不到它自己的錯誤訊息；`codesign … 2>/dev/null` 也藏起了失敗的原因。
+
+**即時輸入的小問題**（確認）
+
+- `set_live_bus` 沒有鎖、也不檢查 `cap_frames`：兩條執行緒同時換環可能留下 A 的指標配 B 的容量；播放中傳入負的容量會變成 `0xFFFFFFFF`，讀到環外（`open()` 會拒絕 ≤ 0，已開啟的解碼器不會）。修正：加鎖，`base` 非 NULL 時拒絕 `cap_frames <= 0`。
+- 2³² 回繞那一刻環只剩 2³² % cap 個 frames，但「被追過」的判斷仍以整個容量計算：積壓超過那段（MIKU 的 96000：約 0.49 s）時讀到已被覆寫的部分而不重新同步，約 27 小時一次、一個雜音（N2）。
+- 卸離期間 `dc_state` 的 `live.fill` 等統計停在最後的值。`dc_live_socket` 在 `path` 為 NULL 與尚未實作時都回傳 0，分不出來。
+
+**待確認（只能在 macOS 上確認，由 review 讀程式推論）**
+
+- 保留的裝置放開時取樣率可能不對：`raise_physical` 第一次調高實體格式時記下的舊格式含當時的取樣率，`rate_touched` 每次開啟重算、不累積；96 k 調高格式之後接 44.1 k（接手，`rate_touched` 為假），放開時還原舊格式會把 DAC 鎖回 96 kHz。目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒動過。
+- `raise_physical` 可能降低位元數：目前的實體格式是浮點或另一個取樣率時 `cur_bits` 為 0，任何整數格式（包括 16 bit）都會被選上；沒有 24 bit 以上的整數格式時也不失敗，輸出仍宣稱 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的是 16 bit。
+- 保留裝置的 `close()`：清掉 `owner`（release）之後以 acquire 讀 `in_render`，與 `render()` 的 `fetch_add` → 讀 `owner` 是同樣的 Dekker 式交握，需要 seq_cst；x86 上 store 可以排到 load 之後，回呼可能在物件釋放後寫入 `stats_`。
+- 共享模式轉換器的小問題：`AudioConverterFillComplexBuffer` 在 IO 執行緒上執行（N24 說回呼不配置記憶體，它不保證）；`drained()` 在轉換器還留著幾個 frame 時就成立，最後幾 ms 被切掉；跳轉時轉換器沒有重設；`latency_ms` 不含轉換器的延遲。`resolve()` 的 `std::stoul` 遇到很長的全數字裝置字串會丟例外。
+
+**沒有測試涵蓋的**
+
+- 打包（`pack-mac.sh`、`build_for_miku.ps1`、`fetch_*.ps1`、C# 擴充的建置）不在 CI；`miku/*.js` 沒有任何檢查（`node --check` 都沒有）；macOS 的 CI 沒有以 FFmpeg 建置（`DAPHNE_FFMPEG_DIR`）。
+- 取消：快取打開時取消設計、確認快取裡沒有檔案；`parallel_for` 的例外與取消；`dc_destroy` 遇上進行中的載入；helper 的佇列與世代；C# 的取代邏輯。
+- 輸出能力：`takes_buffer_ms = false` 時改 `buffer_ms` 不重開；`native_dsd` 與 dsd 核心、`output.dsd = dop`；`shared_mix` 與 DSF（上面的 DoP 問題）。
+- TSan job 只跑 `[player],[capi],[live]`，調變器的 worker 執行緒（`[modulator]`）不在內。
 
 ## MIKU 擴充（`src/Daphne.Extension`，暫緩）
 
@@ -114,7 +163,7 @@
 
 **步驟 5（`live-bus`）**
 
-- 租約只包住 `produce()`（真正碰環的地方），不包住 `read()` 等待來源的 2 ms sleep：卸離最多等一次內插的時間。讀取端 `fetch_add` 之後才讀指標、卸離端清掉指標之後才讀計數，兩邊都是循序一致（seq_cst），所以「讀取端拿到舊指標」與「卸離端看到計數為 0」不會同時成立。
+- 租約只包住 `produce()`（真正碰環的地方），不包住 `read()` 等待來源的 2 ms sleep：卸離最多等一次內插的時間。讀取端 `fetch_add` 之後才讀指標、卸離端清掉指標之後才讀計數；這種交握要兩邊的讀取都是循序一致（seq_cst），「讀取端拿到舊指標」與「卸離端看到計數為 0」才不會同時成立。目前卸離端的計數讀取是 acquire，不夠（見「已知問題」）。
 - 換環時先清掉指標、等計數歸零，再設定新容量、最後放上新指標：讀取端不會拿到新指標配舊容量（原本 `g_cap` 與 `g_base` 分開寫，換環的一瞬間可能錯配）。
 - 壓力測試要確認真的抓得到錯誤：暫時拿掉等待那一行後，第一版（寫入方每 1 ms 推進 2400 frame）6 次只失敗 1～2 次，因為讀取端很快讀完，大部分時間在 `read()` 的 sleep 裡（Windows 上一次約 15.6 ms），卸離很少撞上讀取。改成每 10 µs 推進 48 frame 的細流之後，讀取端幾乎一直在環裡，拿掉等待時 6 次全部失敗（其中兩次直接存取已釋放的記憶體而當掉）；恢復等待後 10 次全部通過。
 - 測試的等待用 `steady_clock` 忙等，不用 `sleep_for(1 ms)`：Windows 沒有提高計時器解析度時那是 15.6 ms，第一版測試因此跑了 25 秒（現在約 1.6 秒）。
@@ -153,7 +202,7 @@
 
 - 共享模式失敗的原因：WASAPI 共享在取樣率不同時請 Windows 轉換（`AUTOCONVERTPCM`），播放器從來不會遇到非整數倍；Core Audio 的 IOProc 直接寫裝置，必須是裝置的取樣率，而播放器的鏈只會整數倍升頻（`chain.cpp`「not an integer multiple」）。之前的共享測試都用 44.1 k 的檔案，所以沒發現。
 - 只有非整數倍才交給 `AudioConverter`：整數倍仍由 Daphne 自己的升頻濾波器做（品質較好，這是 Mac 與 Windows 不同的地方：WASAPI 共享只要取樣率不同就交給 Windows）。轉換器在 IO 回呼裡向環要資料（`conv_input`，一次最多 `tmp_frames`），建立與配置都在 `open()`，回呼裡不配置記憶體。
-- DSD 檔在共享模式轉 PCM 時，`core.cpp` 用輸出回報的取樣率決定 DSD → PCM 的取樣率：44.1 kHz 的裝置仍是 44.1 k（整數倍），48 kHz 的裝置會拿到 176.4 k，再由轉換器轉成 48 k（之前會失敗）。
+- DSD 檔在共享模式轉 PCM 時，`core.cpp` 用輸出回報的取樣率決定 DSD → PCM 的取樣率。轉換器的條件是「裝置取樣率低於要求值，或不是它的整數倍」，而探測時要求的是 DoP 取樣率（DSD64 為 176.4 kHz），所以 44.1 與 48 kHz 的裝置都回報 176.4 k：DSD 先轉成 176.4 k，再由 `AudioConverter` 降成裝置取樣率（48 kHz 的裝置之前會失敗）。原本寫的「44.1 kHz 的裝置仍是 44.1 k」與程式不符（2026-10-25 review）；改由 Daphne 直接轉成 44.1 k 需要另一種方式取得裝置本身的取樣率。
 - bit-perfect 的判斷原本不看共享模式（`Report::bit_perfect`），Windows 的 WASAPI 共享也回報 yes；MIKU 的頁面自己判斷品質（共享一律是 high），所以畫面沒錯，只有 CLI 與 report 錯。Windows 擴充的 `DaphnePath.cs` 用 `bit_perfect` 判斷「64-bit 浮點轉成裝置的浮點格式，數值不變」，原因是共享模式時也視為數值不變（交給混音器的樣本本身沒變）。
 - 其他程式改取樣率的測試工具：在 Mac 上編一個小程式，用 `kAudioDevicePropertyNominalSampleRate` 改取樣率（與「音訊 MIDI 設定」相同的方式），播放中執行。
 
