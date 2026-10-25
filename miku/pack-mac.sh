@@ -7,8 +7,9 @@
 #   bin/daphne-helper, bin/libdaphne_core.dylib, bin/libav*.dylib, bin/libswresample.*.dylib
 #                                              the engine (the same core as daphne_core.dll on Windows) and FFmpeg;
 #                                              only code in bin/ (MIKU's installer signs every file in it)
-#   LICENSE, FFmpeg-COPYING.LGPLv2.1, FFmpeg-SOURCE.txt
-#                                              Daphne's license, FFmpeg's license and where its source is
+#   LICENSE, nlohmann-json-LICENSE.MIT, FFmpeg-COPYING.LGPLv2.1, FFmpeg-SOURCE.txt
+#                                              Daphne's license, the JSON library's (MIT, compiled into the core and
+#                                              the helper), FFmpeg's license and where its source is
 # MIKU's mac/build/build.sh runs Extensions/<Name>/miku/pack-mac.sh for every module that has one; the same
 # Extensions/Daphne checkout gives MIKU on Windows its extension (src/Daphne.Extension, scripts/build_for_miku.ps1).
 #
@@ -70,20 +71,25 @@ for arch in "${ARCHS[@]}"; do
 
   # 1. FFmpeg: shared libraries found through the helper's rpath, only the demuxers and decoders the engine uses
   #    for the formats without a dedicated decoder (M4A / ALAC / AAC, Ogg, Opus, APE, WavPack, WMA, TTA, …)
-  if [ ! -f "$FF/lib/libavcodec.dylib" ]; then
+  FF_OPTS=(--prefix="$FF" --install-name-dir=@rpath
+    --arch="$arch" --target-os=darwin --enable-cross-compile --cc="clang -arch $arch"
+    --extra-cflags="-mmacosx-version-min=$MIN" --extra-ldflags="-mmacosx-version-min=$MIN"
+    --enable-shared --disable-static --disable-programs --disable-doc --disable-avdevice --disable-swscale
+    --disable-avfilter --disable-network --disable-x86asm --disable-autodetect --disable-everything
+    --enable-protocol=file
+    --enable-demuxer=mov,caf,ogg,matroska,flac,wav,w64,aiff,mp3,aac,ape,wv,asf,tta
+    --enable-decoder=aac,aac_latm,alac,vorbis,opus,flac,mp3,mp3float,mp2,ape,wavpack,wmav1,wmav2,wmapro,wmalossless,tta,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be
+    --enable-parser=aac,flac,opus,vorbis,mpegaudio)
+  # what the build in $FF was made from: another FF_VER or other options build it again (bin/ and FFmpeg-SOURCE.txt
+  # must name the same release)
+  STAMP="$FF_VER ${FF_OPTS[*]}"
+  if [ ! -f "$FF/lib/libavcodec.dylib" ] || [ "$(cat "$FF/daphne-ffmpeg.stamp" 2>/dev/null)" != "$STAMP" ]; then
     echo "daphne: building FFmpeg $FF_VER for $arch (a few minutes, once)"
     rm -rf "$B/ffmpeg-build" "$FF"; mkdir -p "$B/ffmpeg-build"
-    ( cd "$B/ffmpeg-build" && "$SRC/ffmpeg-$FF_VER/configure" --prefix="$FF" --install-name-dir=@rpath \
-        --arch="$arch" --target-os=darwin --enable-cross-compile --cc="clang -arch $arch" \
-        --extra-cflags="-mmacosx-version-min=$MIN" --extra-ldflags="-mmacosx-version-min=$MIN" \
-        --enable-shared --disable-static --disable-programs --disable-doc --disable-avdevice --disable-swscale \
-        --disable-avfilter --disable-network --disable-x86asm --disable-autodetect --disable-everything \
-        --enable-protocol=file \
-        --enable-demuxer=mov,caf,ogg,matroska,flac,wav,w64,aiff,mp3,aac,ape,wv,asf,tta \
-        --enable-decoder=aac,aac_latm,alac,vorbis,opus,flac,mp3,mp3float,mp2,ape,wavpack,wmav1,wmav2,wmapro,wmalossless,tta,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be \
-        --enable-parser=aac,flac,opus,vorbis,mpegaudio >"$B/ffmpeg-configure.log" 2>&1 &&
+    ( cd "$B/ffmpeg-build" && "$SRC/ffmpeg-$FF_VER/configure" "${FF_OPTS[@]}" >"$B/ffmpeg-configure.log" 2>&1 &&
       make -j"$JOBS" >"$B/ffmpeg-make.log" 2>&1 && make install >"$B/ffmpeg-install.log" 2>&1 ) ||
       fail "FFmpeg ($arch) did not build; see $B/ffmpeg-*.log"
+    printf '%s\n' "$STAMP" >"$FF/daphne-ffmpeg.stamp"
   fi
 
   # 2. the engine: libdaphne_core.dylib and the helper that runs it for MIKU
@@ -101,6 +107,7 @@ for arch in "${ARCHS[@]}"; do
   cp "$ROOT"/miku/*.js "$D/"
   cp -RL "$ROOT/miku/web" "$D/web"
   cp "$ROOT/LICENSE" "$D/LICENSE"
+  cp "$ROOT/third_party/nlohmann/LICENSE.MIT" "$D/nlohmann-json-LICENSE.MIT"   # compiled into the core and the helper
   cp "$B/daphne/bin/daphne-helper" "$B/daphne/bin/libdaphne_core.dylib" "$D/bin/"
   # FFmpeg's libraries under the names the core was linked against (@rpath/libavcodec.62.dylib, …)
   for name in $(otool -L "$D/bin/libdaphne_core.dylib" | awk '/@rpath\/lib(av|sw)/ { sub("@rpath/", "", $1); print $1 }'); do
@@ -114,18 +121,24 @@ for arch in "${ARCHS[@]}"; do
     "$FF_VER" "$FF_VER" >"$D/FFmpeg-SOURCE.txt"
   # only relative search paths (@loader_path: bin/) stay in what ships; none of this machine's folders
   for f in "$D"/bin/daphne-helper "$D"/bin/*.dylib; do
-    for rp in $(otool -l "$f" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }'); do
+    # line by line: a path with spaces (the checkout's) is one rpath, not several words
+    while IFS= read -r rp; do
       case "$rp" in @*) ;; *) install_name_tool -delete_rpath "$rp" "$f" ;; esac
-    done
+    done < <(otool -l "$f" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
     if otool -L "$f" | tail -n +2 | awk '{ print $1 }' | grep -v -e '^@rpath/' -e '^/usr/lib/' -e '^/System/' >/dev/null; then
       fail "$(basename "$f") links to a library outside bin/ and the system: $(otool -L "$f" | tail -n +2 | awk '{ print $1 }' | grep -v -e '^@rpath/' -e '^/usr/lib/' -e '^/System/' | tr '\n' ' ')"
     fi
-    codesign -f -s - "$f" 2>/dev/null   # ad hoc (install_name_tool invalidates it; MIKU's installer signs again)
+    # ad hoc (install_name_tool invalidates it; MIKU's installer signs again)
+    codesign -f -s - "$f" 2>"$B/codesign.log" || { cat "$B/codesign.log" >&2; fail "codesign failed on $(basename "$f")"; }
   done
   # the helper starts and says hello (on this machine's architecture)
   if [ "$(uname -m)" = "$arch" ]; then
-    hello=$("$D/bin/daphne-helper" </dev/null | head -1)
-    case "$hello" in *'"hello"'*) echo "daphne: $tag: $hello" ;; *) fail "the packed helper ($arch) did not start: $hello" ;; esac
+    # not under pipefail: a helper that dies here comes to the message below with what it wrote, not ends the script
+    hello=$("$D/bin/daphne-helper" </dev/null 2>"$B/helper-check.log" | head -1) || true
+    case "$hello" in
+      *'"hello"'*) echo "daphne: $tag: $hello" ;;
+      *) cat "$B/helper-check.log" >&2; fail "the packed helper ($arch) did not start: $hello" ;;
+    esac
   fi
   echo "daphne: packed $D"
 done
