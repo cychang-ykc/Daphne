@@ -27,6 +27,8 @@ const Readable = [
   [/is in exclusive use by another application/, () => '另一個程式正在獨佔這個裝置'],
   [/does not offer exclusive \(hog\) mode/, () => '這個裝置不提供獨佔模式'],
 ];
+/** How a DSD file goes out (DoP or PCM, and MIKU's DAC 最高 DSD) in the settings of a load. */
+const dsdKeyOf = settings => settings.output.dsd + '|' + settings.output.max_dsd;
 const readable = err => { const s = String(err || ''); for (const [re, f] of Readable) { const m = s.match(re); if (m) return f(...m); } return s; };
 
 /** The core's "designing ..." message in the page's words. */
@@ -193,7 +195,7 @@ class DaphneEngine extends EventEmitter {
   // ───────────── transport ─────────────
   settingsFor(t) { return SM.build(this.host, this.s, this.opts, t); }
   /** How a DSD file goes out: DoP or PCM, and MIKU's DAC 最高 DSD. */
-  dsdKey(t) { const o = this.settingsFor(t).output; return o.dsd + '|' + o.max_dsd; }
+  dsdKey(t) { return dsdKeyOf(this.settingsFor(t)); }
   isDsdFile(t) { return !!(this.report && this.report.source && this.report.source.dsd_rate > 0) || /\.(dsf|dff)$/i.test(t.path || ''); }
 
   async load(t, pos, play) {
@@ -205,13 +207,17 @@ class DaphneEngine extends EventEmitter {
     if (!this.client.running) this.client.start();
     this.track = t; this.next = null; this.pausedAt = pos || 0;
     this.loaded = false; this.loading = true;
-    const r = await this.client.request('load', { path: t.path, settings: this.settingsFor(t), seek: pos || 0, play: !!play });
+    const settings = this.settingsFor(t), key = dsdKeyOf(settings);   // what this load sends, not the settings when it ends
+    const r = await this.client.request('load', { path: t.path, settings, seek: pos || 0, play: !!play });
     if (epoch !== this.loadEpoch) return;   // a newer load took its place
     this.loading = false;
     if (!r.ok && r.code === DC_ERR_CANCELLED) { this.log('load cancelled (stop)'); this.emit('changed'); return; }
     if (!r.ok) return this.fail(r.code, r.error || '');
-    this.loaded = true; this.playing = !!play; this.pos = pos || 0; this.loadedDsd = this.dsdKey(t);
+    this.loaded = true; this.playing = !!play; this.pos = pos || 0; this.loadedDsd = key;
     await this.refreshReport();
+    if (epoch !== this.loadEpoch) return;
+    // the DSD choice changed while it loaded (applyOutput then saw nothing loaded and left it): load it again with it
+    if (this.isDsdFile(t) && key !== this.dsdKey(t)) return this.load(t, this.position, this.isPlaying);
     this.signal = this.buildSignal();
     this.queueNext();
     this.emit('changed');

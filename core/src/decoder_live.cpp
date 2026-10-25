@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace daphne {
@@ -39,6 +40,8 @@ inline uint32_t load_acquire(uint32_t* p) {
 std::atomic<uint8_t*> g_base{nullptr};
 std::atomic<int> g_cap{0};
 std::atomic<int> g_readers{0};   // reads inside the ring right now (set_live_bus waits for them to leave)
+std::mutex g_bus_m;              // set_live_bus, one call at a time
+std::atomic<uint32_t> g_gen{0};  // one more per set_live_bus: a decoder that sees it change syncs to the new writer
 std::atomic<int> g_rate{48000};
 std::atomic<double> g_reserve{0};   // set_live_reserve
 
@@ -145,7 +148,12 @@ private:
     int produce(double* out, int frames) {
         g_readers.fetch_add(1);
         uint8_t* base = g_base.load();
+        // another ring (set_live_bus): its writer is not where the old one was, and what lies between the old
+        // read position and it may never have been written
+        const uint32_t gen = g_gen.load();
+        if (base && gen != gen_) gen_ = gen, synced_ = false;
         const int n = base ? produce_from(base, out, frames) : 0;
+        if (!base) g_fill = 0;   // detached: dc_state's "fill" is not the last ring's
         g_readers.fetch_sub(1, std::memory_order_release);
         return n;
     }
@@ -162,7 +170,12 @@ private:
         // short of a full ring that counts as lapped (signed: a ring under 4096 frames would wrap the unsigned one)
         const int64_t ahead = static_cast<int32_t>(w - read_);
         const int64_t margin = std::min<int64_t>(4096, cap / 2);
-        if (!synced_ || ahead < 0 || ahead > static_cast<int64_t>(cap) - margin) {
+        // index i lives in slot i % cap, and at the wrap the writer goes back to slot 0. cap need not divide 2^32
+        // (MIKU's 96000 does not: 2^32 % 96000 = 23296), so while the reader is still before the wrap and the writer
+        // past it, the writer's frames 0 .. w lie in the slots the reader reads next (read_ % cap up to 2^32 % cap)
+        const bool across = w < read_ && ahead > 0;
+        const bool overwritten = across && static_cast<uint64_t>((read_ - 1) % cap) < static_cast<uint64_t>(w) + static_cast<uint64_t>(margin);
+        if (!synced_ || ahead < 0 || ahead > static_cast<int64_t>(cap) - margin || overwritten) {
             // first read, page reloaded (the writer went back), or the writer lapped us: restart close to the writer
             if (synced_) g_resyncs++;
             read_ = w, frac_ = 0, synced_ = true, primed_ = false, adj_ = 0;
@@ -221,6 +234,7 @@ private:
 
     bool open_ = false;
     uint32_t read_ = 0;   // integer read position in the ring (frames, wraps like the writer's)
+    uint32_t gen_ = 0;    // g_gen of the ring read_ belongs to
     double frac_ = 0;     // between read_ and read_ + 1
     bool synced_ = false, primed_ = false;
     bool jump_ = false;   // seek(): back to the writer at the next read
@@ -233,11 +247,18 @@ private:
 }  // namespace
 
 void set_live_bus(void* base, int cap_frames, int rate) {
+    // one call at a time: two threads at once could leave one ring's pointer with the other's capacity
+    std::lock_guard<std::mutex> l(g_bus_m);
+    // a ring with no capacity is no ring: as a capacity it would become 0xFFFFFFFF.. and be read outside the memory
+    if (cap_frames <= 0) base = nullptr;
     // off the old ring first, and no read left in it, before the new one (with its capacity) is published
     g_base.store(nullptr);
-    while (g_readers.load(std::memory_order_acquire) != 0) std::this_thread::yield();
+    // seq_cst, not acquire: with an acquire load Apple clang (-mcpu=apple-m1) emits ldapr, which ARMv8.3 lets
+    // pass the stlr above; this could then see no reader while a reader still holds the old pointer
+    while (g_readers.load() != 0) std::this_thread::yield();
     g_cap = base ? cap_frames : 0;
     if (rate > 8000) g_rate = rate;
+    g_gen.fetch_add(1);   // before the pointer: a reader that gets the new ring sees the new generation
     g_base.store(static_cast<uint8_t*>(base));
 }
 
