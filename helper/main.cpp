@@ -141,8 +141,9 @@ public:
 private:
     // A stop or a load came: the loads still queued are dropped (each answers cancelled) and the one the worker runs
     // returns at once (dc_cancel), so the command is not held behind a load (a first long design) and nothing of them
-    // plays. A load the worker has taken but not yet started sees the new generation and does not start (execute);
-    // left: the microseconds between that check and dc_load taking hold, where the cancel is not seen.
+    // plays. A load the worker has taken but not yet started sees the new generation and does not start (execute).
+    // A cancel in the microseconds between that check and dc_load taking hold is not seen by dc_load: the pump cancels
+    // again every 20 ms while the load that runs is not the latest.
     uint64_t cancel_loads(const char* why) {
         std::vector<json> dropped;
         uint64_t gen;
@@ -226,7 +227,9 @@ private:
                 return;
             }
             const std::string path = str(req, "path"), settings = settings_of(req);
+            set_running(req.value("_gen", uint64_t{0}));   // the pump cancels it again if a later stop or load came
             const int code = dc_load_utf8(p_, path.c_str(), settings.c_str(), num(req, "seek", 0), flag(req, "play", true) ? 1 : 0, err, sizeof err);
+            set_running(0);
             json r = reply(req, code == DC_OK);
             r["code"] = code, r["error"] = err;
             emit(r);
@@ -263,10 +266,22 @@ private:
         }
     }
 
+    void set_running(uint64_t gen) {
+        std::lock_guard<std::mutex> l(run_m_);
+        running_gen_ = gen;
+    }
+
     // events and design progress, pushed as they come (every 20 ms)
     void pump_events() {
         double last_design = 1;
         while (!pump_stop_) {
+            // a cancel that came between the generation check and dc_load taking hold is not recorded (dc_cancel only
+            // reaches a load in progress): the load the worker runs is cancelled again while it is not the latest
+            // (under run_m_: the worker cannot have moved on to a later load, which this would cancel)
+            {
+                std::lock_guard<std::mutex> l(run_m_);
+                if (running_gen_ != 0 && running_gen_ != gen_.load()) dc_cancel(p_);
+            }
             for (;;) {
                 json ev = fetch([&](char* b, int n) { return dc_poll_event(p_, b, n); });
                 if (ev.is_null() || ev.is_discarded()) break;
@@ -287,6 +302,8 @@ private:
     std::deque<json> queue_;
     bool quit_ = false;
     std::atomic<uint64_t> gen_{0};   // bumped by every stop and load (cancel_loads); a load runs only in its own
+    std::mutex run_m_;
+    uint64_t running_gen_ = 0;   // under run_m_: the generation of the load in dc_load now (0: none)
     std::atomic<bool> pump_stop_{false};
 };
 
