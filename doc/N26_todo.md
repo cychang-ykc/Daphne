@@ -136,12 +136,6 @@
 - 目前的影響：沒有。x86 與一般 ARM64（`ldar`）沒有這個問題，而且 Mac 外殼不支援即時輸入（`supportsLive = false`）。
 - 修正：租約計數改用 `seq_cst` 讀取。`decoder_live.cpp` 的註解與步驟 5 的實作筆記也要跟著改。
 
-**R5. MIKU 結束後，`SIGPIPE` 讓 helper 結束，helper 不還原裝置**（重現：Linux 上結束碼 141）
-
-- 問題：取樣率與 DAC 格式停在 Daphne 設的值。hog mode 由 macOS 放掉。
-- 原因：helper 沒有忽略 `SIGPIPE`。MIKU 意外結束時，stdin 讀到結尾，helper 開始 `quit` 的清理，約需 0.8 – 1.7 s。這段期間 helper 可能把事件或濾波器設計進度寫到已關閉的 stdout，`SIGPIPE` 就讓 helper 結束。
-- 修正：呼叫 `signal(SIGPIPE, SIG_IGN)`。寫出失敗時，做與 `quit` 相同的步驟。
-
 #### B. 取消載入（#45 – #51）
 
 **R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）

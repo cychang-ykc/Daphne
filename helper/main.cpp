@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <csignal>
 #include <cstdio>
 #include <deque>
 #include <iostream>
@@ -292,6 +293,11 @@ private:
 }  // namespace
 
 int main() {
+#ifdef SIGPIPE
+    // a host that went away (MIKU crashed) closed stdout: a write fails instead of ending the process before the
+    // cleanup at the end of input (the device's rate and DAC format put back, the hog released)
+    std::signal(SIGPIPE, SIG_IGN);
+#endif
     std::ios::sync_with_stdio(false);
     Helper h;
     h.run();
