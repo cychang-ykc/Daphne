@@ -180,7 +180,6 @@
 - 輸出能力：
   - `takes_buffer_ms = false` 時，改 `buffer_ms` 不能重開裝置。
   - `native_dsd` 與 dsd 核心，以及 `output.dsd = dop`。
-- TSan job 只跑 `[player],[capi],[live]`，不跑調變器的 worker 執行緒（`[modulator]`）。
 
 #### 用語
 
