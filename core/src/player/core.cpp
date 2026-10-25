@@ -254,6 +254,7 @@ void Player::Impl::abort_run(const std::string& what) {
     {
         std::lock_guard<std::mutex> l(m);
         if (!start_done) {   // start() is waiting: it returns the error
+            internal_fail = true;
             start_done = true;
             start_ok = false;
             start_err = e;
@@ -302,6 +303,18 @@ void Player::Impl::run_playback() {
         if (s.output.dsd != DsdMode::Pcm && open_dsd(static_cast<int64_t>(start_sec * rep.source.rate), &de)) {
             started_dsd = true;
             if (cb.on_start) cb.on_start(rep);
+        } else if (cancel) {
+            // stopped while starting: no PCM conversion, and in shared mode no second open to probe the mixer (an open
+            // can hang in its driver, which is what the cancel is for)
+            dsdf.reset();
+            dsdenc.reset();
+            std::lock_guard<std::mutex> l(m);
+            start_done = true;
+            start_ok = false;
+            start_err = "cancelled";
+            cv.notify_all();
+            done = true;
+            return;
         } else {
             // no DSD path to the device: the DSD file is converted to PCM
             event(s.output.dsd == DsdMode::Pcm ? "converting the DSD file to PCM (output.dsd = pcm)"

@@ -1,6 +1,7 @@
 # Sanitizers and fuzzing on Linux (Clang), N25.
 #   asan    AddressSanitizer + UndefinedBehaviorSanitizer, every unit test
-#   tsan    ThreadSanitizer, the tests whose threads talk to each other (player, C API, live input)
+#   tsan    ThreadSanitizer, the tests whose threads talk to each other (player, C API, live input, the DSD
+#           modulator's worker threads)
 #   fuzz    libFuzzer on the file parsers (fuzz/), 60 s per target from the seeds in fuzz/corpus/
 # A finding stops the program (DAPHNE_SANITIZE builds with -fno-sanitize-recover), so the job fails on it.
 name: sanitizers
@@ -22,7 +23,7 @@ jobs:
       matrix:
         include:
           - { name: asan, flags: "address,undefined", tests: "" }
-          - { name: tsan, flags: "thread", tests: "[player],[capi],[live]" }
+          - { name: tsan, flags: "thread", tests: "[player],[capi],[live],[modulator]" }
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     env:

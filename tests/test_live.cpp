@@ -115,6 +115,88 @@ TEST_CASE("Live decoder: the write index wrapping at 2^32 is read through, not t
     CHECK(live_stats().resyncs == 0);
 }
 
+TEST_CASE("Live decoder: across the 2^32 wrap of a ring that does not divide it, frames the writer overwrote are not read", "[live]") {
+    // index i lives in slot i % cap: at the wrap the writer goes back to slot 0, so with MIKU's 96000 frames only
+    // 2^32 % 96000 = 23296 of them lie between the reader before the wrap and the writer after it
+    Bus bus(96000);
+    bus.index() = 0u - 30000u;
+    std::string e;
+    auto d = open_decoder(kLivePath, &e);
+    REQUIRE(d);
+    std::vector<double> out(1024 * 2), y;
+    bus.write(24000);
+    d->read(out.data(), 1024);   // syncs 6000 frames before the wrap
+    bus.write(8000);             // the writer wraps; the reader primes 0.15 s behind it, before the wrap
+    d->read(out.data(), 1024);
+    y.insert(y.end(), out.begin(), out.end());
+    bus.write(20000);            // a backlog of 0.57 s: within the ring, but over the slots the reader reads next
+    for (int round = 0; round < 60; ++round) {
+        const int n = d->read(out.data(), 1024);
+        y.insert(y.end(), out.begin(), out.begin() + 2 * n);
+        bus.write(1024);
+    }
+    // the sine is continuous wherever two neighbours are both audio (a resync puts silence in between)
+    const double step_max = 2 * kPi * 1000.0 / 48000.0 * 0.5 * 1.01;
+    double worst = 0;
+    size_t audio = 0;
+    for (size_t i = 2; i < y.size(); i += 2) {
+        if (y[i] == 0.0 || y[i - 2] == 0.0) continue;
+        worst = std::max(worst, std::abs(y[i] - y[i - 2]));
+        ++audio;
+    }
+    CHECK(audio > 20000);
+    CHECK(worst < step_max);
+}
+
+TEST_CASE("Live decoder: a ring passed with no capacity while it plays is not read", "[live]") {
+    Bus bus(48000);
+    std::string e;
+    auto d = open_decoder(kLivePath, &e);
+    REQUIRE(d);
+    std::vector<double> out(1024 * 2);
+    bus.write(20000);
+    d->read(out.data(), 1024);
+    bus.write(20000);
+    REQUIRE(d->read(out.data(), 1024) > 0);
+    set_live_bus(bus.mem.data(), -5, 48000);   // a host's mistake: taken as no ring, not as 0xFFFFFFFB frames
+    size_t audio = 0;
+    for (int round = 0; round < 10; ++round) {
+        bus.write(1024);
+        const int n = d->read(out.data(), 1024);
+        for (int i = 0; i < 2 * n; ++i) audio += out[static_cast<size_t>(i)] != 0.0;
+    }
+    CHECK(audio == 0);
+    CHECK(live_stats().fill == 0.0);   // and dc_state's "fill" does not keep the last value meanwhile
+}
+
+TEST_CASE("Live decoder: a new ring is read from its writer, not from the old ring's read position", "[live]") {
+    Bus a(96000);
+    std::string e;
+    auto d = open_decoder(kLivePath, &e);
+    REQUIRE(d);
+    std::vector<double> out(1024 * 2);
+    a.write(20000);
+    d->read(out.data(), 1024);   // syncs to the writer (silence)
+    for (int round = 0; round < 20; ++round) {
+        a.write(1024);
+        d->read(out.data(), 1024);
+    }
+    // the host shares another ring whose writer goes on from the same index: what lies behind it was never written
+    Bus b(96000);
+    std::fill(b.ring(), b.ring() + 2 * b.cap, std::numeric_limits<float>::quiet_NaN());
+    b.index() = a.index();
+    b.t = a.t;
+    size_t nan = 0, got = 0;
+    for (int round = 0; round < 40; ++round) {
+        b.write(1024);
+        const int n = d->read(out.data(), 1024);
+        for (int i = 0; i < 2 * n; ++i) nan += std::isnan(out[static_cast<size_t>(i)]) ? 1 : 0;
+        got += static_cast<size_t>(n);
+    }
+    CHECK(got > 0);
+    CHECK(nan == 0);
+}
+
 TEST_CASE("Live decoder: lapped by the writer it restarts close to it; a starve returns 5 ms of silence", "[live]") {
     Bus bus(48000);
     std::string e;
