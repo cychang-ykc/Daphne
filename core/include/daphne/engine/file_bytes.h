@@ -1,15 +1,23 @@
 #pragma once
-// A track's file read into memory by a background thread (read ahead), so the decoders read memory and a slow
-// disk cannot starve the ring. A library on a USB hard disk that stopped answering for ~3 s made the device play
+// A track's file read ahead by a background thread into a fixed window of memory, so the decoders read memory and a
+// slow disk cannot starve the ring. A library on a USB hard disk that stopped answering for ~3 s made the device play
 // gaps: the decoder read the file on the playback thread and the ring holds only 0.5 s without a filter.
 //
-// The decoder waits only for bytes the loader has not reached yet: the first read of a file, or a seek past what
-// is loaded. The loader reads at the disk's speed, far ahead of playback, and the next track is opened (and read)
-// while the current one plays. Files larger than FileBytes::kMaxBytes are read directly by the decoder, as before.
+// The window (kWindow, or the whole file when it is smaller) holds the part of the file just ahead of where the
+// decoder reads: the loader keeps it full at the disk's speed, far ahead of playback, so a stall shorter than the
+// window's playing time is not heard (64 MiB: about 6 minutes of 16-bit / 44.1 kHz WAV, about 1 minute of 24-bit /
+// 192 kHz). Memory stays the same whatever the file's size. A read outside the window (a seek, FFmpeg probing the end
+// of an M4A for its index) moves the window there: it waits for one disk read at that place, not for the loader to
+// read everything in between.
+//
+// The decoder waits only for bytes the loader has not reached yet: the first read of a file, the first read after a
+// move, or a decoder that caught up with a stalled disk. Every reader has its own window: the next track, opened
+// (and read ahead) while the current one plays, does not take the current one's.
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -17,11 +25,10 @@ namespace daphne {
 
 class FileBytes {
 public:
-    static constexpr int64_t kMaxBytes = int64_t{1} << 30;
+    static constexpr int64_t kWindow = int64_t{64} << 20;
 
-    // The file, being read into memory. Shared: opening the same unchanged file again (the FFmpeg retry, a seek
-    // back to the top, the prepared next track) gets the bytes already read. nullptr when the file cannot be
-    // opened, is empty, or is larger than kMaxBytes.
+    // The file, being read ahead. nullptr when the file cannot be opened or is empty (or its window cannot be
+    // allocated): the decoder then reads the file directly, as before.
     static std::shared_ptr<FileBytes> open(const std::filesystem::path& path);
 
     ~FileBytes();   // stops the loader (it is not waited for: a stalled disk must not stall the caller)
@@ -29,9 +36,15 @@ public:
     FileBytes& operator=(const FileBytes&) = delete;
 
     int64_t size() const;
-    // Up to n bytes at off, waiting for the loader when it has not got there yet. Fewer at the end of the file,
-    // 0 past it or past what a failed read left.
+    // Up to n bytes at off, waiting for the loader when it has not got there yet: all n of them unless the file ends
+    // first or a disk read failed (the decoders take a short read for the end of the file). 0 past the end. One
+    // reader at a time (a decoder's).
     size_t read(int64_t off, void* dst, size_t n);
+
+    // Tests: the window of files opened from now on (0: kWindow), and a function called on the loader's thread before
+    // each disk read (offset, bytes), to make the disk slow or stall it.
+    static void set_window_for_tests(int64_t bytes);
+    static void set_read_hook_for_tests(std::function<void(int64_t, size_t)> hook);
 
     struct State;
 

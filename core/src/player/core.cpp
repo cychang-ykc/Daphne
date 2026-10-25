@@ -454,7 +454,7 @@ void Player::Impl::loop(Stream& st) {
         if (slow_read_count() != slow_seen) {   // the read ahead met a slow disk (file_bytes.h)
             const SlowRead r = last_slow_read();
             slow_seen = r.count;
-            event("read ahead: a disk read of " + r.file + " took " + std::to_string(r.ms) + " ms (decoding reads memory)");
+            event("read ahead: a disk read of " + r.file + " took " + std::to_string(r.ms) + " ms (the decoder reads what was read ahead)");
         }
     }
 }
