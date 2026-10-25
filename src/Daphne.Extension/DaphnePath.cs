@@ -222,13 +222,18 @@ public sealed partial class DaphneEngine
             // without a quantizer: an integer device gets bit-perfect samples (the core leaves the quantizer out only
             // then); a float device never has one, and float32 rounds unless the samples are a source's integers
             // (shared mode is never bit-perfect, but what Daphne hands the mixer is the same)
+            string why = _report.TryGetProperty("reason", out var wy) ? wy.GetString() ?? "" : "";
             bool bitPerfect = _report.TryGetProperty("bit_perfect", out var bp) && bp.ValueKind == JsonValueKind.True
-                || _report.TryGetProperty("reason", out var why) && why.GetString() == "shared mode (system mixer)";
+                || why == "shared mode (system mixer)" || why.StartsWith("the system resamples");
             string conv = chain.Contains("quantizer") ? null
                 : !type.StartsWith("float") ? "64-bit 浮點轉回裝置的整數格式，數值不變"
                 : container >= 64 || bitPerfect ? "64-bit 浮點轉成裝置的浮點格式，數值不變"
                 : $"64-bit 浮點捨入成 {container}-bit 浮點（24-bit 尾數），不加抖動";
             outRows.Add(Row("格式", Pcm(word, devRate), false, conv));
+            // the mixer at another rate (WASAPI shared): Windows resamples what Daphne hands it
+            int sysRate = _report.TryGetProperty("system_rate", out var sr) && sr.ValueKind == JsonValueKind.Number ? sr.GetInt32() : 0;
+            if (sysRate > 0)
+                outRows.Add(Row("系統轉換", $"{Khz(devRate)} → {Khz(sysRate)} kHz", true, "Windows 混音器重新取樣到裝置目前的取樣率"));
         }
         sections.Add(new { title = "輸出", rows = outRows });
 

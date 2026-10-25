@@ -56,7 +56,7 @@ function volumeRow(s, volumeMode, dsdFile) {
 
 /** The card's sections. */
 function buildPath(ctx) {
-  const { s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, mode, format, volumeMode, rg, notes, host } = ctx;
+  const { s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, sysRate, mode, format, volumeMode, rg, notes, host } = ctx;
   const dsdFile = sentDirect, dsdPcm = isDsd && !sentDirect;
   const src = r.source, dev = r.device;
   const pcmRate = src.rate, channels = src.channels;
@@ -162,6 +162,9 @@ function buildPath(ctx) {
     const word = deviceWord(dev.type, dev.bits, dev.container);
     const conv = chain.includes('quantizer') ? null : !isFloat(dev.type) ? '64-bit 浮點轉回裝置的整數格式，數值不變' : '64-bit 浮點轉成裝置的浮點格式';
     outRows.push(row('格式', pcm(word, devRate), false, conv, ca));
+    // Core Audio resamples what Daphne hands it (shared: the system's rate; exclusive: a DAC without the track's rate)
+    if (sysRate > 0) outRows.push(row('系統轉換', `${khz(devRate)} → ${khz(sysRate)} kHz`, true,
+      SM.exclusive(s) ? 'Core Audio 的取樣率轉換器：裝置沒有這首歌的取樣率' : '系統混音器重新取樣到裝置目前的取樣率'));
   }
   sections.push({ title: '輸出', rows: outRows });
   return { ext: 'daphne', sections, notes };
@@ -201,7 +204,7 @@ function buildSignal(host, s, o, t, r) {
   const clipped = +r.clipped || 0;
   if (clipped > 0) notes.push(`已有 ${clipped.toLocaleString('en-US')} 個樣本超過滿刻度被削波；請調低數位音量或 EQ 前級。`);
   info.note = notes.length ? notes.join('\n') : null;
-  info.custom = buildPath({ s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, mode, format, volumeMode, rg, notes, host });
+  info.custom = buildPath({ s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, sysRate, mode, format, volumeMode, rg, notes, host });
   info.quality = lossy ? 'low' : !SM.exclusive(s) ? 'high' : dop ? (sentDirect ? 'bitperfect' : 'enhanced') : r.bit_perfect ? 'bitperfect' : 'enhanced';
   return info;
 }
