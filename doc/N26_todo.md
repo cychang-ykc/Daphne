@@ -144,19 +144,6 @@
 
 #### B. 取消載入（#45 – #51）
 
-**R6. 取消落在裝置啟動的那一刻時，裝置出聲，`started` 也留著**（重現）
-
-- 測試：假裝置在 `start()` 之後等 300 ms，測試在這段等待中呼叫 `dc_cancel`。
-- 問題：`dc_load` 回傳 `DC_ERR_CANCELLED`，但裝置收到 110592 bytes。事件佇列留著 `{"type":"started"}`，`dc_state` 留著那首的報告（`duration` 3.0）。兩個宿主收到 `started` 都會更新播放路徑卡片。
-- 影響：實際的空窗比測試短，聲音只有幾 ms，但事件與報告一定會留下。
-- 修正：取消時清掉事件與報告。另一種作法是不送 `started`。
-
-**R7. 取消落在啟動完成之後、`load()` 公開 player 之前時，引擎忽略這次取消**（讀程式）
-
-- 問題：`dc_load` 回傳 `DC_OK`，照常播放。`dc_stop` 之後仍會停掉它，但回傳值是 OK。
-- 原因：`load()` 在一段 `pm` 區段裡檢查 `stop_requested`，在另一段 `pm` 區段裡設定 `p->player = player`。兩段之間 `starting` 已經清掉，所以 `dc_cancel` 只設旗標，什麼都沒停。
-- 修正：在同一段 `pm` 區段裡檢查旗標並公開 player。
-
 **R8. `dc_load` 拿到 `op` 之前的 `dc_cancel` 不會被記下**（讀程式，限制）
 
 - 問題：引擎只在 `loading` 為真時記錄取消。helper 在比對世代到 `dc_load` 之間有這個空窗，C# 擴充在 `Task.Run` 裡的檢查到 `dc_load` 之間也有。

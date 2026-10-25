@@ -1,6 +1,7 @@
 #include "daphne_core.h"
 #include "internal.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -277,9 +278,12 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
         const bool started = player->start(path, s, out, cb, &e, seconds);
         bool cancelled = false;
         {
+            // checked and published in one section: a dc_cancel lands before (seen here) or after the player is
+            // published (it plays on, as after any finished load); never in between, where nothing would stop it
             std::lock_guard<std::mutex> g(p->pm);
             p->starting.reset();
             cancelled = p->stop_requested;
+            if (started && !cancelled) p->player = player;   // queries see it from now on
         }
         if (cancelled) {   // dc_stop came during the start: not published, not an error of the file or the device
             if (started) {
@@ -287,6 +291,12 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
                 daphne::PlayReport r;
                 std::string we;
                 player->wait(&r, &we);
+                // a cancel as the device started: it ran for a moment, but the host must not see the track as
+                // started (both hosts update their signal path on "started")
+                const std::string started_event = json{{"type", "started"}}.dump();
+                std::lock_guard<std::mutex> g(p->m);
+                p->events.erase(std::remove(p->events.begin(), p->events.end(), started_event), p->events.end());
+                p->report = {};
             }
             put(err, err_len, "cancelled (dc_stop or dc_cancel)");
             return DC_ERR_CANCELLED;
@@ -297,10 +307,6 @@ int load(dc_player* p, const std::filesystem::path& path, const char* settings_j
             p->error = e;
             p->failed = true;
             return player->last_failure_was_device() ? DC_ERR_DEVICE : DC_ERR_FILE;
-        }
-        {
-            std::lock_guard<std::mutex> g(p->pm);   // published: queries see it from now on
-            p->player = std::move(player);
         }
         return DC_OK;
     } catch (const std::exception& ex) {
