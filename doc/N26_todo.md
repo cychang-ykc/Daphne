@@ -229,21 +229,10 @@
 
 #### E. 待 Mac 實機（讀程式推論）
 
-**R20. 引擎放開保留的裝置時，取樣率可能不對**
+**R21. 沒有 24 bit 以上的整數格式時，輸出仍宣稱 `int24-in-32`**
 
-- `raise_physical` 第一次調高實體格式時，記下舊的格式，而這個格式含當時的取樣率。引擎每次開啟都重算 `rate_touched`，值不累積。
-- 例：96 kHz 的那首調高了格式，接著 44.1 kHz 的那首接手裝置（`rate_touched` 為假）。放開時還原舊格式，會把 DAC 鎖回 96 kHz。
-- 目前驗證用的 DAC 只有 32-bit 整數格式，`raise_physical` 從沒改過它。
-
-**R21. `raise_physical` 可能降低位元數**
-
-- 目前的實體格式是浮點、或是另一個取樣率時，`cur_bits` 為 0，`raise_physical` 會選上任何整數格式，包括 16 bit。
-- 沒有 24 bit 以上的整數格式時，開啟也不失敗。輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），但 DAC 收到的是 16 bit 的資料。
-
-**R22. 保留裝置的 `close()` 有與 R4 相同的交握問題**
-
-- `close()` 清掉 `owner`（release）之後，以 `acquire` 讀 `in_render`；`render()` 先 `fetch_add`，再讀 `owner`。這種 Dekker 式交握需要 `seq_cst`。
-- x86 上 store 可以排到 load 之後，所以 IO 回呼可能在物件釋放後寫入 `stats_`。
+- 2026-10-25 已修正一半：`raise_physical` 不再選少於 24 bit 的格式（原本目前的實體格式是浮點、或是另一個取樣率時 `cur_bits` 為 0，16 bit 也會被選上），找不到時寫進 log（「the DAC offers no integer format of 24 bits or more」）、不改格式。
+- 還沒處理：這時開啟也不失敗，輸出仍回報 `int24-in-32`（DoP 可用、bit-perfect），實際送到 DAC 的可能只有 16 bit。要改成回報實際的位元數（量化級跟著抖動到 16 bit、DoP 不可用），需要在 Mac 上用只有 16 bit 的 DAC 驗證。
 
 **R23. 共享模式轉換器的小問題**（獨佔時要求轉換的也一樣）
 
@@ -251,7 +240,7 @@
 - 轉換器還留著幾個 frame 時，`drained()` 就成立，曲子最後幾 ms 沒有播出。
 - 跳轉時沒有重設轉換器。
 - `latency_ms` 不含轉換器的延遲。
-- `resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串時會丟例外。
+- （2026-10-25 已修正）`resolve()` 的 `std::stoul` 遇到很長、全是數字的裝置字串會丟例外：超過 6 位數的全數字字串改當成裝置名稱或 UID。
 
 #### F. 沒有測試涵蓋的部分
 

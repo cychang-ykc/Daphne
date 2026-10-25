@@ -86,7 +86,7 @@ AudioDeviceID resolve(const std::string& want, std::string* error, bool* taken_d
         return kAudioObjectUnknown;
     }
     const auto devs = ca::output_devices();
-    if (all_digits(want)) {
+    if (all_digits(want) && want.size() <= 6) {   // an index (std::stoul would throw on a long one)
         const size_t i = static_cast<size_t>(std::stoul(want));
         if (i < devs.size()) return devs[i];
     }
@@ -206,8 +206,10 @@ struct CoreAudioOutput::Impl {
         for (UInt32 b = 0; b < out->mNumberBuffers; ++b)
             if (out->mBuffers[b].mData) std::memset(out->mBuffers[b].mData, 0, out->mBuffers[b].mDataByteSize);
         calls.fetch_add(1, std::memory_order_relaxed);
+        // in_render first, then owner (and armed below), all seq_cst: close() and stop() store, then read in_render,
+        // and either they see this callback or it sees what they stored (with acquire / release both could miss)
         in_render.fetch_add(1);
-        CoreAudioOutput* o = owner.load(std::memory_order_acquire);
+        CoreAudioOutput* o = owner.load();
         if (!o) {   // kept with nothing playing, or still opening: silence
             in_render.fetch_sub(1, std::memory_order_release);
             return;
@@ -321,8 +323,9 @@ struct CoreAudioOutput::Impl {
             if (!ca::get(s, kAudioStreamPropertyPhysicalFormat, cur)) continue;
             const int cur_bits = ca::is_integer_pcm(cur) && ca::same_rate(cur.mSampleRate, rate) ? static_cast<int>(cur.mBitsPerChannel) : 0;
             if (cur_bits >= 24) continue;
+            // at least 24 bits: a float or other-rate format (cur_bits 0) is not replaced by a 16-bit one
             AudioStreamBasicDescription best = cur;
-            int best_bits = cur_bits;
+            int best_bits = std::max(cur_bits, 23);
             for (const auto& r : ca::list<AudioStreamRangedDescription>(s, kAudioStreamPropertyAvailablePhysicalFormats)) {
                 if (rate < r.mSampleRateRange.mMinimum - 0.5 || rate > r.mSampleRateRange.mMaximum + 0.5) continue;
                 auto f = r.mFormat;
@@ -331,7 +334,10 @@ struct CoreAudioOutput::Impl {
                     continue;
                 if (static_cast<int>(f.mBitsPerChannel) > best_bits) best = f, best_bits = static_cast<int>(f.mBitsPerChannel);
             }
-            if (best_bits <= cur_bits) continue;
+            if (best_bits < 24) {
+                note("the DAC offers no integer format of 24 bits or more at " + khz(rate) + ": left at " + ca::format_name(cur));
+                continue;
+            }
             if (std::none_of(physical_restore.begin(), physical_restore.end(), [&](const auto& p) { return p.first == s; }))
                 physical_restore.push_back({s, cur});
             if (ca::set(s, kAudioStreamPropertyPhysicalFormat, best) != noErr) continue;
@@ -513,7 +519,9 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     } else if (m.exclusive && target > 0 && target != rate) {
         m.note(khz(rate) + " is not offered by " + name_);
     }
-    if (m.exclusive) m.rate_touched = !ca::same_rate(ca::nominal_rate(m.dev), m.original_rate);
+    // a kept device remembers it: the last track's rate may match the original while a raised DAC format (which carries
+    // the rate it was raised at) still has to be put back, and the rate after it (shut)
+    if (m.exclusive) m.rate_touched = (reuse && m.rate_touched) || !ca::same_rate(ca::nominal_rate(m.dev), m.original_rate);
     m.rate = ca::nominal_rate(m.dev);
     if (m.rate <= 0) return fail(name_ + " reports no sample rate");
     m.settle(changed);
@@ -629,7 +637,7 @@ bool CoreAudioOutput::start(ByteRing* ring, const std::atomic<bool>* eof, std::s
 void CoreAudioOutput::stop() {
     if (!impl_) return;
     impl_->armed.store(false);
-    while (impl_->in_render.load(std::memory_order_acquire) != 0) std::this_thread::yield();
+    while (impl_->in_render.load() != 0) std::this_thread::yield();   // seq_cst (render)
 }
 
 void CoreAudioOutput::close() {
@@ -644,8 +652,10 @@ void CoreAudioOutput::close() {
     }
     if (keep) {
         // kept for the next track: the IO goes on, silent once no callback holds this output any more
-        m.owner.store(nullptr, std::memory_order_release);
-        while (m.in_render.load(std::memory_order_acquire) != 0) std::this_thread::yield();
+        // seq_cst (render): with a release store and an acquire load even x86 may read in_render before the store is
+        // seen, and a callback could then write stats_ after this output is freed
+        m.owner.store(nullptr);
+        while (m.in_render.load() != 0) std::this_thread::yield();
         m.ring = nullptr;
         m.eof = nullptr;
         std::unique_ptr<Impl> other;
