@@ -27,6 +27,9 @@
 .dp-group-h small { color: var(--text-3, #888); font-size: 12px; }
 .dp-group .field { padding: 12px 18px; min-height: 54px; }
 .dp-group .field .ctl .seg { flex-wrap: wrap; }
+/* 升頻 and 濾波器 while YouTube Music plays: shown, not used (greyed out, no input); the filter cache row stays usable */
+.dp-group.dp-off .field:not(.dp-keep), .dp-group.dp-off .dp-result { opacity: .45; pointer-events: none; }
+.dp-group.dp-off .dp-group-h small { color: var(--text-2, #aaa); }
 .dp-result { padding: 0 18px 12px; margin-top: -4px; color: var(--text-2, #aaa); font-size: 12.5px; }
 /* filter design progress popup */
 .dp-design { position: fixed; right: 20px; bottom: 96px; z-index: 9999; width: 320px; padding: 12px 14px; border-radius: 12px;

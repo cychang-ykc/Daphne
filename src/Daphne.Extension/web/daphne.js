@@ -161,7 +161,19 @@
     const fixedRate = fixedOf(op);
     let lenLine = null;   // the filter group's length line, refreshed with the 升頻 result line
 
-    const g = group(host, ui, '升頻');
+    // YouTube Music plays through Daphne without upsampling (SettingsMap.Upsampler): the group is shown greyed out, and
+    // the page is drawn again when the track changes between it and a file
+    const live = !!Daphne.state.live;
+    const g = group(host, ui, '升頻', live ? '使用 Daphne 播放 YT Music 時禁用升頻' : null);
+    if (live) g.box.classList.add('dp-off');
+    const liveTimer = setInterval(() => {
+      if (!document.contains(g.box)) { clearInterval(liveTimer); return; }
+      Daphne.api.rpc('state').then(s => {
+        if (!s) return;
+        Daphne.state = s;
+        if (!!s.live !== live) { clearInterval(liveTimer); rerender(); }
+      }).catch(() => {});
+    }, 2000);
     g.field('升頻器', UPSAMPLER_TEXT[cur],
       choice(ui, [['off', '關閉'], ['pcm', 'PCM 升頻'], ['dsd', '轉成 DSD']], cur, v => set({ upsampler: v }).then(rerender)));
     if (cur === 'pcm') {
@@ -198,8 +210,10 @@
       const native = cur === 'pcm' && target === 'native';
       const lenTarget = cur === 'dsd' ? 'max' : target;   // the pre-filter goes to 705.6 / 768 kHz
       const apod = !!op.apodize;
-      const f = group(host, ui, '濾波器', native && !apod ? '原取樣率且沒有去除錄音振鈴：訊號不經過濾波器'
+      const f = group(host, ui, '濾波器', live ? '使用 Daphne 播放 YT Music 時禁用升頻，濾波器不使用'
+                                         : native && !apod ? '原取樣率且沒有去除錄音振鈴：訊號不經過濾波器'
                                          : cur === 'dsd' ? '轉成 DSD 前，升頻到 705.6 / 768 kHz 用的濾波器' : null);
+      if (live) f.box.classList.add('dp-off');   // greyed out like 升頻; the filter cache row stays usable (dp-keep)
       f.field('去除錄音振鈴（Apodizing）', native
           ? '在原始取樣率套用：20 kHz 開始柔和衰減，去掉錄音時留下的高頻振鈴；20–22 kHz 會被濾掉'
           : '通帶改到 20 kHz、Nyquist 完全衰減，去掉錄音時留下的高頻振鈴；20–22 kHz 會被濾掉',
@@ -221,7 +235,9 @@
           ui.sw(!!op.doubleDouble, v => set({ doubleDouble: v })));
         threadsField(op, f.field, ui);
       }
+      const before = f.box.children.length;
       cacheField(f.field, ui);
+      for (const el of [...f.box.children].slice(before)) el.classList.add('dp-keep');
     }
   }
 
