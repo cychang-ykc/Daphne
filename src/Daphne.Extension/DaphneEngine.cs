@@ -566,6 +566,9 @@ public sealed partial class DaphneEngine : IAudioEngine
     // ───────────────────────────── signal path ─────────────────────────────
 
     /// <summary>The loaded track's PCM rate (DSD files: after conversion) and the device rate, for the settings page; null when nothing is loaded.</summary>
+    /// <summary>YouTube Music is the track (playing or loading): Daphne does not upsample it (SettingsMap.Upsampler).</summary>
+    public bool LiveTrack => (_track ?? _wanted)?.IsLive == true;
+
     public object NowPlaying()
     {
         if (!_loaded || _report.ValueKind != JsonValueKind.Object) return null;

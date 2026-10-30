@@ -92,8 +92,10 @@ public sealed class DaphneExtension : IMikuExtension, IAudioCoreProvider
     {
         string ver = null;
         try { ver = DaphneNative.Version; } catch (Exception ex) { _host?.Log("[daphne] daphne_core.dll: " + ex.Message); }
-        object now = _engine.TryGetTarget(out var e) ? e.NowPlaying() : null;
-        return new { commit = Commit, version = ver, cache = CacheInfo(), now, options = JsonDocument.Parse(_opts.ToJson().ToJsonString()).RootElement };
+        bool engine = _engine.TryGetTarget(out var e);
+        object now = engine ? e.NowPlaying() : null;
+        bool live = engine && e.LiveTrack;   // YouTube Music: the page greys out 升頻
+        return new { commit = Commit, version = ver, cache = CacheInfo(), now, live, options = JsonDocument.Parse(_opts.ToJson().ToJsonString()).RootElement };
     }
 
     void Prune(int limitMb)

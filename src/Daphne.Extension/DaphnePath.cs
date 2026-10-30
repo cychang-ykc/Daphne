@@ -90,7 +90,7 @@ public sealed partial class DaphneEngine
         int pcmRate = src.GetProperty("rate").GetInt32();   // where the PCM chain starts (DSD → PCM: the converted rate)
         int channels = src.GetProperty("channels").GetInt32();
         int clock = nativeDsd ? devRate : dop ? devRate * 16 : 0;   // the DSD rate sent
-        bool upsampler = SettingsMap.Upsampler(_s, o) != "off";
+        bool upsampler = SettingsMap.Upsampler(_s, o, t) != "off";
         var sections = new List<object>();
 
         // ── 來源

@@ -65,13 +65,16 @@ public sealed class DaphneOptions
 /// <summary>MIKU's settings + Daphne's options → Daphne's settings JSON (core/include/daphne/engine/settings.h) for one track.</summary>
 static class SettingsMap
 {
-    /// <summary>The upsampler in effect: shared mode never upsamples (Windows' mixer converts everything).</summary>
-    public static string Upsampler(Settings s, DaphneOptions o) => s.OutputMode == "shared" ? "off" : o.Upsampler;
+    /// <summary>
+    /// The upsampler in effect: shared mode never upsamples (Windows' mixer converts everything), and neither does YouTube
+    /// Music (a live source): upsampled on ASIO at 352.8 / 384 kHz it left the player hanging in the driver (2026-10-29).
+    /// </summary>
+    public static string Upsampler(Settings s, DaphneOptions o, Track t) => s.OutputMode == "shared" || t?.IsLive == true ? "off" : o.Upsampler;
 
     /// <summary>output.rate: the target of the PCM upsampler; the source rate otherwise.</summary>
-    static string Rate(Settings s, DaphneOptions o)
+    static string Rate(Settings s, DaphneOptions o, Track t)
     {
-        if (Upsampler(s, o) != "pcm") return "native";
+        if (Upsampler(s, o, t) != "pcm") return "native";
         return o.Target switch
         {
             "2x" => "2x",   // twice each track's own rate (gapless across sample rates)
@@ -95,17 +98,17 @@ static class SettingsMap
         string dsd = s.DsdFor(s.OutputMode) switch { "dop" => "dop", "pcm" => "pcm", _ => "auto" };   // native: ASIO native, else DoP
         j["output"] = new JsonObject
         {
-            ["api"] = api, ["device"] = device, ["rate"] = Rate(s, o), ["dsd"] = dsd,
+            ["api"] = api, ["device"] = device, ["rate"] = Rate(s, o, t), ["dsd"] = dsd,
             ["dsd_pcm_lowpass"] = o.DsdPcmLowpass, ["dsd_pcm_limiter"] = o.DsdPcmLimiter,
             ["max_dsd"] = s.DsdLimit(),   // MIKU's DAC 最高 DSD
             ["buffer_ms"] = Math.Clamp(s.BufferMs, 40, 200),   // MIKU's 緩衝大小, 40 .. 200 ms (WASAPI; ASIO: the driver's)
         };
-        j["core"] = Upsampler(s, o) == "dsd" ? "dsd" : "pcm";
+        j["core"] = Upsampler(s, o, t) == "dsd" ? "dsd" : "pcm";
         j["filter"] = new JsonObject
         {
             ["taps"] = o.Taps, ["phase"] = o.Phase, ["phase_custom"] = o.PhaseCustom,
             // apodizing belongs to the upsampling filter (the PCM upsampler or the DSD pre-filter; off with the upsampler off)
-            ["apodize"] = o.Apodize && Upsampler(s, o) != "off",
+            ["apodize"] = o.Apodize && Upsampler(s, o, t) != "off",
             ["double_double"] = o.DoubleDouble,
         };
 
