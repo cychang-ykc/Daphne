@@ -94,7 +94,10 @@ for arch in "${ARCHS[@]}"; do
 
   # 2. the engine: libdaphne_core.dylib and the helper that runs it for MIKU
   echo "daphne: building the engine for $arch"
-  "$CMAKE" -S "$ROOT" -B "$B/daphne" -DCMAKE_BUILD_TYPE=Release -DDAPHNE_BUILD_TESTS=OFF \
+  # the SDK as it is now, every time: CMake caches the versioned path it found first (…/MacOSX27.0.sdk), and once an
+  # Xcode update removes that folder it ignores the cached value and compiles without an SDK ('cstdint' file not found)
+  SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)" || fail "no macOS SDK (xcrun --show-sdk-path failed); install the Xcode command line tools"
+  "$CMAKE" -S "$ROOT" -B "$B/daphne" -DCMAKE_BUILD_TYPE=Release -DDAPHNE_BUILD_TESTS=OFF -DCMAKE_OSX_SYSROOT="$SDK" \
     -DCMAKE_OSX_ARCHITECTURES="$arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" -DDAPHNE_FFMPEG_DIR="$FF" >"$B/cmake.log" 2>&1 ||
     fail "CMake ($arch) failed; see $B/cmake.log"
   grep -q "FFmpeg found in" "$B/cmake.log" || fail "the engine ($arch) did not find FFmpeg in $FF"
