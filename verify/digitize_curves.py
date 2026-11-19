@@ -9,6 +9,8 @@ Input: verify/data/tubes/<tube>/digitize.json
                   optional: "kind" (plate | transfer | rp | mu | gm), "rotate" (deg), "url", "open_px", "exclude",
                   "exclude_lines", "line_px", "min_piece_px", "gap_px", "min_extent", "direction", "order", "vg2",
                   "outlier_px", "outlier_half", "trim_top_px", "smooth_px", "join_deg", "grid_piece_px", "drop_vertical", "drop_extra_right",
+                  "curves_vg2" (a screen voltage per curve), "grid_threshold" / "ink_threshold"
+                  (grey levels, default 128),
                   "manual" (a reason: the graph is skipped, its CSVs come from WebPlotDigitizer)
                   "vg2": 250 } ] }                pentodes: the screen voltage of this graph (optional)
 
@@ -311,6 +313,9 @@ KINDS = {
     "rp":       ("Eg_V,rp_ohm",  lambda q: f"rp_eb{q}"),   # plate resistance vs Eg, parameter Eb
     "mu":       ("Eg_V,mu",      lambda q: f"mu_eb{q}"),
     "gm":       ("Eg_V,gm_umho", lambda q: f"gm_eb{q}"),
+    # a pentode triode connected (screen tied to the anode): validation graphs
+    "plate_tri":    ("Ep_V,Ip_mA", lambda q: f"pt_vg{q}_tri"),     # Ip vs Ep, parameter Vg1
+    "transfer_tri": ("Eg_V,Ip_mA", lambda q: f"tr_eb{q}_tri"),     # Ip vs Vg1, parameter Ea
 }
 
 
@@ -340,12 +345,14 @@ def digitize(tube):
             page = page.rotate(g["rotate"], expand=True, fillcolor=255)
         x0, y0, x1, y1 = g["region"]
         gray = np.array(page)[y0:y1, x0:x1]
-        dark = gray < 128
+        dark = gray < g.get("ink_threshold", 128)
+        # a grey-scale scan prints its grid lighter than the curves: find the grid with its own threshold
+        grid = gray < g.get("grid_threshold", 128)
         op = g.get("open_px", 3)   # wider than the grid lines, narrower than the curves
         thick = ndi.binary_opening(dark, structure=np.ones((op, op), bool))
         # the frame (3 px) survives the opening, so lines are found on the whole dark image: a curve covers far less
         # than 35 % of the span in any projection
-        to_value, to_pixel, info = calibrate(dark, g)
+        to_value, to_pixel, info = calibrate(grid, g)
         print(f"{tube} graph {gi + 1} ({kind}, page {g['page']}): x {info['x_intervals']} intervals of {info['x_step']:g} "
               f"({info['x_px']:.2f} px, comb residual max {info['x_res_px']:.2f} px), y {info['y_intervals']} intervals "
               f"of {info['y_step']:g} ({info['y_px']:.2f} px, residual max {info['y_res_px']:.2f} px), "
@@ -398,7 +405,9 @@ def digitize(tube):
             res = order_and_resample(vals / norm, 0.01) * norm
             if g.get("smooth_px"):
                 res = smooth_reject(res, info["x_px"] / abs(info["x_step"]), info["y_px"] / abs(info["y_step"]), g["smooth_px"])
-            vg2 = f"_vg2{g['vg2']:g}" if g.get("vg2") and (kind != "plate" or len(plate_vg2) > 1) else ""
+            cv = g.get("curves_vg2")   # a screen voltage per curve (Philips EL34 sheet A)
+            gv2 = cv[g["curves"].index(q)] if cv else g.get("vg2")
+            vg2 = f"_vg2{gv2:g}" if gv2 and (kind != "plate" or len(plate_vg2) > 1) else ""
             name = fname(fmt(q) if kind == "plate" else f"{q:g}") + vg2 + ".csv"
             with open(os.path.join(d, name), "w", encoding="utf-8", newline="\n") as f:
                 f.write(header + "\n")
