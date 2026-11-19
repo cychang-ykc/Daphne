@@ -62,8 +62,20 @@ def triode(name, tube, a, g, k):
     return f"B{name} {a} {k} I = 2*exp({ex}*ln({e1}))/{kg1}"
 
 
-def pentode(name, tube, a, g2, g, k, r_g2=0.15):
-    """Derk pentode: anode current a -> k, screen current r_g2 times it, g2 -> k."""
+def screen_kg2(tube, ratio=0.15, va=250.0, vg2=250.0, vg=-12.2):
+    """1 / kg2 for the varying screen current: Ig2 / Ia = ratio at the datasheet point (EL34: Mullard page 1)."""
+    p = model(tube)["params"]
+    kk, beta, d = p["K"], p["BETA"], p["D"]
+    ia_per_ik = kk * beta * va / (1 + beta * va) + d * va
+    return ratio * ia_per_ik - kk / (1 + beta * va)
+
+
+def pentode(name, tube, a, g2, g, k, r_g2=0.15, screen="fixed", cutoff_c=0.0):
+    """Derk pentode: anode current a -> k; screen current g2 -> k.
+    screen "fixed": r_g2 times the anode current.
+    screen "derk": constant space current (Reefman sec. 4.3): the total current I_K (1/kg1 + D Va) minus the anode
+    current, Ig2 = I_K (1/kg2 + K / (1 + beta Va)): it rises at low Va as the anode current falls. 1/kg2 from the
+    datasheet's Ig2 / Ia at one point (screen_kg2)."""
     p = model(tube)["params"]
     mu, x, kp, kvb, kk, beta, d = (f(p[n]) for n in ("MU", "X", "KP", "KVB", "K", "BETA", "D"))
     vak, vg2k, vgk = f"v({a},{k})", f"v({g2},{k})", f"v({g},{k})"
@@ -71,7 +83,16 @@ def pentode(name, tube, a, g2, g, k, r_g2=0.15):
     ik = f"exp({x}*ln({pos(vg2k)}/{kp}*{softplus(z)}+1e-30))"
     va = pos(vak)
     ia = f"{ik}*({kk}*{beta}*{va}/(1+{beta}*{va})+{d}*{va})"
-    return [f"B{name}a {a} {k} I = {ia}", f"B{name}s {g2} {k} I = {f(r_g2)}*{ia}"]
+    if screen == "derk":
+        ig2 = f"{ik}*({f(screen_kg2(tube))}+{kk}/(1+{beta}*{va}))"
+    else:
+        ig2 = f"{f(r_g2)}*{ia}"
+    if cutoff_c:
+        # SENSITIVITY TEST ONLY, never in a preset: both currents scaled by 1 - c exp(-Ia / 15 mA), lowering the
+        # model's current near cutoff towards the datasheet curves
+        corr = f"(1-{f(cutoff_c)}*exp(-({ia})/0.015))"
+        ia, ig2 = f"({ia})*{corr}", f"({ig2})*{corr}"
+    return [f"B{name}a {a} {k} I = {ia}", f"B{name}s {g2} {k} I = {ig2}"]
 
 
 def run(netlist, probes, reltol=None):
@@ -123,29 +144,39 @@ def se_stage(tube, b_plus, rk, bias_fixed, r_load, vin_peak, reltol=None):
             "Vak_V": float(np.mean(va[last] - vk[last])), "Vk_V": float(np.mean(vk[last]))}
 
 
-def pp_ul_stage(tube, b_plus, rk, r_g2, raa, tap, r_spk, vin_peak, reltol=None):
+def pp_ul_stage(tube, b_plus, rk, r_g2, raa, tap, r_spk, vin_peak, reltol=None, k=0.99999, lp=100.0, screen="fixed", cutoff_c=0.0):
     """Push-pull ultralinear, separate cathode bias. tap: screen tap as a fraction of each half primary (from the
-    centre tap). Primary a-a inductance 100 H (ideal at 1 kHz); the secondary gives raa on r_spk."""
-    lp = 100.0
+    centre tap). Coupled inductors: each half primary is two windings (centre tap .. screen tap .. anode), the
+    secondary a fifth; every pair coupled with k (sign by winding sense: the two halves are wound so that the
+    anodes swing in opposition). lp: anode-to-anode inductance; the secondary gives raa on r_spk.
+    Returns also the quiescent values (before the signal: the first 0.1 ms) and the screen-tap check: the tap's
+    swing over its anode's, which must be +tap (in phase) for ultralinear feedback."""
     lh = lp / 4
     l_ct_tap, l_tap_a = lh * tap ** 2, lh * (1 - tap) ** 2
     ls = lp * r_spk / raa
+    kp_, kn = f(k), f(-k)
     net = ["* push-pull ultralinear", f"Vb bp 0 DC {f(b_plus)}",
            f"L1 bp s1 {f(l_ct_tap)}", f"L2 s1 a1 {f(l_tap_a)}",
            f"L3 bp s2 {f(l_ct_tap)}", f"L4 s2 a2 {f(l_tap_a)}",
            f"L5 o 0 {f(ls)}", f"Rl o 0 {f(r_spk)}",
-           "K12 L1 L2 0.99999", "K13 L1 L3 -0.99999", "K14 L1 L4 -0.99999", "K15 L1 L5 0.99999",
-           "K23 L2 L3 -0.99999", "K24 L2 L4 -0.99999", "K25 L2 L5 0.99999",
-           "K34 L3 L4 0.99999", "K35 L3 L5 -0.99999", "K45 L4 L5 -0.99999",
+           f"K12 L1 L2 {kp_}", f"K13 L1 L3 {kn}", f"K14 L1 L4 {kn}", f"K15 L1 L5 {kp_}",
+           f"K23 L2 L3 {kn}", f"K24 L2 L4 {kn}", f"K25 L2 L5 {kp_}",
+           f"K34 L3 L4 {kp_}", f"K35 L3 L5 {kn}", f"K45 L4 L5 {kn}",
            f"Rs1 s1 g21 {f(r_g2)}", f"Rs2 s2 g22 {f(r_g2)}",
            f"Vin1 g1 0 SIN(0 {f(vin_peak)} {f(F0)})", f"Vin2 g2 0 SIN(0 {f(-vin_peak)} {f(F0)})",
            f"Rk1 k1 0 {f(rk)}", "Ck1 k1 0 1e-4", f"Rk2 k2 0 {f(rk)}", "Ck2 k2 0 1e-4"]
-    net += pentode("1", tube, "a1", "g21", "g1", "k1") + pentode("2", tube, "a2", "g22", "g2", "k2")
-    t, y = run(net, ["v(o)", "v(k1)", "i(Vb)"], reltol)
-    vo, vk, ib = y[:, 0], y[:, 1], -y[:, 2]
+    net += (pentode("1", tube, "a1", "g21", "g1", "k1", screen=screen, cutoff_c=cutoff_c)
+            + pentode("2", tube, "a2", "g22", "g2", "k2", screen=screen, cutoff_c=cutoff_c))
+    t, y = run(net, ["v(o)", "v(k1)", "i(Vb)", "v(a1)", "v(s1)", "v(g21)"], reltol)
+    vo, vk, ib, va, vs, vg2 = y[:, 0], y[:, 1], -y[:, 2], y[:, 3], y[:, 4], y[:, 5]
     a1, h = harmonics(t, vo)
     last = t > t[-1] - 10 / F0
-    return {"P_W": a1 ** 2 / 2 / r_spk, "H": h, "Ib_mA": float(np.mean(ib[last]) * 1e3), "Vk_V": float(np.mean(vk[last]))}
+    q = t < 1e-4
+    ac_a, ac_s = va[last] - va[last].mean(), vs[last] - vs[last].mean()
+    tap_ratio = float(np.dot(ac_s, ac_a) / np.dot(ac_a, ac_a))
+    return {"P_W": a1 ** 2 / 2 / r_spk, "H": h, "Ib_mA": float(np.mean(ib[last]) * 1e3), "Vk_V": float(np.mean(vk[last])),
+            "q_Ik_mA": float(np.mean(vk[q]) / rk * 1e3), "q_Vk_V": float(np.mean(vk[q])), "q_Va_V": float(np.mean(va[q] - vk[q])),
+            "q_Vg2_V": float(np.mean(vg2[q] - vk[q])), "tap": tap_ratio}
 
 
 def show(label, r):
