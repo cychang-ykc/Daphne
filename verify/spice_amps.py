@@ -11,7 +11,9 @@ reltol 1e-5, gear, 1000 points per cycle, FFT over the last 10 whole cycles afte
             30 dB feedback from the secondary (R13 5.6 k // C9 330 pF) into R5 (100 ohm)
 
 Output transformers (assumed values, N28): primary inductance Lp, leakage Ll (coupling k = sqrt(1 - Ll / Lp)),
-winding capacitance across the primary, primary DCR; secondary 8 ohm load, 0.3 ohm DCR.
+winding capacitance across the primary with a series loss resistor, core-loss resistor across the primary, primary
+DCR (distributed along the 5-20's half primaries by turns), secondary DCR for equal copper loss; 8 ohm load.
+The power sweeps run in Xyce harmonic balance (xyce_hb.py); this module's transient is for cross-checks.
 
   python spice_amps.py sweep          power sweeps of the four presets (parallel)
   python spice_amps.py 520            the 5-20 checks: open loop 1 / 10 / 20 W, closed loop, response
@@ -61,13 +63,25 @@ def harmonics(t, v, f0, cycles=10):
     return a[0], 20 * np.log10(np.maximum(a[1:], 1e-300) / a[0])
 
 
+# Output transformer losses (assumed, N28), the same rules for all four presets:
+#   copper: primary DCR per preset; secondary DCR chosen for equal copper loss in both windings (the usual design
+#     balance), i.e. r_sec / R_load = r_pri / R_primary
+#   core: a resistor across the primary, RC_RATIO x the primary impedance (eddy-current loss at constant voltage is
+#     frequency independent; RC_RATIO 50 = core loss 2 % of the output power)
+#   winding capacitance: a series resistor RCW (dielectric loss and the resistance of the distributed winding)
+#   R_LOAD: the loudspeaker (1e9 = open circuit)
+OPT = {"rc_ratio": 50.0, "rcw": 200.0, "r_load": 8.0}   # rcw 200: provisional (N28, high-frequency stability)
+
+
 def opt_se(name, a, bp, raa, lp, ll, cw, dcr):
-    """Single-ended output transformer: primary a .. bp (via DCR), secondary o .. 0 into 8 ohm."""
+    """Single-ended output transformer: primary a .. bp (via DCR), secondary o .. 0 into the 8 ohm loudspeaker."""
     k = math.sqrt(1 - ll / lp)
     ls = lp * 8.0 / raa
-    return [f"R{name}p {bp} {name}x {f(dcr)}", f"L{name}p {name}x {a} {f(lp)}", f"C{name}w {a} {bp} {f(cw)}",
-            f"L{name}s o {name}y {f(ls)}", f"R{name}s {name}y 0 0.3", f"K{name} L{name}p L{name}s {f(k)}",
-            "Rspk o 0 8"]
+    return [f"R{name}p {bp} {name}x {f(dcr)}", f"L{name}p {name}x {a} {f(lp)}",
+            f"C{name}w {a} {name}c {f(cw)}", f"R{name}cw {name}c {bp} {f(max(OPT['rcw'], 1e-3))}",
+            f"R{name}core {a} {bp} {f(OPT['rc_ratio'] * raa)}",
+            f"L{name}s o {name}y {f(ls)}", f"R{name}s {name}y 0 {f(8.0 * dcr / raa)}", f"K{name} L{name}p L{name}s {f(k)}",
+            f"Rspk o 0 {f(OPT['r_load'])}"]
 
 
 # ---- interelectrode capacitances ---------------------------------------------------------------------------
@@ -119,7 +133,7 @@ def set_845():
     return net
 
 
-def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.015, cw=300e-12):
+def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12):
     """Mullard 5-20, Fig. 1 values. Feedback R13 5.6 k // C9 330 pF from the secondary to R5 (open loop: the
     feedback resistor goes to ground instead, keeping R5's loading)."""
     lp, dcr, tap = 100.0, 170.0, 0.20
@@ -152,9 +166,13 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.015, cw=300e-1
            *R.pentode("V4", "EL34", "a4", "s4", "g4s", "k4", screen="fit"),
            *tube_caps("V3", "EL34", "a3", "g3s", "k3"), *tube_caps("V4", "EL34", "a4", "g4s", "k4"),
            # output transformer: centre tap c12 via DCR, taps t3 / t4, anodes a3 / a4
-           f"Rd3 c12 ct3 {f(dcr)}", f"Rd4 c12 ct4 {f(dcr)}",
-           f"L1 ct3 t3 {f(l1)}", f"L2 t3 a3 {f(l2)}", f"L3 ct4 t4 {f(l1)}", f"L4 t4 a4 {f(l2)}",
-           f"L5 o sy {f(ls)}", "Rsy sy 0 0.3", "Rspk o 0 8", f"Cw a3 a4 {f(cw)}"]
+           # the DCR is distributed along each half primary: tap x DCR between the centre tap and the screen tap,
+           # the rest between the screen tap and the anode (lumping it at the centre tap would starve the screens)
+           f"Rd3 c12 ct3 {f(tap * dcr)}", f"Rd4 c12 ct4 {f(tap * dcr)}",
+           f"L1 ct3 t3 {f(l1)}", f"L2 t3 a3x {f(l2)}", f"Rd3b a3x a3 {f((1 - tap) * dcr)}",
+           f"L3 ct4 t4 {f(l1)}", f"L4 t4 a4x {f(l2)}", f"Rd4b a4x a4 {f((1 - tap) * dcr)}",
+           f"L5 o sy {f(ls)}", f"Rsy sy 0 {f(8.0 * 2 * dcr / 7000.0)}", f"Rspk o 0 {f(OPT['r_load'])}",
+           f"Cw a3 cwx {f(cw)}", f"Rcw cwx a4 {f(max(OPT['rcw'], 1e-3))}", f"Rcore a3 a4 {f(OPT['rc_ratio'] * 7000.0)}"]
     net += [f"K{a}{b} L{a} L{b} {f(v)}" for (a, b), v in K.items()]
     # wiring capacitance at the nodes the tube capacitances leave floating (screens, the splitter's cathodes); the
     # transient cannot start at a node with no capacitance next to the B sources
