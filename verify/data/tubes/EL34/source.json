@@ -76,6 +76,38 @@
       3
     ],
     "why": "anode and screen current fitted together with Philips sheet A (Vg2 250 / 375 / 425 V, the screen voltages of the ultralinear stages) and the Mullard triode-connected curves (Ia + Ig2 down to low Va); AS from Reefman eq. 27 with alpha = 0 (Reefman: not a fitting parameter, a very small reduction; the data fit alpha 0 and 0.74 equally well, rms 1.71 / 1.12 mA screen, 4.57 / 4.51 mA triode connected, but alpha 0.74 doubles the 5-20 distortion); residuals below 30 mA weigh 3 times",
-    "alpha": 0.0
+    "alpha": 0.0,
+    "alpha_note": {
+      "switch": "alpha: 0.0 (Reefman's premise, in use) or null (fitted, 0.74); model_compare.py --final EL34 rewrites model.json",
+      "basis": "Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4: alpha 'is not a fitting parameter', the reduction of the total current at low Va 'is only very small'. That, not the 5-20 match, is the reason for 0.",
+      "data_cannot_decide": {
+        "alpha_0": {
+          "screen_rms_mA": 1.71,
+          "triode_connected_rms_mA": 4.57,
+          "plate_rms_pct": 1.34
+        },
+        "alpha_0.74_fitted": {
+          "screen_rms_mA": 1.12,
+          "triode_connected_rms_mA": 4.51,
+          "plate_rms_pct": 1.33
+        }
+      },
+      "sensitivity_20W_THD_pct": {
+        "5-20": {
+          "alpha_0": 0.5,
+          "alpha_0.74": 1.03
+        },
+        "43pct_tap_Rk470": {
+          "alpha_0": 1.75,
+          "alpha_0.74": 2.21
+        },
+        "43pct_tap_72.5mA": {
+          "alpha_0": 0.89,
+          "alpha_0.74": 1.34
+        }
+      },
+      "remark": "alpha is one of the parameters the pp-el34-ul distortion is most sensitive to.",
+      "independence": "The 5-20 match at 20 W (0.50 % against the book's about 0.5 %) depends partly on this choice and is not a fully independent check. The 43 % tap took no part in choosing alpha and improves most at alpha 0 too (2.21 -> 1.75 %, at the datasheet's quiescent current 1.34 -> 0.89 %): independent support."
+    }
   }
 }
