@@ -18,6 +18,7 @@ Fitting: as koren_fit.fit (least squares on the plate curves, residual / I_max, 
 the best plain RMS wins). "+ss" fits the 300B rp / gm graphs jointly (relative error, weight 0.05: plan C).
 
   python model_compare.py            300B, EF86, EL34
+  python model_compare.py --final    every tube: the chosen model (source.json "fit") -> <tube>/model.json
 """
 import math, os, sys
 import numpy as np
@@ -127,7 +128,9 @@ def starts(name, curves, seed):
 
 # ---- fitting ----------------------------------------------------------------------------------------------
 
-def fit(name, curves, ss=None):
+def fit(name, curves, ss=None, boost=None):
+    """boost: (below_mA, factor): plate-curve residuals below that current weigh factor times more (the
+    absolute-current residual otherwise gives the region near cutoff little weight)."""
     ep = np.concatenate([c["ep"] for c in curves])
     ip = np.concatenate([c["ip"] for c in curves])
     eg = np.concatenate([np.full(len(c["ep"]), c["eg"]) for c in curves])
@@ -135,10 +138,13 @@ def fit(name, curves, ss=None):
     allc = {"ep": ep, "eg": eg, "eg2": eg2}
     imax = float(ip.max())
     seed = KOREN_SEED
+    w = np.full(len(ip), 1.0 / imax)
+    if boost:
+        w = np.where(ip < boost[0] * 1e-3, boost[1], 1.0) / imax
 
     def resid(q):
         p = unpack(name, q)
-        r = (ia(name, p, allc) - ip) / imax
+        r = (ia(name, p, allc) - ip) * w
         if ss:
             extra = []
             for what, eb, g, v in ss:
@@ -237,7 +243,41 @@ def compare(tube, names, joint=False):
     return rows
 
 
+REFS = {
+    "koren-triode": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations",
+    "derk": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 25 - 27 "
+            "(anode current; implemented from the equations, parameters fitted to verify/data/tubes)",
+}
+
+
+def final(tube):
+    """The model chosen for the tube (source.json "fit"), fitted as decided, written to <tube>/model.json: the
+    parameters the SPICE references and the program use."""
+    global KOREN_SEED
+    import json
+    src, kind, curves = K.load(tube)
+    f = src.get("fit") or {"model": "koren-triode" if kind == "triode" else "derk"}
+    KOREN_SEED, _ = K.fit(kind, curves)
+    name = f["model"]
+    p, imax = fit(name, curves, ss_data(tube) if f.get("joint_rp_gm") else None, tuple(f["boost"]) if f.get("boost") else None)
+    rms, mx, pct = plate_errors(name, p, curves, imax)
+    out = {"tube": tube, "model": name, "params": dict(zip(MODELS[name][1], map(float, p))), "fit": f,
+           "equations": REFS[name], "plate_rms_mA": rms, "plate_rms_pct": pct, "plate_max_mA": mx,
+           "operating_points": {n: r for n, r in op_errors(name, p, src)}}
+    with open(os.path.join(K.DATA, tube, "model.json"), "w", encoding="utf-8") as h:
+        json.dump(out, h, indent=2, ensure_ascii=False)
+        h.write("\n")
+    print(f"{tube}: {name} {f}  plate rms {pct:.2f} % (max {mx:.2f} mA)  " +
+          " | ".join(f"{n}: " + " ".join(f"{k} {v:+.1f}%" for k, v in r.items()) for n, r in op_errors(name, p, src)))
+    return name, p
+
+
 if __name__ == "__main__":
+    if "--final" in sys.argv:
+        for t in [a for a in sys.argv[1:] if not a.startswith("-")] or sorted(
+                d for d in os.listdir(K.DATA) if os.path.isfile(os.path.join(K.DATA, d, "source.json"))):
+            final(t)
+        sys.exit(0)
     which = sys.argv[1:] or ["300B", "EF86", "EL34"]
     for t in which:
         if t == "300B":

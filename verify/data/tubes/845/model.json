@@ -1,0 +1,38 @@
+{
+  "tube": "845",
+  "model": "koren-triode",
+  "params": {
+    "MU": 5.35733243451425,
+    "EX": 1.60016116917856,
+    "KG1": 10135.600775642699,
+    "KP": 81.61708940919425,
+    "KVB": 6.948489975111519
+  },
+  "fit": {
+    "model": "koren-triode"
+  },
+  "equations": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations",
+  "plate_rms_mA": 1.357665191766891,
+  "plate_rms_pct": 0.9046565933391333,
+  "plate_max_mA": 4.482225046299623,
+  "operating_points": {
+    "datasheet class A1, 750 V": {
+      "mu": 0.700330546680537,
+      "rp_ohm": 6.4682547131702615,
+      "gm_umho": -4.879085805464559,
+      "ip_mA": -17.50825618689447
+    },
+    "datasheet class A1, 1000 V": {
+      "mu": 0.11353890237559672,
+      "rp_ohm": 8.300772197433696,
+      "gm_umho": -7.033492787668864,
+      "ip_mA": -13.016827986179827
+    },
+    "datasheet class A1, 1250 V": {
+      "mu": -0.80670106370369,
+      "rp_ohm": 16.608140312889713,
+      "gm_umho": -14.450255012643023,
+      "ip_mA": -11.397230697089835
+    }
+  }
+}

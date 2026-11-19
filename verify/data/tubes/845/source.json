@@ -45,5 +45,8 @@
       "rp_ohm": 1700,
       "gm_umho": 3100
     }
-  ]
+  ],
+  "fit": {
+    "model": "koren-triode"
+  }
 }

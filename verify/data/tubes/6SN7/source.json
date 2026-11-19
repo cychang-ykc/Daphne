@@ -56,5 +56,8 @@
       "eg_V": -18,
       "ip_mA": 0.01
     }
-  ]
+  ],
+  "fit": {
+    "model": "koren-triode"
+  }
 }

@@ -27,5 +27,9 @@
       "gm_umho": 2000,
       "mu_g2g1": 38
     }
-  ]
+  ],
+  "fit": {
+    "model": "derk",
+    "why": "rp +143 % (Koren) -> -34 % against the table, -9 % against the curves"
+  }
 }

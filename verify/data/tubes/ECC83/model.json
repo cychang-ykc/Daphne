@@ -1,0 +1,32 @@
+{
+  "tube": "ECC83",
+  "model": "koren-triode",
+  "params": {
+    "MU": 105.81236009140427,
+    "EX": 1.0815735640086266,
+    "KG1": 894.4401686712014,
+    "KP": 671.9022858150186,
+    "KVB": 7711.869431743924
+  },
+  "fit": {
+    "model": "koren-triode"
+  },
+  "equations": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations",
+  "plate_rms_mA": 0.04500764992499862,
+  "plate_rms_pct": 0.9070099940550285,
+  "plate_max_mA": 0.21798520954437497,
+  "operating_points": {
+    "datasheet typical, 100 V": {
+      "mu": 4.9139673355622335,
+      "rp_ohm": 3.5215775936104547,
+      "gm_umho": 1.3450236890881024,
+      "ip_mA": -8.976351797355742
+    },
+    "datasheet typical, 250 V": {
+      "mu": -1.9135414417960277,
+      "rp_ohm": -7.90437718941014,
+      "gm_umho": 6.505016812726566,
+      "ip_mA": 0.8942881617345726
+    }
+  }
+}

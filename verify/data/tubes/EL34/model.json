@@ -1,0 +1,37 @@
+{
+  "tube": "EL34",
+  "model": "derk",
+  "params": {
+    "MU": 14.152438019702434,
+    "X": 1.3505967652340731,
+    "KP": 50.40186375756497,
+    "KVB": 13951.046163753757,
+    "K": 0.005637343928799557,
+    "BETA": 0.05132581674404867,
+    "D": 2.950018883606683e-06
+  },
+  "fit": {
+    "model": "derk",
+    "boost": [
+      30,
+      3
+    ],
+    "why": "rp within 25 %; residuals below 30 mA weigh 3 times: near cutoff at Vg2 250 V +22 % -> +10 %"
+  },
+  "equations": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 25 - 27 (anode current; implemented from the equations, parameters fitted to verify/data/tubes)",
+  "plate_rms_mA": 6.148830132685899,
+  "plate_rms_pct": 1.3366257826315362,
+  "plate_max_mA": 30.935523358968133,
+  "operating_points": {
+    "datasheet class A, Vg2 245 V": {
+      "rp_ohm": 12.099344559083551,
+      "gm_umho": 6.335863428054007,
+      "ip_mA": -5.326331629502842
+    },
+    "datasheet class A, Vg2 265 V": {
+      "rp_ohm": -6.118537202319507,
+      "gm_umho": 5.873880249491395,
+      "ip_mA": -5.041965492835004
+    }
+  }
+}

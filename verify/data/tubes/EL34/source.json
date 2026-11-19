@@ -68,5 +68,13 @@
       "gm_umho": 11000,
       "mu_g2g1": 11
     }
-  ]
+  ],
+  "fit": {
+    "model": "derk",
+    "boost": [
+      30,
+      3
+    ],
+    "why": "rp within 25 %; residuals below 30 mA weigh 3 times: near cutoff at Vg2 250 V +22 % -> +10 %"
+  }
 }

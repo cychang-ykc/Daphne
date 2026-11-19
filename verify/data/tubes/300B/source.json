@@ -35,5 +35,10 @@
       "rp_ohm": 790,
       "gm_umho": 5000
     }
-  ]
+  ],
+  "fit": {
+    "model": "koren-triode",
+    "joint_rp_gm": true,
+    "why": "plan C: the rp / gm graphs (pages 4, 5) fitted jointly; Dempwolf evaluated, no better"
+  }
 }

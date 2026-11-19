@@ -1,0 +1,34 @@
+{
+  "tube": "300B",
+  "model": "koren-triode",
+  "params": {
+    "MU": 3.9736512052879713,
+    "EX": 1.5241788361675028,
+    "KG1": 2175.614122396045,
+    "KP": 49.62363777746838,
+    "KVB": 983.6118750822765
+  },
+  "fit": {
+    "model": "koren-triode",
+    "joint_rp_gm": true,
+    "why": "plan C: the rp / gm graphs (pages 4, 5) fitted jointly; Dempwolf evaluated, no better"
+  },
+  "equations": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations",
+  "plate_rms_mA": 4.838659202067625,
+  "plate_rms_pct": 1.5132992065073714,
+  "plate_max_mA": 17.41223816206916,
+  "operating_points": {
+    "datasheet class A1, 300 V": {
+      "mu": -0.20007281234948382,
+      "rp_ohm": -1.983053034642393,
+      "gm_umho": 1.2479109464241807,
+      "ip_mA": -1.7919608458371645
+    },
+    "datasheet class A1, 350 V": {
+      "mu": -1.0586459896289604,
+      "rp_ohm": -5.122089696493043,
+      "gm_umho": 2.962777632020898,
+      "ip_mA": -2.648670957995887
+    }
+  }
+}

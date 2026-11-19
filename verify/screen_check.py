@@ -44,7 +44,10 @@ def stats(err):
 def main():
     src, kind, curves = K.load("EL34")
     M.KOREN_SEED, _ = K.fit(kind, curves)
-    fits = {"koren-pentode": M.KOREN_SEED, "derk": M.fit("derk", curves)[0]}
+    import json
+    with open(os.path.join(D, "model.json"), encoding="utf-8") as f:
+        chosen = json.load(f)   # the parameters in use (model_compare.py --final)
+    fits = {"koren-pentode": M.KOREN_SEED, chosen["model"]: np.array(list(chosen["params"].values()))}
     for name, p in fits.items():
         print(f"\n== {name}")
         # Philips sheet A: pentode, three screen voltages
