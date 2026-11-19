@@ -10,7 +10,7 @@
       10,
       11
     ],
-    "figure": "page 10 (sheet B): Ia vs Va, Vg2 = 250 V, Vg1 = 0 .. -25 V (automatic; the 25 W hyperbola masked); page 11 (sheet C): Vg2 = 360 V, Vg1 = 0 .. -32 V (by hand); both rotated 90 deg",
+    "figure": "page 10 (sheet B): Ia vs Va, Vg2 = 250 V, Vg1 = 0 .. -25 V (automatic; the 25 W hyperbola masked; -15 V above 300 V traced by hand, wpd_p10_vg-15.json); page 11 (sheet C): Vg2 = 360 V, Vg1 = 0 .. -32 V (by hand, wpd_p11.json); both rotated 90 deg",
     "alternate_url": "https://frank.pocnet.net/sheets/129/e/EL34_Mullard.pdf"
   },
   "vg2": null,
