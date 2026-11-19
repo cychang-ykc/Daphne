@@ -1,0 +1,72 @@
+{
+  "tube": "EL34",
+  "model": "pentode",
+  "used_in": "pp-el34-ul output (ultralinear: Vg2 follows the plate through the screen tap)",
+  "datasheet": {
+    "maker": "Philips",
+    "document": "Philips Electronic Tube Handbook, EL34 (sheets A - K, 1949 - 1959)",
+    "url": "https://frank.pocnet.net/sheets/030/e/EL34.pdf",
+    "page": [
+      10,
+      11
+    ],
+    "figure": "page 10 (sheet B): Ia vs Va, Vg2 = 250 V, Vg1 = 0 .. -25 V (automatic; the 25 W hyperbola masked); page 11 (sheet C): Vg2 = 360 V, Vg1 = 0 .. -32 V (by hand); both rotated 90 deg",
+    "alternate_url": "https://frank.pocnet.net/sheets/129/e/EL34_Mullard.pdf"
+  },
+  "vg2": null,
+  "validation": [
+    {
+      "url": "https://frank.pocnet.net/sheets/030/e/EL34.pdf",
+      "page": 9,
+      "what": "Philips sheet A: Ia, Ig2 vs Vg1 at Va = Vg2 = 250 / 350 / 400 V (third screen voltage)"
+    },
+    {
+      "url": "https://frank.pocnet.net/sheets/129/e/EL34_Mullard.pdf",
+      "page": 10,
+      "what": "Mullard C4: triode connected (g2 to anode), Ia vs Va, Vg1 as parameter"
+    },
+    {
+      "url": "https://frank.pocnet.net/sheets/129/e/EL34_Mullard.pdf",
+      "page": 9,
+      "what": "Mullard C3: triode connected, Ia vs Vg1, Va as parameter"
+    },
+    {
+      "url": "https://frank.pocnet.net/sheets/129/e/EL34_Mullard.pdf",
+      "page": 2,
+      "what": "Mullard D2: push-pull, distributed load (ultralinear) at 20 % and 43 % screen tapping: operating conditions only, no curves"
+    }
+  ],
+  "note": "Neither datasheet has ultralinear plate curves; Vg2 = 250 and 360 V (pages 10, 11) give the screen dependence the ultralinear stage needs.",
+  "plot": {
+    "ep_max_V": 750,
+    "ip_max_mA": 500
+  },
+  "require_vg2": [
+    250,
+    360
+  ],
+  "operating_points": [
+    {
+      "name": "datasheet class A, Vg2 245 V",
+      "source": "Philips page 3, operating characteristics class A (Vg2 = Vb - Ig2 x Rg2)",
+      "ep_V": 250,
+      "eg_V": -14.5,
+      "eg2_V": 245,
+      "ip_mA": 70,
+      "rp_ohm": 18000,
+      "gm_umho": 9000,
+      "mu_g2g1": 11
+    },
+    {
+      "name": "datasheet class A, Vg2 265 V",
+      "source": "Philips page 3, operating characteristics class A (Vg2 = Vb - Ig2 x Rg2)",
+      "ep_V": 250,
+      "eg_V": -13.5,
+      "eg2_V": 265,
+      "ip_mA": 100,
+      "rp_ohm": 15000,
+      "gm_umho": 11000,
+      "mu_g2g1": 11
+    }
+  ]
+}

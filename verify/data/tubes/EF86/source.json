@@ -1,0 +1,31 @@
+{
+  "tube": "EF86",
+  "model": "pentode",
+  "used_in": "pp-el34-ul input stage",
+  "datasheet": {
+    "maker": "Philips",
+    "document": "Philips Electronic Tube Handbook, EF86 (curves 1948)",
+    "url": "https://frank.pocnet.net/sheets/030/e/EF86.pdf",
+    "page": 7,
+    "figure": "page 7 (sheet B): Ia vs Va, Vg2 = 140 V, Vg3 = 0 V, Vg1 = 0 .. -4.5 V (rotated 90 deg; the Wa = 1 W hyperbola is masked, the dashed continuations beyond it are left out); typical characteristics on page 1",
+    "alternate_url": "https://frank.pocnet.net/sheets/010/e/EF86.pdf"
+  },
+  "vg2": 140,
+  "plot": {
+    "ep_max_V": 590,
+    "ip_max_mA": 8
+  },
+  "operating_points": [
+    {
+      "name": "datasheet typical, 250 V",
+      "source": "page 1, typical characteristics",
+      "ep_V": 250,
+      "eg_V": -2,
+      "eg2_V": 140,
+      "ip_mA": 3.0,
+      "rp_ohm": 2500000.0,
+      "gm_umho": 2000,
+      "mu_g2g1": 38
+    }
+  ]
+}

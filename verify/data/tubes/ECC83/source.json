@@ -1,0 +1,39 @@
+{
+  "tube": "ECC83",
+  "model": "triode",
+  "used_in": "pp-el34-ul phase splitter",
+  "datasheet": {
+    "maker": "Philips",
+    "document": "Philips Electronic Tube Handbook, ECC83 (curves 1953)",
+    "url": "https://frank.pocnet.net/sheets/030/e/ECC83.pdf",
+    "page": 10,
+    "figure": "page 10 (sheet B): Ia vs Va, Vg = 0 .. -4 V, one system (rotated 90 deg); typical characteristics on page 3",
+    "alternate_url": "https://frank.pocnet.net/sheets/010/e/ECC83.pdf"
+  },
+  "plot": {
+    "ep_max_V": 375,
+    "ip_max_mA": 5
+  },
+  "operating_points": [
+    {
+      "name": "datasheet typical, 100 V",
+      "source": "page 3, typical characteristics",
+      "ep_V": 100,
+      "eg_V": -1,
+      "ip_mA": 0.5,
+      "mu": 100,
+      "rp_ohm": 80000,
+      "gm_umho": 1250
+    },
+    {
+      "name": "datasheet typical, 250 V",
+      "source": "page 3, typical characteristics",
+      "ep_V": 250,
+      "eg_V": -2,
+      "ip_mA": 1.2,
+      "mu": 100,
+      "rp_ohm": 62500,
+      "gm_umho": 1600
+    }
+  ]
+}

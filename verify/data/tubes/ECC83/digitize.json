@@ -1,0 +1,44 @@
+{
+  "graphs": [
+    {
+      "page": 10,
+      "rotate": -90,
+      "region": [
+        240,
+        85,
+        1715,
+        1080
+      ],
+      "x": [
+        0,
+        375
+      ],
+      "y": [
+        0,
+        5
+      ],
+      "min_extent": 0.07,
+      "gap_px": 80,
+      "trim_top_px": 0,
+      "smooth_px": 3,
+      "curves": [
+        0,
+        -0.5,
+        -1,
+        -1.5,
+        -2,
+        -2.5,
+        -3,
+        -3.5,
+        -4
+      ],
+      "x_step": 5,
+      "y_step": 0.1,
+      "open_px": 5,
+      "maxrun": 14,
+      "min_piece_px": 10,
+      "join_deg": 50,
+      "order": "mean"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "tube": "2A3",
+  "model": "triode",
+  "used_in": "set-2a3 output",
+  "datasheet": {
+    "maker": "RCA",
+    "document": "RCA tube handbook HB-3, 2A3 (data 1947, curves 1933)",
+    "url": "https://frank.pocnet.net/sheets/049/2/2A3.pdf",
+    "page": 3,
+    "figure": "page 3: average plate characteristics 92C-5233R1, Ef = 2.5 V DC, Ec = 0 .. -120 V (rotated 90 deg; the 2500-ohm load line and the dashed -48.5 / -87 V curves are masked); typical operation on page 1",
+    "alternate_url": "https://frank.pocnet.net/sheets/021/2/2A3.pdf"
+  },
+  "plot": {
+    "ep_max_V": 850,
+    "ip_max_mA": 250
+  },
+  "operating_points": [
+    {
+      "name": "datasheet class A1, 250 V",
+      "source": "page 1, amplifier class A1",
+      "ep_V": 250,
+      "eg_V": -45,
+      "ip_mA": 60,
+      "mu": 4.2,
+      "rp_ohm": 800,
+      "gm_umho": 5250
+    }
+  ]
+}

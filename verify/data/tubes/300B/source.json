@@ -1,0 +1,39 @@
+{
+  "tube": "300B",
+  "model": "triode",
+  "used_in": "set-300b output; set-845 driver (some designs)",
+  "datasheet": {
+    "maker": "Western Electric",
+    "document": "Western Electric, Bell System Practices AB46.300B, Issue 1, January 1950",
+    "url": "https://frank.pocnet.net/sheets/084/3/300B.pdf",
+    "page": 3,
+    "figure": "plate characteristics, Ef = 5.0 V AC, Ec = 0 .. -140 V (page 3, upper graph); typical operation on page 2",
+    "alternate_url": "https://worldradiohistory.com/Archive-Catalogs/Suppliers/VWXYZ/Western-Electric-Vacuum-Tube-Data-300A--300B-7-pages.pdf"
+  },
+  "plot": {
+    "ep_max_V": 700,
+    "ip_max_mA": 360
+  },
+  "operating_points": [
+    {
+      "name": "datasheet class A1, 300 V",
+      "source": "page 2, single tube amplifier class A1",
+      "ep_V": 300,
+      "eg_V": -61,
+      "ip_mA": 60,
+      "mu": 3.9,
+      "rp_ohm": 740,
+      "gm_umho": 5300
+    },
+    {
+      "name": "datasheet class A1, 350 V",
+      "source": "page 2, single tube amplifier class A1",
+      "ep_V": 350,
+      "eg_V": -74,
+      "ip_mA": 60,
+      "mu": 3.9,
+      "rp_ohm": 790,
+      "gm_umho": 5000
+    }
+  ]
+}
