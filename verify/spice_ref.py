@@ -70,7 +70,7 @@ def screen_kg2(tube, ratio=0.15, va=250.0, vg2=250.0, vg=-12.2):
     return ratio * ia_per_ik - kk / (1 + beta * va)
 
 
-def pentode(name, tube, a, g2, g, k, r_g2=0.15, screen="fixed", cutoff_c=0.0):
+def pentode(name, tube, a, g2, g, k, r_g2=0.15, screen="fixed", cutoff_c=0.0, screen_pt=None):
     """Derk pentode: anode current a -> k; screen current g2 -> k.
     screen "fixed": r_g2 times the anode current.
     screen "fit": the fitted screen current, model.json G2 and AS (Reefman eq. 23).
@@ -88,7 +88,7 @@ def pentode(name, tube, a, g2, g, k, r_g2=0.15, screen="fixed", cutoff_c=0.0):
         # the fitted screen current (Reefman eq. 23; G2, AS in model.json, fitted with Philips sheet A)
         ig2 = f"{ik}*{f(p['G2'])}*(1+{f(p['AS'])}/(1+{beta}*{va}))"
     elif screen == "derk":
-        ig2 = f"{ik}*({f(screen_kg2(tube))}+{kk}/(1+{beta}*{va}))"
+        ig2 = f"{ik}*({f(screen_kg2(tube, *(screen_pt or ())))}+{kk}/(1+{beta}*{va}))"
     else:
         ig2 = f"{f(r_g2)}*{ia}"
     if cutoff_c:
