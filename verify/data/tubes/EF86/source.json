@@ -7,7 +7,7 @@
     "document": "Philips Electronic Tube Handbook, EF86 (curves 1948)",
     "url": "https://frank.pocnet.net/sheets/030/e/EF86.pdf",
     "page": 7,
-    "figure": "page 7 (sheet B): Ia vs Va, Vg2 = 140 V, Vg3 = 0 V, Vg1 = 0 .. -4.5 V (rotated 90 deg; the Wa = 1 W hyperbola is masked, the dashed continuations beyond it are left out); typical characteristics on page 1",
+    "figure": "page 7 (sheet B): Ia vs Va, Vg2 = 140 V, Vg3 = 0 V, Vg1 = 0 .. -4.5 V (rotated 90 deg; automatic, the Wa = 1 W hyperbola masked; the dashed continuations of 0 .. -2 V past it traced by hand, wpd_p7_dashed.json); typical characteristics on page 1",
     "alternate_url": "https://frank.pocnet.net/sheets/010/e/EF86.pdf"
   },
   "vg2": 140,
