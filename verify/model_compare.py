@@ -69,6 +69,8 @@ MODELS = {
     "dempwolf": (dempwolf, ("G", "C", "MU", "GAMMA"), ()),
     "koren-pentode": (koren_p, K.NAMES, ()),
     "derk": (derk, ("MU", "X", "KP", "KVB", "K", "BETA", "D"), (6,)),
+    # anode current as "derk"; the screen-current parameters G2 = 1 / kg2 and AS (derk_screen) ride along
+    "derk+screen": (lambda p, ep, eg, eg2: derk(p[:7], ep, eg, eg2), ("MU", "X", "KP", "KVB", "K", "BETA", "D", "G2", "AS"), (6,)),
     "derkE": (derk_e, ("MU", "X", "KP", "KVB", "K", "BETA", "D"), (6,)),
 }
 
@@ -247,7 +249,95 @@ REFS = {
     "koren-triode": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations",
     "derk": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 25 - 27 "
             "(anode current; implemented from the equations, parameters fitted to verify/data/tubes)",
+    "derk+screen": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 23, "
+                   "25 - 27 (anode and screen current, AS from eq. 27; implemented from the equations, parameters fitted to "
+                   "verify/data/tubes)",
 }
+
+
+def derk_screen(p, ep, eg, eg2):
+    """Screen current of the Derk model (Reefman eq. 23): I_K G2 (1 + AS / (1 + beta Va)), G2 = 1 / kg2."""
+    mu, x, kp, kvb, k, beta, d, g2, a_s = p
+    return koren_current((mu, x, kp, kvb), eg2, eg) * g2 * (1.0 + a_s / (1.0 + beta * ep))
+
+
+ALPHA_FIXED = None   # Reefman: alpha is "not a fitting parameter", a very small reduction; None = fitted
+
+
+def fit_derk_screen(tube, curves, boost):
+    """Derk anode and screen current fitted together: the plate curves (anode current), and the transfer graphs
+    tr_eb<Va>_vg2<Vg2>.csv (anode current vs Eg) and sc_eb<Va>_vg2<Vg2>.csv (screen current vs Eg): Philips EL34
+    sheet A at Vg2 = 250 / 375 / 425 V, which also reach the screen voltages of the ultralinear stages; and the
+    triode-connected curves pt_vg<Vg1>_tri.csv (Ia + Ig2 at Vg2 = Va, Mullard C4), the only data on how the
+    current divides at low Va, where the ultralinear stage swings at full power. Same
+    weighting as the plate fit (residual / I_max, times boost[1] below boost[0] mA)."""
+    import re
+    d = os.path.join(K.DATA, tube)
+    A, S = [], []   # (ep, eg, eg2, i) arrays: anode, screen
+    for c in curves:
+        A.append((c["ep"], np.full(len(c["ep"]), c["eg"]), np.full(len(c["ep"]), c["eg2"]), c["ip"]))
+    for fn in sorted(os.listdir(d)):
+        m = re.match(r"^(tr|sc)_eb(\d+)_vg2(\d+)\.csv$", fn)
+        if not m:
+            continue
+        a = np.loadtxt(os.path.join(d, fn), delimiter=",", skiprows=1, ndmin=2)
+        a = a[a[:, 1] >= 1.0]
+        row = (np.full(len(a), float(m.group(2))), a[:, 0], np.full(len(a), float(m.group(3))), a[:, 1] * 1e-3)
+        (A if m.group(1) == "tr" else S).append(row)
+    T = []   # triode connected (Mullard C4, page 10): Ia + Ig2 at Vg2 = Va, down to low Va
+    for fn in sorted(os.listdir(d)):
+        m = re.match(r"^pt_vg(-?\d+(?:\.\d+)?)_tri\.csv$", fn)
+        if m:
+            a = np.loadtxt(os.path.join(d, fn), delimiter=",", skiprows=1, ndmin=2)
+            a = a[a[:, 1] >= 1.0]
+            T.append((a[:, 0], np.full(len(a), float(m.group(1))), a[:, 0], a[:, 1] * 1e-3))
+    cat = lambda L, i: np.concatenate([r[i] for r in L])
+    ea, ga, g2a, ia_ = (cat(A, i) for i in range(4))
+    es, gs, g2s, is_ = (cat(S, i) for i in range(4))
+    et, gt, g2t, it_ = (cat(T, i) for i in range(4)) if T else (np.zeros(0),) * 4
+    imax = float(max(c["ip"].max() for c in curves))
+    wa = np.where(ia_ < boost[0] * 1e-3, boost[1], 1.0) / imax
+    ws = np.where(is_ < boost[0] * 1e-3, boost[1], 1.0) / imax
+    wt = np.where(it_ < boost[0] * 1e-3, boost[1], 1.0) / imax
+    lin = (6,)
+
+    def unpack9(q):
+        """q: 7 anode parameters, log G2, logit alpha. Reefman eq. 26 / 27 (the anode current is zero at Va = 0)
+        ties the screen current to the anode parameters: AS G2 = K - alpha (K + G2), alpha in [0, 1) the small fall
+        of the total current at low Va. Fitting AS freely lets the high-Va data of sheet A drop it to zero."""
+        p7 = [q[i] if i in lin else math.exp(min(max(q[i], -60.0), 60.0)) for i in range(7)]
+        g2 = math.exp(min(max(q[7], -60.0), 60.0))
+        alpha = ALPHA_FIXED if ALPHA_FIXED is not None else 1.0 / (1.0 + math.exp(-min(max(q[8], -60.0), 60.0)))
+        a_s = (p7[4] - alpha * (p7[4] + g2)) / g2
+        return np.array(p7 + [g2, a_s])
+
+    def resid(q):
+        p = unpack9(q)
+        r = np.r_[(derk(p[:7], ea, ga, g2a) - ia_) * wa, (derk_screen(p, es, gs, g2s) - is_) * ws,
+                  (derk(p[:7], et, gt, g2t) + derk_screen(p, et, gt, g2t) - it_) * wt]
+        return np.nan_to_num(r, nan=1e3, posinf=1e3, neginf=-1e3)
+
+    best = None
+    for p0 in starts("derk", curves, KOREN_SEED):
+        for g2 in (p0[4] * 0.1, p0[4] * 0.3):
+            for alpha in (0.02, 0.1, 0.3):
+                q0 = np.r_[[math.log(v) if i not in lin else v for i, v in enumerate(p0)], math.log(g2), math.log(alpha / (1 - alpha))]
+                try:
+                    r = least_squares(resid, q0, loss="soft_l1", f_scale=0.01, x_scale="jac", max_nfev=3000)
+                except (ValueError, FloatingPointError, OverflowError):
+                    continue
+                c = float(np.sum(resid(r.x) ** 2))
+                if np.isfinite(c) and (best is None or c < best[0]):
+                    best = (c, r.x)
+    p = unpack9(best[1])
+    rep = {}
+    for lab, L, fn_ in (("anode (plate + sheet A)", A, lambda p, e, g, g2: derk(p[:7], e, g, g2)), ("screen (sheet A)", S, derk_screen),
+                        ("triode connected Ia + Ig2 (Mullard C4)", T, lambda p, e, g, g2: derk(p[:7], e, g, g2) + derk_screen(p, e, g, g2))):
+        if not L:
+            continue
+        e = np.concatenate([(fn_(p, r[0], r[1], r[2]) - r[3]) * 1e3 for r in L])
+        rep[lab] = (float(np.sqrt(np.mean(e * e))), float(np.abs(e).max()))
+    return p, imax, rep
 
 
 def final(tube):
@@ -259,14 +349,22 @@ def final(tube):
     f = src.get("fit") or {"model": "koren-triode" if kind == "triode" else "derk"}
     KOREN_SEED, _ = K.fit(kind, curves)
     name = f["model"]
-    p, imax = fit(name, curves, ss_data(tube) if f.get("joint_rp_gm") else None, tuple(f["boost"]) if f.get("boost") else None)
+    extra = {}
+    if name == "derk+screen":
+        global ALPHA_FIXED
+        ALPHA_FIXED = f.get("alpha")
+        p, imax, extra = fit_derk_screen(tube, curves, tuple(f.get("boost") or (0, 1)))
+    else:
+        p, imax = fit(name, curves, ss_data(tube) if f.get("joint_rp_gm") else None, tuple(f["boost"]) if f.get("boost") else None)
     rms, mx, pct = plate_errors(name, p, curves, imax)
     out = {"tube": tube, "model": name, "params": dict(zip(MODELS[name][1], map(float, p))), "fit": f,
            "equations": REFS[name], "plate_rms_mA": rms, "plate_rms_pct": pct, "plate_max_mA": mx,
-           "operating_points": {n: r for n, r in op_errors(name, p, src)}}
+           "operating_points": {n: r for n, r in op_errors(name, p, src)}, "fit_errors_mA": extra}
     with open(os.path.join(K.DATA, tube, "model.json"), "w", encoding="utf-8") as h:
         json.dump(out, h, indent=2, ensure_ascii=False)
         h.write("\n")
+    if extra:
+        print(f"{tube}: rms / max mA: " + "; ".join(f"{k} {v[0]:.2f} / {v[1]:.1f}" for k, v in extra.items()))
     print(f"{tube}: {name} {f}  plate rms {pct:.2f} % (max {mx:.2f} mA)  " +
           " | ".join(f"{n}: " + " ".join(f"{k} {v:+.1f}%" for k, v in r.items()) for n, r in op_errors(name, p, src)))
     return name, p

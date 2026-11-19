@@ -70,11 +70,12 @@
     }
   ],
   "fit": {
-    "model": "derk",
+    "model": "derk+screen",
     "boost": [
       30,
       3
     ],
-    "why": "rp within 25 %; residuals below 30 mA weigh 3 times: near cutoff at Vg2 250 V +22 % -> +10 %"
+    "why": "anode and screen current fitted together with Philips sheet A (Vg2 250 / 375 / 425 V, the screen voltages of the ultralinear stages) and the Mullard triode-connected curves (Ia + Ig2 down to low Va); AS from Reefman eq. 27 with alpha = 0 (Reefman: not a fitting parameter, a very small reduction; the data fit alpha 0 and 0.74 equally well, rms 1.71 / 1.12 mA screen, 4.57 / 4.51 mA triode connected, but alpha 0.74 doubles the 5-20 distortion); residuals below 30 mA weigh 3 times",
+    "alpha": 0.0
   }
 }

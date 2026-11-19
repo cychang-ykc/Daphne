@@ -9,7 +9,7 @@ Input: verify/data/tubes/<tube>/digitize.json
                   optional: "kind" (plate | transfer | rp | mu | gm), "rotate" (deg), "url", "open_px", "exclude",
                   "exclude_lines", "line_px", "min_piece_px", "gap_px", "min_extent", "direction", "order", "vg2",
                   "outlier_px", "outlier_half", "trim_top_px", "smooth_px", "join_deg", "grid_piece_px", "drop_vertical", "drop_extra_right",
-                  "curves_vg2" (a screen voltage per curve), "grid_threshold" / "ink_threshold"
+                  "curves_vg2" (a screen voltage per curve), "exclude_csv" / "csv_px", "grid_threshold" / "ink_threshold"
                   (grey levels, default 128),
                   "manual" (a reason: the graph is skipped, its CSVs come from WebPlotDigitizer)
                   "vg2": 250 } ] }                pentodes: the screen voltage of this graph (optional)
@@ -299,6 +299,8 @@ def select_curves(cur, g, plot_w, plot_h):
     # left to right: by the x of each curve's lowest point (default) or its mean x; "top": top to bottom
     def key(m):
         v, u = np.nonzero(m)
+        if g.get("order") == "high":
+            return u[np.argmin(v)]   # by the x of the highest point (curves that share a crowded tail)
         if g.get("order") == "top":
             return v.mean()   # stacked curves (pentode plate curves): top (most current) first
         return u.mean() if g.get("order") == "mean" else u[np.argmax(v)]
@@ -317,6 +319,7 @@ KINDS = {
     "plate_tri":    ("Ep_V,Ip_mA", lambda q: f"pt_vg{q}_tri"),     # Ip vs Ep, parameter Vg1
     "transfer_tri": ("Eg_V,Ip_mA", lambda q: f"tr_eb{q}_tri"),     # Ip vs Vg1, parameter Ea
     "plate_mullard": ("Ep_V,Ip_mA", lambda q: f"mu_vg{q}"),       # another maker's plate curves, for comparison
+    "screen":   ("Eg_V,Ig2_mA", lambda q: f"sc_eb{q}"),     # screen current vs Eg, parameter Eb
 }
 
 
@@ -375,6 +378,15 @@ def digitize(tube):
         inside = (X > lo_x + bx) & (X < hi_x - bx) & (Y > lo_y + by) & (Y < hi_y - by)
         for box in g.get("exclude", []):   # value-space boxes [x0, y0, x1, y1]: labels touching a curve
             inside &= ~((X >= box[0]) & (X <= box[2]) & (Y >= box[1]) & (Y <= box[3]))
+        # curves already digitized on this graph (CSV files), masked csv_px either side: another family drawn
+        # across the one wanted (the solid Ia curves over the dashed Ig2 ones)
+        if g.get("exclude_csv"):
+            cm = Image.new("L", (gray.shape[1], gray.shape[0]), 0)
+            cd = ImageDraw.Draw(cm)
+            for fn in g["exclude_csv"]:
+                pts = np.loadtxt(os.path.join(d, fn), delimiter=",", skiprows=1, ndmin=2)
+                cd.line([to_pixel(x, y) for x, y in pts], fill=255, width=2 * g.get("csv_px", 7) + 1, joint="curve")
+            inside &= np.array(cm) == 0
         # straight lines drawn across the curves (a load line): value-space segments [x0, y0, x1, y1], masked
         # line_px either side; the curves they cut are joined again below
         for seg in g.get("exclude_lines", []):

@@ -564,6 +564,55 @@
           85
         ]
       ]
+    },
+    {
+      "kind": "screen",
+      "page": 9,
+      "region": [
+        100,
+        240,
+        1120,
+        1690
+      ],
+      "x": [
+        -70,
+        0
+      ],
+      "y": [
+        0,
+        250
+      ],
+      "curves": [
+        400,
+        350,
+        250
+      ],
+      "curves_vg2": [
+        425,
+        375,
+        250
+      ],
+      "order": "high",
+      "min_piece_px": 8,
+      "min_extent": 0.05,
+      "gap_px": 75,
+      "x_step": 2,
+      "y_step": 5,
+      "join_deg": 35,
+      "exclude_csv": [
+        "tr_eb400_vg2425.csv",
+        "tr_eb350_vg2375.csv",
+        "tr_eb250_vg2250.csv"
+      ],
+      "csv_px": 5,
+      "exclude": [
+        [
+          -70,
+          26,
+          0,
+          250
+        ]
+      ]
     }
   ]
 }

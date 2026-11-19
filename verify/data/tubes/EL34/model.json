@@ -1,37 +1,54 @@
 {
   "tube": "EL34",
-  "model": "derk",
+  "model": "derk+screen",
   "params": {
-    "MU": 14.152438019702434,
-    "X": 1.3505967652340731,
-    "KP": 50.40186375756497,
-    "KVB": 13951.046163753757,
-    "K": 0.005637343928799557,
-    "BETA": 0.05132581674404867,
-    "D": 2.950018883606683e-06
+    "MU": 13.921736924458518,
+    "X": 1.396851825059823,
+    "KP": 49.79560100040383,
+    "KVB": 16418.78871813637,
+    "K": 0.004704367936525899,
+    "BETA": 0.05401814038926448,
+    "D": 2.6338845688256617e-06,
+    "G2": 0.0004327243552752895,
+    "AS": 10.871511804629266
   },
   "fit": {
-    "model": "derk",
+    "model": "derk+screen",
     "boost": [
       30,
       3
     ],
-    "why": "rp within 25 %; residuals below 30 mA weigh 3 times: near cutoff at Vg2 250 V +22 % -> +10 %"
+    "why": "anode and screen current fitted together with Philips sheet A (Vg2 250 / 375 / 425 V, the screen voltages of the ultralinear stages) and the Mullard triode-connected curves (Ia + Ig2 down to low Va); AS from Reefman eq. 27 with alpha = 0 (Reefman: not a fitting parameter, a very small reduction; the data fit alpha 0 and 0.74 equally well, rms 1.71 / 1.12 mA screen, 4.57 / 4.51 mA triode connected, but alpha 0.74 doubles the 5-20 distortion); residuals below 30 mA weigh 3 times",
+    "alpha": 0.0
   },
-  "equations": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 25 - 27 (anode current; implemented from the equations, parameters fitted to verify/data/tubes)",
-  "plate_rms_mA": 6.148830132685899,
-  "plate_rms_pct": 1.3366257826315362,
-  "plate_max_mA": 30.935523358968133,
+  "equations": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 23, 25 - 27 (anode and screen current, AS from eq. 27; implemented from the equations, parameters fitted to verify/data/tubes)",
+  "plate_rms_mA": 6.1427821528908835,
+  "plate_rms_pct": 1.3353110795819463,
+  "plate_max_mA": 31.598356661819476,
   "operating_points": {
     "datasheet class A, Vg2 245 V": {
-      "rp_ohm": 12.099344559083551,
-      "gm_umho": 6.335863428054007,
-      "ip_mA": -5.326331629502842
+      "rp_ohm": 9.660980405688942,
+      "gm_umho": 4.422319031107326,
+      "ip_mA": -5.0828127734979285
     },
     "datasheet class A, Vg2 265 V": {
-      "rp_ohm": -6.118537202319507,
-      "gm_umho": 5.873880249491395,
-      "ip_mA": -5.041965492835004
+      "rp_ohm": -7.741790769879699,
+      "gm_umho": 4.033222741882756,
+      "ip_mA": -5.229919459819982
     }
+  },
+  "fit_errors_mA": {
+    "anode (plate + sheet A)": [
+      5.651638536066979,
+      31.598356661819476
+    ],
+    "screen (sheet A)": [
+      1.7095162066215566,
+      4.4010925452664145
+    ],
+    "triode connected Ia + Ig2 (Mullard C4)": [
+      4.568895901086232,
+      17.462212164903708
+    ]
   }
 }
