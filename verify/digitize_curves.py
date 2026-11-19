@@ -316,6 +316,7 @@ KINDS = {
     # a pentode triode connected (screen tied to the anode): validation graphs
     "plate_tri":    ("Ep_V,Ip_mA", lambda q: f"pt_vg{q}_tri"),     # Ip vs Ep, parameter Vg1
     "transfer_tri": ("Eg_V,Ip_mA", lambda q: f"tr_eb{q}_tri"),     # Ip vs Vg1, parameter Ea
+    "plate_mullard": ("Ep_V,Ip_mA", lambda q: f"mu_vg{q}"),       # another maker's plate curves, for comparison
 }
 
 
