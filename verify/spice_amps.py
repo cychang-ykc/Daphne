@@ -70,42 +70,59 @@ def opt_se(name, a, bp, raa, lp, ll, cw, dcr):
             "Rspk o 0 8"]
 
 
+# ---- interelectrode capacitances ---------------------------------------------------------------------------
+# Direct interelectrode capacitances from the datasheet front pages (pF): grid-plate, grid-cathode (input; Philips
+# Cg1 is the grid to all electrodes except the anode), plate-cathode (output). "<" values taken at the limit.
+#   6SN7 RCA HB-3 1954 unit 1; 300B WE AB46.300B 1950 p2; 2A3 RCA 1947; 845 RCA 1940; ECC83 Philips 1954 (Ca 0.46,
+#   system 1); EF86 Philips 1956; EL34 Philips 1958
+CAPS = {"6SN7": (4.0, 2.2, 0.7), "300B": (15.0, 8.5, 4.1), "2A3": (16.5, 7.5, 5.5), "845": (13.5, 6.0, 6.5),
+        "ECC83": (1.7, 1.6, 0.46), "EF86": (0.05, 3.8, 5.3), "EL34": (1.1, 15.2, 8.4)}
+
+
+def tube_caps(name, tube, a, g, k):
+    cgp, cgk, cpk = CAPS[tube]
+    return [f"C{name}gp {g} {a} {cgp}p", f"C{name}gk {g} {k} {cgk}p", f"C{name}pk {a} {k} {cpk}p"]
+
+
 # ---- the presets -------------------------------------------------------------------------------------------
 
 def set_driver_6sn7(bp, ra, rk, out_node, rg_next, cc):
     return [f"Vin in 0 SIN(0 {{amp}} {{f0}})", "Rin in 0 1Meg", "Rgs in g1 1k",
             f"Vb1 b1 0 DC {f(bp)}", f"Ra1 b1 a1 {f(ra)}", f"Rk1 k1 0 {f(rk)}", "Ck1 k1 0 1e-4",
-            R.triode("V1", "6SN7", "a1", "g1", "k1"),
+            R.triode("V1", "6SN7", "a1", "g1", "k1"), *tube_caps("V1", "6SN7", "a1", "g1", "k1"),
             f"Cc1 a1 {out_node} {f(cc)}", f"Rg2 {out_node} 0 {f(rg_next)}"]
 
 
 def set_2a3():
     net = ["* set-2a3"] + set_driver_6sn7(300.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
-    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "2A3", "a2", "g2s", "k2"), "Rk2 k2 0 750", "Ck2 k2 0 2.2e-4",
+    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "2A3", "a2", "g2s", "k2"),
+            *tube_caps("V2", "2A3", "a2", "g2s", "k2"), "Rk2 k2 0 750", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 301"] + opt_se("T", "a2", "b2", 2500.0, 10.0, 0.010, 400e-12, 100.0)
     return net
 
 
 def set_300b():
     net = ["* set-300b"] + set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
-    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1200", "Ck2 k2 0 2.2e-4",
+    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
+            *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1200", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 433"] + opt_se("T", "a2", "b2", 4000.0, 15.0, 0.012, 400e-12, 150.0)
     return net
 
 
 def set_845():
     net = ["* set-845"] + set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
-    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1000", "Ck2 k2 0 2.2e-4",
+    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
+            *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1000", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 300", "Rch b2 chx 250", "Lch chx a2 40",
             "Cc2 a2 g3 0.47e-6", "Rg3 g3 nb 100k", "Vnb nb 0 DC -145", "Rgs3 g3 g3s 1k",
-            R.triode("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1020"] + opt_se("T", "a3", "b3", 6000.0, 30.0, 0.020, 300e-12, 250.0)
+            R.triode("V3", "845", "a3", "g3s", "0"), *tube_caps("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1020"] + opt_se("T", "a3", "b3", 6000.0, 30.0, 0.020, 300e-12, 250.0)
     return net
 
 
-def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0)):
+def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.015, cw=300e-12):
     """Mullard 5-20, Fig. 1 values. Feedback R13 5.6 k // C9 330 pF from the secondary to R5 (open loop: the
     feedback resistor goes to ground instead, keeping R5's loading)."""
-    lp, ll, cw, dcr, tap = 100.0, 0.015, 300e-12, 170.0, 0.20
+    lp, dcr, tap = 100.0, 170.0, 0.20
     lh = lp / 4
     l1, l2 = lh * tap ** 2, lh * (1 - tap) ** 2
     ls = lp * 8.0 / 7000.0
@@ -121,9 +138,11 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0)):
            "R6 c4 a1 100k", "R3 c4 r3 4.7k", "C1 r3 a1 47e-12", "R7 c4 s1 390k", "C2 s1 k1 0.05e-6",
            "R4 k1 fb 2.2k", "C3 k1 fb 50e-6", "R5 fb 0 100",
            *R.pentode("V1", "EF86", "a1", "s1", "g1", "k1", screen="derk", screen_pt=ef86_pt),
+           *tube_caps("V1", "EF86", "a1", "g1", "k1"),
            # ECC83 cathode-coupled phase splitter, grid of V2A direct from the EF86 anode
            "R11 c5 a2a 180k", "R12 c5 a2b 180k", "R8 kk 0 82k", "R10 a1 g2b 1Meg", "C6 g2b 0 0.25e-6",
            R.triode("V2A", "ECC83", "a2a", "a1", "kk"), R.triode("V2B", "ECC83", "a2b", "g2b", "kk"),
+           *tube_caps("V2A", "ECC83", "a2a", "a1", "kk"), *tube_caps("V2B", "ECC83", "a2b", "g2b", "kk"),
            # EL34s
            "C10 a2a g3 0.5e-6", "R14 g3 0 470k", "R18 g3 g3s 2.2k",
            "C11 a2b g4 0.5e-6", "R15 g4 0 470k", "R19 g4 g4s 2.2k",
@@ -131,17 +150,15 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0)):
            "R24 t3 s3 1k", "R25 t4 s4 1k",
            *R.pentode("V3", "EL34", "a3", "s3", "g3s", "k3", screen="fit"),
            *R.pentode("V4", "EL34", "a4", "s4", "g4s", "k4", screen="fit"),
+           *tube_caps("V3", "EL34", "a3", "g3s", "k3"), *tube_caps("V4", "EL34", "a4", "g4s", "k4"),
            # output transformer: centre tap c12 via DCR, taps t3 / t4, anodes a3 / a4
            f"Rd3 c12 ct3 {f(dcr)}", f"Rd4 c12 ct4 {f(dcr)}",
            f"L1 ct3 t3 {f(l1)}", f"L2 t3 a3 {f(l2)}", f"L3 ct4 t4 {f(l1)}", f"L4 t4 a4 {f(l2)}",
            f"L5 o sy {f(ls)}", "Rsy sy 0 0.3", "Rspk o 0 8", f"Cw a3 a4 {f(cw)}"]
     net += [f"K{a}{b} L{a} L{b} {f(v)}" for (a, b), v in K.items()]
-    # interelectrode and wiring capacitance (datasheets: EL34 Cin 15.2 pF, Cout 8.4 pF; EF86 Cg1 3.8 pF, Ca 5.3 pF;
-    # a few pF of wiring elsewhere). Physical, and without them the transient cannot start (nodes with no
-    # capacitance at all next to the B sources)
-    net += ["Cs1 a1 0 5p", "Cs2 a2a 0 5p", "Cs3 a2b 0 5p", "Cs4 g3s 0 15p", "Cs5 g4s 0 15p", "Cs6 a3 0 8.4p",
-            "Cs7 a4 0 8.4p", "Cs8 s1 0 5p", "Cs9 s3 0 10p", "Cs10 s4 0 10p", "Cs11 kk 0 5p", "Cs12 g1 0 4p",
-            "Cs13 g2b 0 5p"]
+    # wiring capacitance at the nodes the tube capacitances leave floating (screens, the splitter's cathodes); the
+    # transient cannot start at a node with no capacitance next to the B sources
+    net += ["Cw1 s1 0 5p", "Cw2 s3 0 5p", "Cw3 s4 0 5p", "Cw4 kk 0 5p"]
     net += ["R13 o fb 5.6k", "C9 o fb 330e-12"] if feedback else ["R13 fbx fb 5.6k", "Rfbx fbx 0 1e-3"]
     return net
 
