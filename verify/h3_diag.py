@@ -4,6 +4,8 @@ in the preset circuit at 1 kHz / 1 W / 8 ohm and 50 Hz / 1 W (2A3 8 ohm, 300B 4 
   python h3_diag.py out.jsonl      (about an hour: the 300B joint rp / gm fits are slow)
 """
 import sys, os, math, json
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")   # one math thread per process (see triode_compare.py)
 sys.path.insert(0, os.getcwd())
 import numpy as np
 from scipy.optimize import least_squares
