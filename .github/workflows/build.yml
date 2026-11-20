@@ -9,10 +9,16 @@ name: build
 
 on:
   push:
-    # tube-color: the Tube Color integration branch (doc/N28: its milestones' PRs go there, it goes to main at the end)
-    branches: [main, cross-platform-plan, tube-color]
+    # tube-color: the Tube Color integration branch (doc/N28: its milestones' PRs go there, it goes to main at the end);
+    # tube-color-*: the milestone branches, built on every push (the sanitizers run on their PRs, or by hand)
+    branches: [main, cross-platform-plan, tube-color, 'tube-color-*']
   pull_request:   # every PR, whatever its base (main, tube-color)
   workflow_dispatch:
+
+# one run per branch (or PR): a newer push cancels the run still going for an older one
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
