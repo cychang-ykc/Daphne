@@ -9,8 +9,9 @@ name: build
 
 on:
   push:
-    branches: [main, cross-platform-plan]
-  pull_request:
+    # tube-color: the Tube Color integration branch (doc/N28: its milestones' PRs go there, it goes to main at the end)
+    branches: [main, cross-platform-plan, tube-color]
+  pull_request:   # every PR, whatever its base (main, tube-color)
   workflow_dispatch:
 
 jobs:
