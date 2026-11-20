@@ -1,0 +1,21 @@
+{
+  "rated_W": {
+    "set-2a3": 4.83,
+    "set-300b": 5.61,
+    "set-845": 25.1,
+    "pp-el34-ul": 20.0
+  },
+  "n_sweep": 60,
+  "n_transfer": 16,
+  "n_response": 4,
+  "errors": [],
+  "seconds": {
+    "total": 6.440154314041138,
+    "sweep": 3.9228317737579346,
+    "transfer": 1.6061155796051025,
+    "response": 0.7493607997894287,
+    "sweep_job_mean": 0.8486934026082357,
+    "transfer_job_mean": 0.5371295809745789,
+    "response_job_mean": 0.2196924090385437
+  }
+}

@@ -54,7 +54,11 @@ def model(tube):
 
 def triode(name, tube, a, g, k):
     """Koren triode between nodes a (plate), g, k. Koren's (1 + sgn E1) is not needed: E1 > 0 by construction."""
-    p = model(tube)["params"]
+    m = model(tube)
+    if m["model"] == "koren-m":
+        import triode_models as T
+        return T.spice_line(name, "koren-m", [m["params"][n] for n in T.NAMES["koren-m"]], a, g, k, f, pos, softplus)
+    p = m["params"]
     mu, ex, kg1, kp, kvb = (f(p[n]) for n in ("MU", "EX", "KG1", "KP", "KVB"))
     vak, vgk = f"v({a},{k})", f"v({g},{k})"
     z = f"{kp}*(1/{mu}+{vgk}/sqrt({kvb}+{vak}*{vak}))"

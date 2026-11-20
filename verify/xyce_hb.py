@@ -64,7 +64,7 @@ def measure(builder, amp, f0=1000.0, numfreq=15, kw=None, extra_options=""):
     return {"P": a[0] ** 2 / 2 / 8.0, "H": h, "THD": 100 * math.sqrt(sum(10 ** (x / 10) for x in h)), "seconds": dt}
 
 
-GAIN0 = {"set-2a3": 2.73, "set-300b": 2.23, "set-845": 8.83}
+GAIN0 = {"set-2a3": 156.0, "set-300b": 2.23, "set-845": 8.83}
 SWEEP = [("set-2a3", None, 1000.0, (0.1, 0.3, 1, 3, 3.5)), ("set-300b", None, 1000.0, (0.1, 0.3, 1, 3, 7)),
          ("set-845", None, 1000.0, (0.1, 1, 3, 10, 24)),
          ("pp-el34-ul", {"feedback": True}, 1000.0, (0.1, 1, 10, 20, 27)),

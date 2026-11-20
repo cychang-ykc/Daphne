@@ -2,7 +2,8 @@
 global feedback (pp-el34-ul). Tube models and conventions as in spice_ref.py (model.json parameters, B sources,
 reltol 1e-5, gear, 1000 points per cycle, FFT over the last 10 whole cycles after settling).
 
-  set-2a3   6SN7 (B+ 300 V, Ra 47 k, Rk 1.5 k) -> 0.22 uF / 220 k -> 2A3 (Rk 750, B+ 301 V) -> 2.5 k : 8
+  set-2a3   12AX7 (B+ 300 V, Ra 100 k, Rk 1.5 k) -> 0.1 uF / 470 k -> 6SN7 (B+ 300 V, Ra 47 k, Rk 1.5 k) -> 0.22 uF / 220 k
+            -> 2A3 (Koren with m = 0.35, Rk 750, B+ 301 V) -> 2.5 k : 8
   set-300b  6SN7 (B+ 350 V) -> 0.22 uF / 220 k -> 300B (350 V / -74 V / 60 mA: Rk 1.23 k, B+ 431 V) -> 3 k : 8
   set-845   6SN7 (B+ 350 V) -> 0.22 uF / 220 k -> 300B (40 H choke, DCR 250, Rk 1 k, B+ 300 V) -> 0.47 uF / 100 k
             -> 845 (1250 V / -195 V / 80 mA: fixed bias, B+ 1286 V) -> 11 k : 8
@@ -108,7 +109,15 @@ def set_driver_6sn7(bp, ra, rk, out_node, rg_next, cc):
 
 
 def set_2a3():
-    net = ["* set-2a3"] + set_driver_6sn7(300.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
+    """12AX7 -> 6SN7 -> 2A3: the 2A3 EVO's driver line-up (a pair of 12AX7 and a pair of 6SN7, Stereophile
+    specifications page); N28."""
+    net = ["* set-2a3", "Vin in 0 SIN(0 {amp} {f0})", "Rin in 0 1Meg", "Rgs in g0 1k",
+           "Vb0 b0 0 DC 300", "Ra0 b0 a0 100k", "Rk0 k0 0 1.5k", "Ck0 k0 0 1e-4",
+           R.triode("V0", "ECC83", "a0", "g0", "k0"), *tube_caps("V0", "ECC83", "a0", "g0", "k0"),
+           "Cc0 a0 g1 0.1e-6", "Rg1 g1 0 470k",
+           "Vb1 b1 0 DC 300", "Ra1 b1 a1 47k", "Rk1 k1 0 1.5k", "Ck1 k1 0 1e-4",
+           R.triode("V1", "6SN7", "a1", "g1", "k1"), *tube_caps("V1", "6SN7", "a1", "g1", "k1"),
+           "Cc1 a1 g2 0.22e-6", "Rg2 g2 0 220k"]
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "2A3", "a2", "g2s", "k2"),
             *tube_caps("V2", "2A3", "a2", "g2s", "k2"), "Rk2 k2 0 750", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 301"] + opt_se("T", "a2", "b2", 2500.0, 10.0, 0.010, 400e-12, 100.0)

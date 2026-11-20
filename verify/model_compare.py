@@ -350,6 +350,23 @@ def final(tube):
     KOREN_SEED, _ = K.fit(kind, curves)
     name = f["model"]
     extra = {}
+    if name == "koren-m":
+        import triode_models as T
+        seed = KOREN_SEED
+        p, pct = T.fit("koren-m", curves, seed, ss_data(tube) if f.get("joint_rp_gm") else None, f.get("m"))
+        e = np.concatenate([(T.current("koren-m", p, c["ep"], np.full(len(c["ep"]), c["eg"]))[0] - c["ip"]) * 1e3 for c in curves])
+        imax = max(float(c["ip"].max()) for c in curves)
+        out = {"tube": tube, "model": name, "params": dict(zip(T.NAMES[name], map(float, p))), "fit": f,
+               "equations": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations, "
+                            "with the softplus knee width scaled as Va^M / KP (triode_models.py; M = 1 is Koren)",
+               "plate_rms_mA": float(np.sqrt(np.mean(e * e))), "plate_rms_pct": pct, "plate_max_mA": float(np.abs(e).max()),
+               "operating_points": T.op_errors(name, p, src)}
+        with open(os.path.join(K.DATA, tube, "model.json"), "w", encoding="utf-8") as h:
+            json.dump(out, h, indent=2, ensure_ascii=False)
+            h.write(chr(10))
+        print(f"{tube}: {name} m {p[5]:.2f}  plate rms {pct:.2f} %  " +
+              " | ".join(f"{n}: " + " ".join(f"{k} {v:+.1f}%" for k, v in r.items()) for n, r in out["operating_points"].items()))
+        return name, p
     if name == "derk+screen":
         global ALPHA_FIXED
         ALPHA_FIXED = f.get("alpha")
