@@ -153,6 +153,20 @@ TEST_CASE("Settings: NaN and infinity are out of range", "[settings]") {
     }
 }
 
+// Text the JSON reader rejects for another reason than its syntax: a number past double's range (nlohmann throws
+// out_of_range, not parse_error). An error, not an exception out of settings_from_string (found by fuzz_settings,
+// doc/N28; dc_load/dc_apply caught it as "the engine failed", the CLI ended)
+TEST_CASE("Settings: a number past double's range is an error, not an exception", "[settings]") {
+    for (const char* text : {R"({"headroom_db": 1e400})", R"({"color": {"bias": -2e308}})", R"([1e999])",
+                             R"({"volume": {"db": -1e309}})"}) {
+        INFO(text);
+        daphne::LoadResult r;
+        REQUIRE_NOTHROW(r = daphne::settings_from_string(text));
+        CHECK_FALSE(r.ok());
+        CHECK(r.settings.headroom_db == 0.0);
+    }
+}
+
 TEST_CASE("Output rate for a source rate", "[settings]") {
     using daphne::pcm_output_rate;
     CHECK(pcm_output_rate(44100, "native") == 44100);

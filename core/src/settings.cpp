@@ -320,7 +320,7 @@ LoadResult settings_from_string(const std::string& text) {
     json j;
     try {
         j = json::parse(text);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {   // a syntax error, or a number past double's range (1e400: out_of_range)
         LoadResult res;
         res.diagnostics.push_back({Diagnostic::Level::Error, "", std::string("JSON parse error: ") + e.what()});
         return res;
