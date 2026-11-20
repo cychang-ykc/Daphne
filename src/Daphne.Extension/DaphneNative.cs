@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
 namespace DaphneMiku;
 
@@ -47,6 +48,7 @@ static class DaphneNative
     [DllImport(Dll)] public static extern void dc_live_bus(IntPtr ringBase, int capFrames, int rate);
     [DllImport(Dll)] public static extern void dc_live_rate(int rate);
     [DllImport(Dll)] static extern int dc_devices(byte[] json, int len);
+    [DllImport(Dll)] static extern int dc_color_info(byte[] json, int len);   // ABI 6
     [DllImport(Dll, CharSet = CharSet.Unicode)] static extern int dc_filter_cache_dir(char[] dir, int len);
     [DllImport(Dll)] static extern long dc_filter_cache_prune(byte[] settings, int limitMb);
 
@@ -99,4 +101,17 @@ static class DaphneNative
     public static string State(IntPtr p) => Json(b => dc_state(p, b, b.Length));
     public static string PollEvent(IntPtr p) => Json(b => dc_poll_event(p, b, b.Length));
     public static string Devices() => Json(b => dc_devices(b, b.Length));
+
+    static readonly Lazy<JsonElement?> _colorInfo = new(() =>
+    {
+        try { return dc_abi_version() >= 6 && Json(b => dc_color_info(b, b.Length)) is string s ? JsonDocument.Parse(s).RootElement.Clone() : null; }
+        catch (Exception) { return null; }   // an older daphne_core.dll: no Tube Color controls
+    });
+
+    /// <summary>Tube Color's controls from the core (doc/N28; null: a core without them): availability, the drive limit, the presets.</summary>
+    public static JsonElement? ColorInfo => _colorInfo.Value;
+
+    /// <summary>The strength slider's limit (1.0 = 100 %), the core's own constant.</summary>
+    public static double ColorDriveMax =>
+        ColorInfo is { } i && i.TryGetProperty("drive_max", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble() : 2.0;
 }

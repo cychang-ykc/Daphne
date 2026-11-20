@@ -12,8 +12,10 @@
 #include <vector>
 
 #include <dr_libs/dr_wav.h>
+#include <nlohmann/json.hpp>
 
 #include "daphne_core.h"
+#include "daphne/engine/settings.h"
 #include "fake_output.h"
 #include "internal.h"
 #include "test_util.h"
@@ -373,4 +375,48 @@ TEST_CASE("C API: dc_filter_cache_dir_utf8 returns the folder in UTF-8", "[capi]
     test::set_env("DAPHNE_FILTER_CACHE", &off);
     CHECK(dc_filter_cache_dir_utf8(out, sizeof out) == 0);   // the cache is disabled
     test::set_env("DAPHNE_FILTER_CACHE", nullptr);   // the tests after this one run as before
+}
+
+// Tube Color's controls for a host's panel (doc/N28): the core's own limits and presets, so a host copies no constant
+TEST_CASE("C API: dc_color_info", "[capi]") {
+    CHECK(dc_abi_version() >= 6);
+    char small[8];
+    CHECK(dc_color_info(small, sizeof small) == DC_ERR_BUFFER);
+    std::vector<char> b(8192);
+    const int n = dc_color_info(b.data(), static_cast<int>(b.size()));
+    REQUIRE(n > 0);
+    const auto j = nlohmann::json::parse(std::string(b.data(), static_cast<size_t>(n)));
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+    CHECK(j["available"] == true);
+    CHECK(j["curve"] == "test");
+#else
+    CHECK(j["available"] == false);   // before M2: only the test builds can run it
+    CHECK(j["curve"] == "none");
+#endif
+    CHECK(j["drive_max"].get<double>() == daphne::kColorDriveMax);
+    CHECK(j["makeup_trim_max_db"].get<double>() == daphne::kColorMakeupTrimMaxDb);
+    CHECK(j["feedback_db"] == nlohmann::json({0, 6, 12, 20, 30}));
+    CHECK(j["load_ohms"] == nlohmann::json({4, 8, 16}));
+    CHECK(j["operating_point_adjustable"] == false);   // M2: standard bias, 8 ohm; M3 makes them adjustable
+    REQUIRE(j["presets"].size() == 4);
+    CHECK(j["presets"][0]["id"] == "set-300b");        // the default first
+    int push_pull = 0, hot = 0;
+    for (const auto& p : j["presets"]) {
+        INFO(p.dump());
+        // every id is one the settings take
+        CHECK(daphne::settings_from_string(R"({"color": {"preset": )" + p["id"].dump() + "}}").ok());
+        CHECK_FALSE(p["label"].get<std::string>().empty());
+        push_pull += p["push_pull"].get<bool>();
+        const auto& m = p["bias_ma"];
+        CHECK(m["lo"].get<double>() < m["cool"].get<double>());
+        CHECK(m["cool"].get<double>() < m["standard"].get<double>());
+        CHECK(m["standard"].get<double>() <= m["hi"].get<double>());
+        if (!m["hot"].is_null()) {
+            ++hot;
+            CHECK(p["id"] == "set-300b");   // only 300B has room above its standard bias (doc/N28)
+            CHECK(m["hot"].get<double>() > m["standard"].get<double>());
+        }
+    }
+    CHECK(push_pull == 1);
+    CHECK(hot == 1);
 }

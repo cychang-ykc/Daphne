@@ -23,11 +23,24 @@ class DaphneOptions {
     this.dsdPcmLimiter = true;     // DSD → PCM: limiter instead of clipping above full scale
     this.threads = 0;              // filter design threads, 0 = automatic
     this.cacheLimitMb = 1024;      // filter cache limit: 500 | 1024 | 2048 MB
+    // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: colorOf)
+    this.colorEnabled = false;
+    this.colorPreset = 'set-300b';  // set-300b | set-2a3 | set-845 | pp-el34-ul
+    this.colorDrive = 1.0;          // 0 .. the core's drive_max (1.0 = 100 %)
+    this.colorFeedbackDb = 6;       // pp-el34-ul: 0 | 6 | 12 | 20 | 30
+    this.colorTrimDb = 0;           // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
+    // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved
+    this.colorBypass = false;
   }
 
-  toJson() {
-    const { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb } = this;
-    return { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb };
+  /** The options as the page reads them; save: as kept in MIKU's settings (no bypass). */
+  toJson(save = false) {
+    const { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb,
+      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb, colorBypass } = this;
+    const j = { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb,
+      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb };
+    if (!save) j.colorBypass = colorBypass;
+    return j;
   }
 
   merge(o) {
@@ -48,9 +61,39 @@ class DaphneOptions {
         case 'dsdPcmLimiter': this.dsdPcmLimiter = !!v; break;
         case 'threads': this.threads = clamp(int(v, 0), 0, 256); break;
         case 'cacheLimitMb': this.cacheLimitMb = [500, 1024, 2048].includes(+v) ? +v : 1024; break;
+        case 'colorEnabled': this.colorEnabled = v === true; break;
+        case 'colorPreset': this.colorPreset = COLOR_PRESETS.includes(v) ? v : 'set-300b'; break;
+        // the core's own limit applies when the settings are built (colorDriveMax)
+        case 'colorDrive': this.colorDrive = typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 4) : 1.0; break;
+        case 'colorFeedbackDb': this.colorFeedbackDb = [0, 6, 12, 20, 30].includes(v) ? v : 6; break;
+        case 'colorTrimDb': this.colorTrimDb = typeof v === 'number' && Number.isFinite(v) ? Math.round(clamp(v, -6, 6) * 10) / 10 : 0; break;
+        case 'colorBypass': this.colorBypass = v === true; break;
       }
     }
   }
+}
+
+const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul'];
+
+// Tube Color's controls from the core (daphne-helper color_info, doc/N28); null until the extension has asked
+let colorInfo = null;
+const setColorInfo = i => { colorInfo = i && typeof i === 'object' ? i : null; };
+const getColorInfo = () => colorInfo;
+/** The strength slider's limit (1.0 = 100 %), the core's own constant. */
+const colorDriveMax = () => (colorInfo && Number.isFinite(colorInfo.drive_max) ? colorInfo.drive_max : 2.0);
+
+/**
+ * Tube Color (doc/N28): the panel's choices. The bypass is drive 0 (the stage idles in place, bit-identical, no
+ * rebuild); the slider's own value stays in the options. Until M3 every preset plays at its reference operating point:
+ * standard bias, 8 ohm tap. The trim 0 is "auto" (the trim is on top of the automatic makeup).
+ */
+function colorOf(o) {
+  return {
+    enabled: o.colorEnabled, model: 'fixed-point', preset: o.colorPreset,
+    drive: o.colorBypass ? 0 : clamp(o.colorDrive, 0, colorDriveMax()),
+    feedback_db: o.colorFeedbackDb, bias: 'standard', load_ohms: 8,
+    makeup_gain: Math.abs(o.colorTrimDb) < 0.05 ? 'auto' : o.colorTrimDb,
+  };
 }
 
 const exclusive = s => s.outputMode === 'coreaudio-exclusive';
@@ -134,7 +177,8 @@ function build(host, s, o, t) {
   j.headroom_db = clamp(replayGainDb(host, s, t), -24, 24);
   j.dsd_modulator = { order: o.order, osr: o.osr };
   j.design = { threads: o.threads, cache_limit_mb: o.cacheLimitMb };
+  j.color = colorOf(o);
   return j;
 }
 
-module.exports = { DaphneOptions, build, upsamplerOf, replayGainDb, volumeModeOf, exclusive };
+module.exports = { DaphneOptions, build, upsamplerOf, replayGainDb, volumeModeOf, exclusive, colorOf, setColorInfo, getColorInfo, colorDriveMax, COLOR_PRESETS };

@@ -202,6 +202,7 @@ public sealed partial class DaphneEngine : IAudioEngine
                     string text = tx.GetString();
                     Log.Info("[daphne] " + text);
                     if (text.StartsWith("designing")) _designText = text;
+                    if (text.Contains("Tube Color")) _colorEvent = text;   // the panel's status line (ColorStatus)
                 }
                 break;
         }
@@ -568,6 +569,27 @@ public sealed partial class DaphneEngine : IAudioEngine
     /// <summary>The loaded track's PCM rate (DSD files: after conversion) and the device rate, for the settings page; null when nothing is loaded.</summary>
     /// <summary>YouTube Music is the track (playing or loading): Daphne does not upsample it (SettingsMap.Upsampler).</summary>
     public bool LiveTrack => (_track ?? _wanted)?.IsLive == true;
+
+    string _colorEvent;
+
+    /// <summary>
+    /// Tube Color on the playing chain, for the panel (doc/N28): whether the stage is in it, the core's path report
+    /// (its reason, the Tube Color part of the filter line: idle at drive 0, unavailable before M2) and the last
+    /// Tube Color event (DSD remodulated / converted to PCM, the DSD switch).
+    /// </summary>
+    public object ColorStatus()
+    {
+        if (!_loaded || _report.ValueKind != JsonValueKind.Object) return new { playing = false, lastEvent = _colorEvent };
+        try
+        {
+            var chain = _report.GetProperty("chain").EnumerateArray().Select(x => x.GetString()).ToList();
+            string filter = _report.GetProperty("filter").GetString() ?? "";
+            string reason = _report.TryGetProperty("reason", out var r) ? r.GetString() : null;
+            var parts = filter.Split(" | ").Where(x => x.Contains("Tube Color")).ToArray();
+            return new { playing = true, inChain = chain.Contains("tube color"), reason, report = parts, lastEvent = _colorEvent };
+        }
+        catch (Exception) { return new { playing = false, lastEvent = _colorEvent }; }
+    }
 
     public object NowPlaying()
     {

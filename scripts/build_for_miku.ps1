@@ -9,7 +9,10 @@ param(
     [Parameter(Mandatory = $true)][string]$Out,
     [string]$Config = "Release",
     # where downloaded build tools go (MIKU passes its .tools folder); this repository's .tools otherwise
-    [string]$Tools = ""
+    [string]$Tools = "",
+    # Tube Color's M1 test curve (doc/N28: DAPHNE_COLOR_TEST_CURVE), for trying the panel before M2's tube curves; not
+    # for a release. Built in its own folder (build-miku-tc), so the normal build is not touched
+    [switch]$ColorTestCurve
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -88,7 +91,7 @@ Write-Host "daphne: $cmake, $ninja"
 
 # ── build ──
 # Ninja for every MSVC above (a portable MSVC has no Visual Studio for CMake's Visual Studio generator)
-$bd = Join-Path $root "build-miku"
+$bd = Join-Path $root $(if ($ColorTestCurve) { "build-miku-tc" } else { "build-miku" })
 # a build folder made by another generator (the Visual Studio one, before) or with another compiler starts over
 $cache = Join-Path $bd "CMakeCache.txt"
 if (Test-Path $cache) {
@@ -97,7 +100,7 @@ if (Test-Path $cache) {
         Remove-Item -Recurse -Force $bd
     }
 }
-& $cmake -S $root -B $bd -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DCMAKE_CXX_COMPILER=$cl" "-DCMAKE_BUILD_TYPE=$Config" -DDAPHNE_BUILD_TESTS=OFF | Out-Host
+& $cmake -S $root -B $bd -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DCMAKE_CXX_COMPILER=$cl" "-DCMAKE_BUILD_TYPE=$Config" -DDAPHNE_BUILD_TESTS=OFF "-DDAPHNE_COLOR_TEST_CURVE=$(if ($ColorTestCurve) { 'ON' } else { 'OFF' })" | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "daphne: CMake configure failed" }
 & $cmake --build $bd --target daphne_core | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "daphne: build failed" }

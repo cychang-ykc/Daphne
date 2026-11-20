@@ -322,6 +322,94 @@
     }
   }
 
+  /**
+   * Tube Color (doc/N28): the listening panel. Everything applies while playing, through the core's own paths: the
+   * strength and the level glide in place, another amplifier is built in the background and crossfaded, a DSD file
+   * switches without a gap. Bypass is the stage idling at drive 0 (bit-identical; the slider keeps its value), not
+   * Tube Color off. The core says what it can do (Daphne.state.color, dc_color_info): a build that cannot run it shows
+   * the panel disabled. Bias and load stay at the presets' reference ones until M3. English for now (M4: WORDS).
+   */
+  function colorSettings(host, ui) {
+    const info = Daphne.state.color, op = o();
+    const testCurve = info && info.curve === 'test';
+    const g = group(host, ui, 'Tube Color', testCurve ? 'Test build: the M1 test curve (a polynomial, not a tube)' : null);
+    g.box.classList.add('dp-color');
+    if (!info) {   // a core without dc_color_info (an older daphne_core)
+      g.add(h('div', { class: 'dp-result' }, 'This Daphne core has no Tube Color.'));
+      return;
+    }
+    const off = !info.available;
+    const presets = Array.isArray(info.presets) ? info.presets : [];
+    const preset = presets.some(p => p.id === op.colorPreset) ? op.colorPreset : (presets[0] && presets[0].id) || 'set-300b';
+    const cur = presets.find(p => p.id === preset);
+    g.field('Tube Color', off ? 'Unavailable in this build: Tube Color comes with the tube curves (M2). These settings are kept and do nothing.'
+                              : 'Adds the harmonic character of a tube amplifier. Off: playback is exactly as without it.',
+      ui.sw(!!op.colorEnabled, v => set({ colorEnabled: v }).then(rerender)));
+    g.field('Amplifier', null, ui.select(presets.map(p => [p.id, p.label]), preset, v => set({ colorPreset: v }).then(rerender)));
+
+    /** A slider that sends while it moves (at most every 150 ms) and once more where it stops. */
+    const slider = (min, max, step, value, text, send) => {
+      const r = h('input', { class: 'range', type: 'range', min, max, step, value });
+      const t = h('span', { class: 'num muted dp-color-v' }, text(value));
+      let pending = null, timer = null;
+      const flush = () => { timer = null; if (pending == null) return; const x = pending; pending = null; send(x); };
+      r.oninput = () => { t.textContent = text(+r.value); pending = +r.value; if (!timer) timer = setTimeout(flush, 150); };
+      r.onchange = () => { pending = +r.value; clearTimeout(timer); flush(); };
+      return [r, t];
+    };
+    const max = Math.round((info.drive_max || 2) * 100);
+    const pct = Math.min(max, Math.round((op.colorDrive == null ? 1 : op.colorDrive) * 100));
+    g.field('Strength', '100 % = the amplifier as calibrated, 0 = no effect. Changes glide, without a gap.',
+      slider(0, max, 1, pct, x => x + ' %', x => set({ colorDrive: x / 100 }).then(refresh)));
+    if (cur && cur.push_pull) {
+      const steps = (info.feedback_db || []).map(d => [d, d === 30 ? '30 dB (Mullard 5-20)' : d === 6 ? '6 dB (default)' : d === 0 ? '0 dB (none)' : d + ' dB']);
+      g.field('Feedback', 'The push-pull amplifier\'s negative feedback: more feedback, less distortion.',
+        ui.select(steps, op.colorFeedbackDb == null ? 6 : op.colorFeedbackDb, v => set({ colorFeedbackDb: +v }).then(refresh)));
+    }
+    const trimMax = info.makeup_trim_max_db || 6;
+    const trimText = x => (Math.abs(x) < 0.05 ? 'auto' : (x > 0 ? '+' : '') + x.toFixed(1) + ' dB');
+    g.field('Level', 'On top of the automatic loudness match.',
+      slider(-trimMax, trimMax, 0.5, op.colorTrimDb || 0, trimText, x => set({ colorTrimDb: x }).then(refresh)));
+    const bypassed = !!op.colorBypass;
+    const byp = h('button', { class: 'dp-btn' + (bypassed ? ' dp-on' : ''), 'aria-pressed': bypassed ? 'true' : 'false',
+                              onclick: () => set({ colorBypass: !o().colorBypass }).then(rerender) },
+      bypassed ? 'Bypassed: press to listen with Tube Color' : 'Bypass');
+    g.field('Bypass (A/B)', 'Without the effect at the same level and without a gap; the strength stays where it is.', byp);
+
+    // the playback path as the core reports it
+    const line = h('div', { class: 'dp-result dp-color-status' });
+    g.add(line);
+    const draw = () => {
+      const lines = colorStatus();
+      line.replaceChildren(...lines.map(x => h('div', null, x)));
+    };
+    function refresh() { return Daphne.api.rpc('state').then(s => { if (s) Daphne.state = s; draw(); }).catch(() => {}); }
+    draw();
+    const timer = setInterval(() => { if (!document.contains(line)) clearInterval(timer); else refresh(); }, 1500);
+
+    if (off) {
+      g.box.classList.add('dp-off');
+      for (const el of g.box.querySelectorAll('input, select, button')) el.disabled = true;
+    }
+  }
+
+  /** The panel's status lines: Tube Color on the playing chain (the core's reason, its path report, the last event). */
+  function colorStatus() {
+    const info = Daphne.state.color, op = o(), c = Daphne.state.colorNow;
+    if (!info || !info.available) return [op.colorEnabled ? 'On, but unavailable in this build: playback is unchanged' : 'Off'];
+    if (!op.colorEnabled) return ['Off: playback is exactly as without it'];
+    if (!c || !c.playing) return ['On · nothing playing'];
+    const out = [];
+    const report = Array.isArray(c.report) ? c.report : [];
+    if (!c.inChain) out.push('Not in the playback chain');
+    else if (report.some(x => x.includes('idle'))) out.push(op.colorBypass ? 'Bypassed: the stage idles (drive 0), samples unchanged' : 'Idle (strength 0): samples unchanged');
+    else out.push('Active');
+    if (c.reason) out.push('Path: ' + c.reason);
+    for (const r of report) if (!r.includes('idle')) out.push('Path: ' + r);
+    if (c.lastEvent) out.push('Last: ' + c.lastEvent);
+    return out;
+  }
+
   /** DSD section: the DSD → PCM options, shown while DSD files play as PCM (DSD 播放方式 PCM, or WASAPI shared). */
   function dsdSettings(host, ui) {
     const op = o(), st = App.settings;
@@ -411,10 +499,11 @@
         // the title: Δάφνη (GFS Didot, its petal from the icon) and DAPHNE under it as text; the divider and 再生設置 are artwork
         card.append(h('div', { class: 'dp-sect-h' }, h('span', { class: 'dp-title', role: 'img', 'aria-label': 'Daphne 再生設置' },
           greek(), h('span', { class: 'dp-latin' }, h('span', { class: 'dp-petal-svg', html: PETAL }), 'DAPHNE'))));
-        // WASAPI shared: nothing of it applies (Windows' mixer converts everything; MIKU hides its DSD card too)
-        if (App.settings.outputMode === 'shared') card.style.display = 'none';
-        else dsdGroup = group(card, ui, 'DSD');
+        // WASAPI shared: the upsampler and DSD do not apply (Windows' mixer converts everything; MIKU hides its DSD
+        // card too); Tube Color does
+        if (App.settings.outputMode !== 'shared') dsdGroup = group(card, ui, 'DSD');
         coreSettings(card, ui);
+        colorSettings(card, ui);
       });
       api.addSettings('dsd', (host, ui) => {
         if (ui.core.id !== 'daphne') return;

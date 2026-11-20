@@ -40,7 +40,8 @@ typedef struct dc_player dc_player;
 /* 1: the first version; 2: the UTF-8 path functions (*_utf8); 3: dc_keep_device, dc_release_device, dc_device_kept;
  * 4: dc_cancel, a dc_stop that cancels a dc_load in progress (DC_ERR_CANCELLED), dc_state's "loading".
  * 5: dc_load returns DC_ERR_INTERNAL when the engine fails inside (before: DC_ERR_FILE); DC_ERR_INTERNAL itself came
- *    with ABI 4 without a version of its own. */
+ *    with ABI 4 without a version of its own.
+ * 6: dc_color_info. */
 DC_API int dc_abi_version(void);
 DC_API const char* dc_version(void);
 
@@ -129,6 +130,11 @@ DC_API int dc_filter_cache_dir_utf8(char* out, int len);
  * never the filters `settings` (a settings document, UTF-8) use. Returns the bytes left in the cache,
  * or -1 when the settings do not parse. */
 DC_API long long dc_filter_cache_prune(const char* settings, int limit_mb);
+
+/* ABI 6: Tube Color's controls as JSON (doc/N28): whether this build can run it, the drive limit, the presets with
+ * their labels and bias ranges, the feedback steps, whether bias and load are adjustable yet (settings.h color_info).
+ * Returns the length, or DC_ERR_BUFFER. */
+DC_API int dc_color_info(char* json, int len);
 
 /* Output devices as JSON: {"wasapi": [{"id","name","default"}], "asio": [{"name","clsid"}],
  * "coreaudio": [{"uid","name","default","rate","channels","rates","transport","hog_pid"}]} (each list empty on the

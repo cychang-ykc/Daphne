@@ -6,6 +6,7 @@ third_party/ffmpeg/
 third_party/asiosdk/
 __pycache__/
 build-miku/
+build-miku-tc/
 src/*/bin/
 src/*/obj/
 icon/

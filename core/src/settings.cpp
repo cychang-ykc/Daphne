@@ -416,6 +416,48 @@ bool color_active(const Settings& s) {
 #endif
 }
 
+nlohmann::json color_info() {
+    // the panel's order: the default first
+    struct P {
+        ColorPreset p;
+        const char* label;
+        bool push_pull;
+    };
+    const P presets[] = {{ColorPreset::Set300b, "300B single-ended", false},
+                         {ColorPreset::Set2a3, "2A3 single-ended", false},
+                         {ColorPreset::Set845, "845 single-ended", false},
+                         {ColorPreset::PpEl34Ul, "EL34 push-pull (ultralinear)", true}};
+    json list = json::array();
+    for (const auto& e : presets) {
+        const auto r = color_bias_range(e.p);
+        const auto hot = color_hot_ma(e.p);
+        list.push_back({{"id", to_name(kColorPreset, e.p)},
+                        {"label", e.label},
+                        {"push_pull", e.push_pull},
+                        {"bias_ma",
+                         {{"lo", r.lo_ma}, {"standard", r.standard_ma}, {"hi", r.hi_ma}, {"cool", color_cool_ma(e.p)},
+                          {"hot", hot ? json(*hot) : json(nullptr)}}}});
+    }
+#if defined(DAPHNE_COLOR)
+    const bool available = color::available();
+#else
+    const bool available = false;
+#endif
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+    const char* curve = "test";
+#else
+    const char* curve = "none";
+#endif
+    return {{"available", available},
+            {"curve", available ? curve : "none"},
+            {"drive_max", kColorDriveMax},
+            {"makeup_trim_max_db", kColorMakeupTrimMaxDb},
+            {"feedback_db", {0, 6, 12, 20, 30}},
+            {"load_ohms", {4, 8, 16}},
+            {"operating_point_adjustable", kColorOperatingPointAdjustable},
+            {"presets", list}};
+}
+
 Settings without_inactive_color(Settings s) {
     if (!color_active(s)) s.color = {};
     return s;

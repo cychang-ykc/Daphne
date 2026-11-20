@@ -19,12 +19,13 @@
 //   meter                                  -> l, r
 //   devices                                -> devices (dc_devices' object)
 //   cache_dir                              -> dir      cache_prune  settings, limit_mb -> bytes
+//   color_info                             -> info (dc_color_info's object: Tube Color's controls, doc/N28)
 //   quit                                   stops playback and exits (also on end of input)
 //
 // macOS exclusive mode: a device is kept between loads (dc_keep_device): the next load takes it over, a stop without
 // hold, quit and the end of input put it back.
 // Commands run in order on one thread (load can take minutes while a long filter is designed); state, meter,
-// devices and cache_dir are answered at once from the reader, so the host's timer never waits for a load.
+// devices, cache_dir and color_info are answered at once from the reader, so the host's timer never waits for a load.
 // Diagnostics go to stderr.
 #include <atomic>
 #include <chrono>
@@ -191,6 +192,10 @@ private:
             const int n = dc_filter_cache_dir_utf8(b, sizeof b);
             json r = reply(req, true);
             r["dir"] = n > 0 ? std::string(b, static_cast<size_t>(n)) : std::string();
+            emit(r);
+        } else if (cmd == "color_info") {
+            json r = reply(req, true);
+            r["info"] = fetch([](char* b, int n) { return dc_color_info(b, n); });
             emit(r);
         } else if (cmd == "hello") {
             json r = reply(req, true);

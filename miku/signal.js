@@ -54,6 +54,32 @@ function volumeRow(s, volumeMode, dsdFile) {
   }
 }
 
+/**
+ * Tube Color's row (doc/N28): the preset and the strength; idle (drive 0, the panel's bypass) passes the samples
+ * through unchanged. On the DSD core it sits after the modulator's pre-filter, at its rate.
+ */
+function colorRow(o, r, chain, pcmRate, rateNow) {
+  const idle = String(r.filter || '').includes('Tube Color idle');
+  const info = SM.getColorInfo();
+  const p = info && Array.isArray(info.presets) ? info.presets.find(x => x.id === o.colorPreset) : null;
+  const label = p ? p.label : o.colorPreset;
+  const pp = o.colorPreset === 'pp-el34-ul';
+  const dsdCore = chain.includes('modulator pre-filter');
+  const rate = dsdCore ? (pcmRate % 44100 === 0 ? 705600 : 768000) : rateNow;
+  const pct = Math.round(o.colorDrive * 100) + ' %';
+  const trim = Math.abs(o.colorTrimDb) < 0.05 ? 'auto' : 'auto ' + db(o.colorTrimDb);
+  return {
+    ...row('Tube Color', idle ? `${label} · bypass (idle)` : `${label} · drive ${pct}`, !idle,
+      `Preset: ${label}` + (pp ? ` · feedback ${o.colorFeedbackDb} dB` : ''),
+      idle ? `Bypass: drive 0, the samples pass unchanged (the slider stays at ${pct})` : `Drive: ${pct}`,
+      'Operating point: standard bias, 8 ohm tap (adjustable from M3)',
+      `Level: ${trim}`,
+      dsdCore ? `After the DSD modulator's pre-filter, at ${khz(rate)} kHz` : null,
+      info && info.curve === 'test' ? 'Curve: the M1 test curve (a polynomial, not a tube): for trying the controls only' : null),
+    pin: [to(pcm(F64, rate))],
+  };
+}
+
 /** The card's sections. */
 function buildPath(ctx) {
   const { s, o, t, r, chain, isDsd, sentDirect, dop, srcRate, devRate, sysRate, mode, format, volumeMode, rg, notes, host } = ctx;
@@ -127,6 +153,9 @@ function buildPath(ctx) {
       pin: [to(pcm(F64, rateNow))],
     });
   }
+  if (chain.includes('tube color')) proc.push(colorRow(o, r, chain, pcmRate, rateNow));
+  else if (o.colorEnabled && SM.getColorInfo() && SM.getColorInfo().available === false)
+    notes.push('Tube Color is on, but this build cannot run it yet (before M2): playback is unchanged.');
   if (chain.includes('modulator pre-filter') || chain.includes('modulator limiter')) {
     const modIn = pcmRate % 44100 === 0 ? 705600 : 768000;
     const lines = [`前級升頻：${khz(pcmRate)} → ${khz(modIn)} kHz`, ...filterLines(o, o.apodize).filter(x => x), '限幅器：峰值保持在調變器的穩定範圍內'];

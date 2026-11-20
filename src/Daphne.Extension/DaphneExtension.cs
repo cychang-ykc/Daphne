@@ -77,7 +77,7 @@ public sealed class DaphneExtension : IMikuExtension, IAudioCoreProvider
                 if (a.ValueKind == JsonValueKind.Object)
                 {
                     _opts.Merge(a);
-                    _host.SetSetting("options", JsonDocument.Parse(_opts.ToJson().ToJsonString()).RootElement);
+                    _host.SetSetting("options", JsonDocument.Parse(_opts.ToJson(save: true).ToJsonString()).RootElement);
                     if (_engine.TryGetTarget(out var e)) await e.ApplyOptionsAsync();
                     if (a.TryGetProperty("cacheLimitMb", out _)) await Task.Run(() => Prune(_opts.CacheLimitMb));
                 }
@@ -95,7 +95,10 @@ public sealed class DaphneExtension : IMikuExtension, IAudioCoreProvider
         bool engine = _engine.TryGetTarget(out var e);
         object now = engine ? e.NowPlaying() : null;
         bool live = engine && e.LiveTrack;   // YouTube Music: the page greys out 升頻
-        return new { commit = Commit, version = ver, cache = CacheInfo(), now, live, options = JsonDocument.Parse(_opts.ToJson().ToJsonString()).RootElement };
+        // Tube Color: the core's controls (null: an older core) and what the playing chain says about it
+        object color = DaphneNative.ColorInfo is { } ci ? ci : null;
+        object colorNow = engine ? e.ColorStatus() : null;
+        return new { commit = Commit, version = ver, cache = CacheInfo(), now, live, color, colorNow, options = JsonDocument.Parse(_opts.ToJson().ToJsonString()).RootElement };
     }
 
     void Prune(int limitMb)

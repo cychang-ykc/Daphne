@@ -80,6 +80,37 @@ public sealed partial class DaphneEngine
         };
     }
 
+    /// <summary>
+    /// Tube Color's row (doc/N28): the preset and the strength; idle (drive 0, the panel's bypass) passes the samples
+    /// through unchanged. On the DSD core it sits after the modulator's pre-filter, at its rate.
+    /// </summary>
+    PathRow ColorRow(List<string> chain, int pcmRate, int rateNow)
+    {
+        var o = _opts;
+        string filter = _report.GetProperty("filter").GetString() ?? "";
+        bool idle = filter.Contains("Tube Color idle");
+        bool pp = o.ColorPreset == "pp-el34-ul";
+        string label = o.ColorPreset;
+        string curve = null;
+        if (DaphneNative.ColorInfo is { } ci)
+        {
+            foreach (var p in ci.GetProperty("presets").EnumerateArray())
+                if (p.GetProperty("id").GetString() == o.ColorPreset) label = p.GetProperty("label").GetString();
+            if (ci.TryGetProperty("curve", out var c) && c.GetString() == "test") curve = "Curve: the M1 test curve (a polynomial, not a tube): for trying the controls only";
+        }
+        bool dsdCore = chain.Contains("modulator pre-filter");
+        int rate = dsdCore ? (pcmRate % 44100 == 0 ? 705600 : 768000) : rateNow;
+        string pct = (o.ColorDrive * 100).ToString("0", CultureInfo.InvariantCulture) + " %";
+        string trim = Math.Abs(o.ColorTrimDb) < 0.05 ? "auto" : "auto " + Db(o.ColorTrimDb);
+        return Row("Tube Color", idle ? $"{label} · bypass (idle)" : $"{label} · drive {pct}", !idle,
+            $"Preset: {label}" + (pp ? $" · feedback {o.ColorFeedbackDb} dB" : ""),
+            idle ? $"Bypass: drive 0, the samples pass unchanged (the slider stays at {pct})" : $"Drive: {pct}",
+            "Operating point: standard bias, 8 ohm tap (adjustable from M3)",
+            $"Level: {trim}",
+            dsdCore ? $"After the DSD modulator's pre-filter, at {Khz(rate)} kHz" : null,
+            curve) with { pin = new[] { To(Pcm(F64, rate)) } };
+    }
+
     /// <summary>The card's sections and its notes (warnings).</summary>
     object BuildPath(Track t, JsonElement src, JsonElement dev, List<string> chain, bool isDsd, bool sentDirect, bool nativeDsd, bool dop,
                      int srcRate, int devRate, string mode, string format, string volumeMode, double rg, List<string> notes)
@@ -172,6 +203,9 @@ public sealed partial class DaphneEngine
             proc.Add(Row("升頻", devRate == pcmRate ? "1 倍 · 只去除錄音振鈴" : $"{Khz(pcmRate)} → {Khz(devRate)} kHz（×{devRate / pcmRate}）", true,
                 FilterLines(o.Apodize && upsampler)) with { pin = new[] { To(Pcm(F64, rateNow)) } });
         }
+        if (chain.Contains("tube color")) proc.Add(ColorRow(chain, pcmRate, rateNow));
+        else if (o.ColorEnabled && DaphneNative.ColorInfo is { } ci && ci.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.False)
+            notes.Add("Tube Color is on, but this build cannot run it yet (before M2): playback is unchanged.");
         if (chain.Contains("modulator pre-filter") || chain.Contains("modulator limiter"))
         {
             int modIn = pcmRate % 44100 == 0 ? 705600 : 768000;

@@ -60,12 +60,27 @@ async function prune(limitMb) {
   if (r && r.ok && r.bytes < 0) host && host.log('cache prune: settings did not parse');
 }
 
-async function state() {
-  if (!version) await withHelper(c => c.request('hello', {}, 5000).then(r => { if (r && r.ok) version = r.version; }));
-  return { commit, version, cache: await cacheInfo(), now: engine && !engine.disposed ? engine.nowPlaying() : null, options: opts.toJson() };
+/** Tube Color's controls from the core (doc/N28), asked once; null from a helper without color_info. */
+let colorAsked = false;
+async function colorInfo() {
+  if (!colorAsked) {
+    colorAsked = true;
+    const r = await withHelper(c => c.request('color_info', {}, 5000)).catch(() => null);
+    SM.setColorInfo(r && r.ok && r.info ? r.info : null);
+  }
+  return SM.getColorInfo();
 }
 
-function save() { host.setSetting('options', opts.toJson()); }
+async function state() {
+  if (!version) await withHelper(c => c.request('hello', {}, 5000).then(r => { if (r && r.ok) version = r.version; }));
+  const live = engine && !engine.disposed;
+  return {
+    commit, version, cache: await cacheInfo(), now: live ? engine.nowPlaying() : null,
+    color: await colorInfo(), colorNow: live ? engine.colorStatus() : null, options: opts.toJson(),
+  };
+}
+
+function save() { host.setSetting('options', opts.toJson(true)); }
 
 module.exports = {
   id: 'daphne',
@@ -89,6 +104,7 @@ module.exports = {
     },
     createEngine(s) {
       settings = s;
+      colorInfo().catch(() => {});   // the drive limit for the settings the engine builds
       engine = new DaphneEngine(s, opts, host, __dirname);
       return engine;
     },
@@ -119,8 +135,8 @@ module.exports = {
         }
         return state();
       case 'bitPerfect':
-        // MIKU's 套用 Bit-perfect 設定: Daphne's upsampler goes off, and with it apodizing and double-double
-        opts.merge({ upsampler: 'off', apodize: false, doubleDouble: false });
+        // MIKU's 套用 Bit-perfect 設定: Daphne's upsampler goes off, and with it apodizing, double-double and Tube Color
+        opts.merge({ upsampler: 'off', apodize: false, doubleDouble: false, colorEnabled: false, colorBypass: false });
         save();
         if (engine && !engine.disposed) await engine.applyOptions();
         return state();

@@ -106,3 +106,8 @@
 .msel .dp-mark, .msel-menu .dp-mark { vertical-align: baseline; }
 /* after the DSP title (the host's .sp-mark gives the gap: the heading's 8 px plus 2 px, as on 解碼, and the colour) */
 .sigpop .sig-sect .sp-mark .dp-mark { margin-right: calc(4px - .32em); }
+
+/* Tube Color (doc/N28): the listening panel */
+.dp-color .dp-color-v { display: inline-block; width: 64px; text-align: right; }
+.dp-color .dp-btn.dp-on { background: rgba(229, 143, 183, .22); border-color: rgba(229, 143, 183, .6); }
+.dp-color-status div + div { margin-top: 2px; }

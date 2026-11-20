@@ -172,6 +172,7 @@ class DaphneEngine extends EventEmitter {
         if (e.text) {
           this.log(e.text);
           if (e.text.startsWith('designing')) this.design.text = e.text;
+          if (e.text.includes('Tube Color')) this.colorEvent = e.text;   // the panel's status line (colorStatus)
         }
         break;
     }
@@ -367,6 +368,16 @@ class DaphneEngine extends EventEmitter {
   // ───────────── signal path ─────────────
   buildSignal() { return buildSignal(this.host, this.s, this.opts, this.track, this.report); }
   nowPlaying() { return this.loaded ? nowPlaying(this.report) : null; }
+  /**
+   * Tube Color on the playing chain, for the panel (doc/N28): whether the stage is in it, the core's path report (its
+   * reason, the Tube Color part of the filter line) and the last Tube Color event.
+   */
+  colorStatus() {
+    const r = this.report, lastEvent = this.colorEvent || null;
+    if (!this.loaded || !r || !Array.isArray(r.chain)) return { playing: false, lastEvent };
+    const report = String(r.filter || '').split(' | ').filter(x => x.includes('Tube Color'));
+    return { playing: true, inChain: r.chain.includes('tube color'), reason: r.reason || null, report, lastEvent };
+  }
 
   async dispose() {
     this.disposed = true;

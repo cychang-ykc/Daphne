@@ -204,6 +204,22 @@ struct Settings {
 
 // True when Tube Color is in the chain: enabled, and this build can run it (before M2: test builds only).
 bool color_active(const Settings& s);
+
+// M2 plays every preset at its reference operating point (standard bias, 8 ohm tap); the bias and the load become
+// adjustable in M3 (doc/N28). A host shows those controls only when this is true.
+inline constexpr bool kColorOperatingPointAdjustable = false;
+
+// What a host needs to draw Tube Color's controls without copying the core's constants (doc/N28, dc_color_info):
+//   {"available": b,            this build can run the stage (else color.enabled true changes nothing)
+//    "curve": "test" | "none",  the curve the stage uses: the M1 test curve (test builds), none (before M2)
+//    "drive_max": x,            the strength slider's limit (kColorDriveMax; 1.0 = 100 %)
+//    "makeup_trim_max_db": x,   makeup_gain's trim range is +- this
+//    "feedback_db": [...],      pp-el34-ul's feedback steps
+//    "load_ohms": [...],
+//    "operating_point_adjustable": b,   bias and load (M3)
+//    "presets": [{"id", "label", "push_pull": b,
+//                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
+nlohmann::json color_info();
 // The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is
 // not active, so that editing them (while disabled, or in a build that cannot run it) rebuilds nothing.
 Settings without_inactive_color(Settings s);

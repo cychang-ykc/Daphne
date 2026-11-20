@@ -26,13 +26,32 @@ public sealed class DaphneOptions
     public bool DsdPcmLimiter { get; set; } = true;      // DSD → PCM: limiter instead of clipping above full scale
     public int Threads { get; set; }                     // filter design threads, 0 = automatic
     public int CacheLimitMb { get; set; } = 1024;        // filter cache limit: 500 | 1024 | 2048 MB
+    // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: SettingsMap).
+    public bool ColorEnabled { get; set; }
+    public string ColorPreset { get; set; } = "set-300b";   // set-300b | set-2a3 | set-845 | pp-el34-ul
+    public double ColorDrive { get; set; } = 1.0;            // 0 .. the core's drive_max (1.0 = 100 %)
+    public int ColorFeedbackDb { get; set; } = 6;            // pp-el34-ul: 0 | 6 | 12 | 20 | 30
+    public double ColorTrimDb { get; set; }                  // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
+    // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved: a new session plays
+    // what the slider says
+    public bool ColorBypass { get; set; }
 
-    public JsonObject ToJson() => new()
+    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul" };
+
+    /// <summary>The options as the page reads them; <paramref name="save"/>: as kept in MIKU's settings (no bypass).</summary>
+    public JsonObject ToJson(bool save = false)
     {
-        ["upsampler"] = Upsampler, ["target"] = Target, ["fixedRate"] = FixedRate, ["taps"] = Taps, ["phase"] = Phase,
-        ["phaseCustom"] = PhaseCustom, ["apodize"] = Apodize, ["doubleDouble"] = DoubleDouble, ["order"] = Order, ["osr"] = Osr,
-        ["dsdPcmLowpass"] = DsdPcmLowpass, ["dsdPcmLimiter"] = DsdPcmLimiter, ["threads"] = Threads, ["cacheLimitMb"] = CacheLimitMb,
-    };
+        var j = new JsonObject
+        {
+            ["upsampler"] = Upsampler, ["target"] = Target, ["fixedRate"] = FixedRate, ["taps"] = Taps, ["phase"] = Phase,
+            ["phaseCustom"] = PhaseCustom, ["apodize"] = Apodize, ["doubleDouble"] = DoubleDouble, ["order"] = Order, ["osr"] = Osr,
+            ["dsdPcmLowpass"] = DsdPcmLowpass, ["dsdPcmLimiter"] = DsdPcmLimiter, ["threads"] = Threads, ["cacheLimitMb"] = CacheLimitMb,
+            ["colorEnabled"] = ColorEnabled, ["colorPreset"] = ColorPreset, ["colorDrive"] = ColorDrive,
+            ["colorFeedbackDb"] = ColorFeedbackDb, ["colorTrimDb"] = ColorTrimDb,
+        };
+        if (!save) j["colorBypass"] = ColorBypass;
+        return j;
+    }
 
     public void Load(JsonElement o) => Merge(o);
 
@@ -57,6 +76,13 @@ public sealed class DaphneOptions
                 case "dsdPcmLimiter": DsdPcmLimiter = v.GetBoolean(); break;
                 case "threads": Threads = Math.Clamp(v.GetInt32(), 0, 256); break;
                 case "cacheLimitMb": CacheLimitMb = v.GetInt32() is 500 or 1024 or 2048 ? v.GetInt32() : 1024; break;
+                case "colorEnabled": ColorEnabled = v.ValueKind == JsonValueKind.True; break;
+                case "colorPreset": ColorPreset = Array.IndexOf(ColorPresets, v.GetString()) >= 0 ? v.GetString() : "set-300b"; break;
+                // the core's own limit applies when the settings are built (DaphneNative.ColorDriveMax)
+                case "colorDrive": ColorDrive = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Clamp(v.GetDouble(), 0, 4) : 1.0; break;
+                case "colorFeedbackDb": ColorFeedbackDb = v.ValueKind == JsonValueKind.Number && v.GetInt32() is 0 or 6 or 12 or 20 or 30 ? v.GetInt32() : 6; break;
+                case "colorTrimDb": ColorTrimDb = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Round(Math.Clamp(v.GetDouble(), -6, 6), 1) : 0; break;
+                case "colorBypass": ColorBypass = v.ValueKind == JsonValueKind.True; break;
             }
         }
     }
@@ -140,7 +166,24 @@ static class SettingsMap
         j["headroom_db"] = Math.Clamp(ReplayGainDb(s, t), -24, 24);
         j["dsd_modulator"] = new JsonObject { ["order"] = o.Order, ["osr"] = o.Osr };
         j["design"] = new JsonObject { ["threads"] = o.Threads, ["cache_limit_mb"] = o.CacheLimitMb };
+        j["color"] = Color(o);
         return j.ToJsonString();
+    }
+
+    /// <summary>
+    /// Tube Color (doc/N28): the panel's choices. The bypass is drive 0 (the stage idles in place, bit-identical, no
+    /// rebuild); the slider's own value stays in the options. Until M3 every preset plays at its reference operating
+    /// point: standard bias, 8 ohm tap. The trim 0 is "auto" (the trim is on top of the automatic makeup).
+    /// </summary>
+    public static JsonObject Color(DaphneOptions o)
+    {
+        double drive = o.ColorBypass ? 0 : Math.Clamp(o.ColorDrive, 0, DaphneNative.ColorDriveMax);
+        return new JsonObject
+        {
+            ["enabled"] = o.ColorEnabled, ["model"] = "fixed-point", ["preset"] = o.ColorPreset, ["drive"] = drive,
+            ["feedback_db"] = o.ColorFeedbackDb, ["bias"] = "standard", ["load_ohms"] = 8,
+            ["makeup_gain"] = Math.Abs(o.ColorTrimDb) < 0.05 ? JsonValue.Create("auto") : JsonValue.Create(o.ColorTrimDb),
+        };
     }
 
     /// <summary>MIKU's shelf Q → the RBJ shelf slope S that Daphne's LS / HS take (1/Q² = (A + 1/A)(1/S − 1) + 2).</summary>

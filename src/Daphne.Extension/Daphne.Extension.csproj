@@ -51,13 +51,15 @@
       <!-- where build_for_miku.ps1 puts the build tools it downloads (MSVC, CMake, Ninja): MIKU's .tools, else this repository's -->
       <_Tools>$(MikuToolsDir)</_Tools>
       <_Tools Condition="'$(_Tools)' == ''">$(DaphneRoot).tools</_Tools>
+      <!-- -p:DaphneColorTestCurve=true: daphne_core.dll with Tube Color's M1 test curve, for trying the panel (doc/N28); never for a release -->
+      <_ColorTestCurve Condition="'$(DaphneColorTestCurve)' == 'true'"> -ColorTestCurve</_ColorTestCurve>
     </PropertyGroup>
     <ItemGroup>
       <_Bin Include="$(TargetDir)*.dll;$(TargetDir)*.deps.json" Exclude="$(TargetDir)MIKU.dll;$(TargetDir)MIKU.Extensibility.dll;$(TargetDir)NAudio*.dll" />
       <_Web Include="$(MSBuildThisFileDirectory)web\**\*" />
     </ItemGroup>
     <!-- the C++ engine: CMake build of daphne_core.dll (fetches FFmpeg, the ASIO SDK and the build tools missing on this machine the first time) -->
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(DaphneRoot)scripts\build_for_miku.ps1&quot; -Out &quot;$(_Dst).&quot; -Tools &quot;$(_Tools)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(DaphneRoot)scripts\build_for_miku.ps1&quot; -Out &quot;$(_Dst).&quot; -Tools &quot;$(_Tools)&quot;$(_ColorTestCurve)" />
     <Copy SourceFiles="@(_Bin)" DestinationFolder="$(_Dst)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(_Web)" DestinationFiles="@(_Web->'$(_Dst)web\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
     <Message Importance="high" Text="daphne deployed to $(_Dst)" />
