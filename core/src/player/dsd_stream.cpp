@@ -31,10 +31,26 @@ void Player::Impl::queue_end() {
     dsd_bytes.clear();
     dsdenc->idle(rep.device.frame_rate() / 10, dsd_bytes);
     if (dsdenc->dop()) dsd_bytes.resize(dsd_bytes.size() + static_cast<size_t>(rep.device.frame_rate()) / 5 * io.block, 0);
+    end_pad = static_cast<int64_t>(dsd_bytes.size()) / std::max(1, io.block);
     if (io.bytes.size() < dsd_bytes.size()) io.bytes.resize(dsd_bytes.size());
     std::copy(dsd_bytes.begin(), dsd_bytes.end(), io.bytes.begin());
     io.pend = dsd_bytes.size();
     io.pend_off = 0;
+}
+
+std::optional<Settings> Player::Impl::remodulation(const Settings& ns, const OutputChoice& no) const {
+    const int dsd = rep.source.dsd_rate;
+    if (!color_active(ns) || dsd <= 0 || !is_dsd_path(cur_path)) return std::nullopt;
+    const OutputCaps c = deps.output_caps(no);
+    // the DSD multiple; the modulator's clock is 44.1 kHz x osr (a 48 kHz-family file changes rate, doc/N28)
+    const int multiple = dsd / (dsd % 44100 == 0 ? 44100 : 48000);
+    const bool dsd_out = ns.output.dsd != DsdMode::Pcm && !c.shared_mix && (c.native_dsd || ns.output.dsd != DsdMode::Native) &&
+                         !(ns.output.max_dsd > 0 && multiple > ns.output.max_dsd) && multiple >= 64;
+    if (!dsd_out) return std::nullopt;
+    Settings r = ns;
+    r.core = CoreMode::Dsd;
+    r.modulator.osr = multiple;
+    return r;
 }
 
 void Player::Impl::set_dsd_source() {
@@ -84,7 +100,7 @@ bool Player::Impl::dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no)
     tl.h_base = 0;
     end_queued = false;
     want_fade_in = true;
-    event("DSD converted to PCM (Tube Color)");
+    event(remodulation(s, out) ? "DSD remodulated (Tube Color)" : "DSD converted to PCM (Tube Color)");
     std::string e;
     dec = open_source(cur_path, s, &e);
     if (!dec) {
@@ -95,7 +111,7 @@ bool Player::Impl::dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no)
     ch = rep.source.channels;
     pcm.assign(static_cast<size_t>(kChunk) * ch, 0.0);
     hist.reset(ch);
-    dsd_pcm_for_color = !caps().shared_mix && s.output.dsd != DsdMode::Pcm;
+    dsd_chain_for_color = !caps().shared_mix && s.output.dsd != DsdMode::Pcm;
     stream = pcm_stream;
     if (!open_and_start(static_cast<int64_t>(std::llround(sec * rep.source.rate)), &e)) {   // (it reports the start)
         err = e;
@@ -105,7 +121,7 @@ bool Player::Impl::dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no)
 }
 
 bool Player::Impl::back_to_dsd_direct(const Settings& ns) const {
-    return dsd_pcm_for_color && !dsdf && color_active(s) && !color_active(ns) && ns.output.dsd != DsdMode::Pcm && is_dsd_path(cur_path);
+    return dsd_chain_for_color && !dsdf && color_active(s) && !color_active(ns) && ns.output.dsd != DsdMode::Pcm && is_dsd_path(cur_path);
 }
 
 // restart() has faded the PCM out and stopped the device; `from` is in the converted track's PCM frames
@@ -119,7 +135,7 @@ bool Player::Impl::pcm_to_dsd_direct(int64_t from) {
     }
     dsdf = std::move(f);
     set_dsd_source();
-    dsd_pcm_for_color = false;
+    dsd_chain_for_color = false;
     end_queued = false;
     event("Tube Color off: the DSD file is sent directly again");
     if (open_dsd(static_cast<int64_t>(std::llround(sec * rep.source.rate)), &e)) {
@@ -207,6 +223,8 @@ bool Player::Impl::open_dsd(int64_t from, std::string* error) {
         io.block = rep.device.block_align();
         dsdf->seek(from);
         tl.abs_out = from;
+        session_in = from;
+        end_pad = 0;
         io.eof = false;
         io.pend = io.pend_off = 0;
         io.ring = std::make_unique<ByteRing>(io.ring_bytes(rep.device.frame_rate()));

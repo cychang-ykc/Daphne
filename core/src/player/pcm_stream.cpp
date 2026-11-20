@@ -177,6 +177,8 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         dch = rep.device.channels;
         io.block = rep.device.block_align();
         tl.abs_out = from * ratio;
+        session_in = from;
+        end_pad = 0;
         skip_out = cur->content_delay();
         xf.set_channels(dch);
         io.ring = std::make_unique<ByteRing>(io.ring_bytes(rep.device.frame_rate()));

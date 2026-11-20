@@ -107,7 +107,7 @@ struct Player::Impl {
     std::unique_ptr<DsdFile> dsdf;     // DSD file played directly (no chain)
     std::vector<uint8_t> dsd_in;
     int dsd_pcm_rate = 0;              // DSD -> PCM fallback at this rate (0 = 176.4 / 192 kHz)
-    bool dsd_pcm_for_color = false;    // a DSD file converted to PCM only because Tube Color is active
+    bool dsd_chain_for_color = false;  // a DSD file goes through the chain only because Tube Color is active
     int dop_locked = 0;                // the PCM rate the device locked instead of the DoP rate (0: none)
     double start_sec = 0.0;            // Player::start position
     // transport requests (under m) and state
@@ -118,6 +118,10 @@ struct Player::Impl {
     bool was_paused = false;           // the last pause request seen (service_transport: a live source resumed)
     std::atomic<double> meter_l{0.0}, meter_r{0.0};
     bool end_queued = false;           // the stream end (DSD silence) is queued
+    // What the position does not count (heard_out / heard_input): the silence queued after the last music (queue_end;
+    // device frames), and the start of the device session (the DSD silence queued before the music plays there)
+    int64_t end_pad = 0;
+    int64_t session_in = 0;            // stream input frame the device session started at
     std::atomic<bool> device_fail{false};
     std::atomic<bool> internal_fail{false};   // start() failed by an exception (abort_run)
     int run_osr = 0;                   // dsd core: the DSD multiple the device runs
@@ -157,7 +161,9 @@ struct Player::Impl {
     // a faded frame on an integer device: TPDF re-quantization (FadeQuantizer)
     void requantize(double* frame) { fq.requantize(frame, rep.device, dch, dsdenc != nullptr); }
     // Stream input frame being heard (Timeline::heard_input).
-    int64_t heard_input() const { return tl.heard_input(heard_out(), dsdf ? 0 : cur ? cur->content_delay() : 0, ratio); }
+    int64_t heard_input() const {
+        return std::max(session_in, tl.heard_input(heard_out(), dsdf ? 0 : cur ? cur->content_delay() : 0, ratio));
+    }
     // (the chain's tail at the end of the stream runs past the last frame: held there)
     int64_t heard_position() const {
         const int64_t p = std::max<int64_t>(0, heard_input() - tl.track_origin_in);
@@ -227,6 +233,12 @@ struct Player::Impl {
     // ASIO with output.dsd none / native: native DSD; otherwise DoP at the DSD rate / 16.
     bool open_dsd(int64_t from, std::string* error);
     void set_dsd_source();             // rep.source from the DSD file (dsdf)
+    // Tube Color does not change the output format (doc/N28): while it is active, a DSD file that would go out as DSD
+    // is remodulated at its own DSD multiple (the dsd core, with its modulator and limiter settings). The settings
+    // that does it, or nullopt (not a DSD file, Tube Color off, an output that takes no DSD: converted to PCM).
+    std::optional<Settings> remodulation(const Settings& ns, const OutputChoice& no) const;
+    Settings effective(const Settings& ns, const OutputChoice& no) const { return remodulation(ns, no).value_or(ns); }
+    bool remodulating() const { return !dsdf && remodulation(s, out).has_value(); }
     // Tube Color switched on / off while a DSD file plays (doc/N28): the file goes on at the heard position, as PCM
     // through the chain or sent directly again
     bool dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no);
