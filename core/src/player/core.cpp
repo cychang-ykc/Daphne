@@ -300,7 +300,10 @@ void Player::Impl::run_playback() {
         rep.source.codec = di.codec;
         rep.source.dsd_rate = di.dsd_rate;
         std::string de = "output.dsd = pcm";
-        if (s.output.dsd != DsdMode::Pcm && open_dsd(static_cast<int64_t>(start_sec * rep.source.rate), &de)) {
+        // Tube Color (doc/N28) works on PCM: while it is active a DSD file is converted (only then: where it cannot
+        // run, color.enabled true leaves DSD as it was)
+        const bool color = color_active(s);
+        if (s.output.dsd != DsdMode::Pcm && !color && open_dsd(static_cast<int64_t>(start_sec * rep.source.rate), &de)) {
             started_dsd = true;
             if (cb.on_start) cb.on_start(rep);
         } else if (cancel) {
@@ -317,8 +320,9 @@ void Player::Impl::run_playback() {
             return;
         } else {
             // no DSD path to the device: the DSD file is converted to PCM
-            event(s.output.dsd == DsdMode::Pcm ? "converting the DSD file to PCM (output.dsd = pcm)"
-                                                : "DSD cannot be sent directly (" + de + "): converting the DSD file to PCM");
+            event(color ? "DSD converted to PCM (Tube Color)"
+                  : s.output.dsd == DsdMode::Pcm ? "converting the DSD file to PCM (output.dsd = pcm)"
+                                                 : "DSD cannot be sent directly (" + de + "): converting the DSD file to PCM");
             // shared mode runs at the mixer rate: convert to it when it divides the DSD rate
             if (caps().shared_mix) {
                 std::string pe;

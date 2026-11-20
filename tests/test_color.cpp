@@ -1,6 +1,12 @@
 // Tube Color (doc/N28), M1: settings and the gate that keeps it out of the chain where it cannot run.
 #include <catch_amalgamated.hpp>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
 #include "daphne/engine/chain.h"
 #include "daphne/engine/settings.h"
 #include "daphne/color/tube_color.h"
@@ -174,4 +180,102 @@ TEST_CASE("color settings: the chain keys ignore Tube Color unless it is active"
         CHECK(daphne::DspChain::structure_key(on) == daphne::DspChain::structure_key(off));
         CHECK(daphne::playback::TrackQueue::chain_key(on_edited, dev) == daphne::playback::TrackQueue::chain_key(off, dev));
     }
+}
+
+namespace {
+
+daphne::AudioInfo src_info(int rate, int bits) {
+    daphne::AudioInfo a;
+    a.rate = rate;
+    a.channels = 2;
+    a.bits = bits;
+    a.lossless_int = bits > 0;
+    a.codec = "test";
+    return a;
+}
+
+daphne::DeviceFormat dev_fmt(int rate, daphne::SampleType t, int bits) {
+    daphne::DeviceFormat f;
+    f.rate = rate;
+    f.channels = 2;
+    f.type = t;
+    f.container_bits = t == daphne::SampleType::Float64 ? 64 : 32;
+    f.valid_bits = bits;
+    return f;
+}
+
+std::vector<std::string> all_stages(const Settings& s, const daphne::AudioInfo& a, const daphne::DeviceFormat& d) {
+    daphne::DspChain c;
+    std::string e;
+    REQUIRE(c.build(s, a, d, 4096, &e));
+    return c.all_stages();
+}
+
+// where `name` is among the stages (-1: absent)
+int at(const std::vector<std::string>& v, const std::string& name) {
+    const auto it = std::find(v.begin(), v.end(), name);
+    return it == v.end() ? -1 : static_cast<int>(it - v.begin());
+}
+
+}  // namespace
+
+TEST_CASE("color stage: where it sits in the chain, and only while active", "[color][chain]") {
+    using daphne::SampleType;
+    Settings off;
+    off.volume.mode = daphne::VolumeMode::Digital;
+    off.volume.db = -3.0;
+    off.eq.enabled = true;
+    off.eq.bands = {{daphne::EqType::PK, 1000.0, 1.0, 3.0, true}};
+    Settings on = off;
+    on.color.enabled = true;
+    Settings dsd_core;
+    dsd_core.core = daphne::CoreMode::Dsd;
+    Settings dsd_core_on = dsd_core;
+    dsd_core_on.color.enabled = true;
+    daphne::AudioInfo dsd_file = src_info(176400, 0);
+    dsd_file.dsd_pcm = true;
+    Settings file_on;
+    file_on.color.enabled = true;
+    const auto pcm = dev_fmt(176400, SampleType::Int32, 32), same_rate = dev_fmt(44100, SampleType::Int32, 32),
+               dsd_dev = dev_fmt(705600, SampleType::Float64, 64);
+    // off: never in the chain, in any build
+    for (const auto& v : {all_stages(off, src_info(44100, 24), pcm), all_stages(dsd_core, src_info(44100, 16), dsd_dev),
+                          all_stages(Settings{}, dsd_file, pcm)})
+        CHECK(at(v, "tube color") < 0);
+    if (!daphne::color_active(on)) {
+        // a release build: enabled true builds the chain without it
+        CHECK(all_stages(on, src_info(44100, 24), pcm) == all_stages(off, src_info(44100, 24), pcm));
+        CHECK(all_stages(dsd_core_on, src_info(44100, 16), dsd_dev) == all_stages(dsd_core, src_info(44100, 16), dsd_dev));
+        CHECK(all_stages(file_on, dsd_file, pcm) == all_stages(Settings{}, dsd_file, pcm));
+        return;
+    }
+    // PCM core, upsampled: after the resampler (and volume / EQ), before the final quantizer
+    auto v = all_stages(on, src_info(44100, 24), pcm);
+    INFO(nlohmann::json(v).dump());
+    REQUIRE(at(v, "tube color") >= 0);
+    CHECK(at(v, "tube color") > at(v, "resampler"));
+    CHECK(at(v, "tube color") > at(v, "eq"));
+    CHECK(at(v, "tube color") < at(v, "quantizer"));
+    // at the source rate (no resampler)
+    v = all_stages(on, src_info(44100, 24), same_rate);
+    REQUIRE(at(v, "tube color") >= 0);
+    CHECK(at(v, "resampler") < 0);
+    CHECK(at(v, "tube color") < at(v, "quantizer"));
+    // DSD core: after the modulator pre-filter, before the modulator limiter
+    v = all_stages(dsd_core_on, src_info(44100, 16), dsd_dev);
+    INFO(nlohmann::json(v).dump());
+    REQUIRE(at(v, "tube color") >= 0);
+    CHECK(at(v, "tube color") == at(v, "modulator pre-filter") + 1);
+    CHECK(at(v, "modulator limiter") == at(v, "tube color") + 1);
+    // a DSD file converted to PCM: before the DSD limiter
+    v = all_stages(file_on, dsd_file, pcm);
+    REQUIRE(at(v, "tube color") >= 0);
+    CHECK(at(v, "tube color") < at(v, "dsd limiter"));
+    // otherwise the chain is the one without it
+    auto without = [](std::vector<std::string> x) {
+        x.erase(std::remove(x.begin(), x.end(), "tube color"), x.end());
+        return x;
+    };
+    CHECK(without(all_stages(on, src_info(44100, 24), pcm)) == all_stages(off, src_info(44100, 24), pcm));
+    CHECK(without(all_stages(dsd_core_on, src_info(44100, 16), dsd_dev)) == all_stages(dsd_core, src_info(44100, 16), dsd_dev));
 }

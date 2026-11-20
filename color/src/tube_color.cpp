@@ -1,8 +1,15 @@
 #include "daphne/color/tube_color.h"
 
-// The stage (dsp::Block) arrives in the next M1 steps; this unit keeps the library non-empty meanwhile.
+#include <algorithm>
+#include <cstddef>
+
+#include "daphne/color/stage.h"
+
 namespace daphne::color {
-namespace {
-[[maybe_unused]] constexpr bool kAvailable = available();
-}  // namespace
+
+int TubeColorStage::process(const double* in, int frames, double* out) {
+    if (in != out) std::copy(in, in + static_cast<std::ptrdiff_t>(frames) * fmt_.channels, out);
+    return frames;
+}
+
 }  // namespace daphne::color

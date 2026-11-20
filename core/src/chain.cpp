@@ -1,5 +1,9 @@
 #include "daphne/engine/chain.h"
 
+#if defined(DAPHNE_COLOR)
+#include "daphne/color/stage.h"
+#endif
+
 #include <algorithm>
 
 #include "daphne/dsp/crossfeed.h"
@@ -120,6 +124,11 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     // 4. upsampling: to the device (pcm) or to the modulator's input rate (dsd), the same filter
     if (dev.rate != rate || s.filter.apodize)
         add(s.core == CoreMode::Dsd ? "modulator pre-filter" : "resampler", make_resampler(s.filter, rate, dev.rate), frames, rate, ch);
+#if defined(DAPHNE_COLOR)
+    // Tube Color (doc/N28), an effect: after the upsampler, before the limiters and the final quantizer; only while
+    // active (enabled, and a build that can run it), so with it off the chain is the one without it
+    if (color_active(s)) add("tube color", std::make_unique<color::TubeColorStage>(), frames, rate, ch);
+#endif
     if (s.core == CoreMode::Dsd) add("modulator limiter", modulator_limiter(s.modulator), frames, rate, ch);
 
     // the stages other than gain / crossfeed / EQ pass samples through
@@ -210,6 +219,12 @@ int64_t DspChain::take_clips() {
 
 bool DspChain::transparent() const {
     return std::all_of(st_.begin(), st_.end(), [](const Stage& s) { return s.block->is_identity(); });
+}
+
+std::vector<std::string> DspChain::all_stages() const {
+    std::vector<std::string> v;
+    for (const auto& s : st_) v.push_back(s.name);
+    return v;
 }
 
 std::vector<std::string> DspChain::stages() const {

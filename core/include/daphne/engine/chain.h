@@ -59,6 +59,8 @@ public:
     bool transparent() const;
     // Names of the stages that change the signal, in order, for reports.
     std::vector<std::string> stages() const;
+    // Names of every stage, in order, including those that currently pass samples through (tests, diagnostics).
+    std::vector<std::string> all_stages() const;
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).
     // Its output is already inside the device range, so convert_to_device() never sees these.
     int64_t take_clips();

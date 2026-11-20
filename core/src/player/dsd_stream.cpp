@@ -157,6 +157,8 @@ bool Player::Impl::produce_dsd() {
 
 bool Player::Impl::handle_dsd(const Settings& ns, const OutputChoice& no, bool reset) {
     const bool reopen = reset || dsd_direct_reopens(playing(), ns, no);
+    // the DSD path is chosen when the file is loaded (as for output.dsd: the host loads it again)
+    if (color_active(ns) && !color_active(s)) event("Tube Color applies from the next load of this DSD file (sent directly now)");
     s = ns;
     if (!reopen) {
         event("DSD file played directly: DSP settings do not apply");

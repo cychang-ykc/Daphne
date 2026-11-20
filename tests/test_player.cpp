@@ -922,6 +922,41 @@ TEST_CASE("Player: color.enabled true changes nothing where Tube Color cannot ru
     CHECK(play_pcm(true) == play_pcm(false));
 }
 
+TEST_CASE("Player: a DSD file goes through Tube Color as PCM only while it is active", "[player][dsd][color]") {
+    Settings probe;
+    probe.color.enabled = true;
+    if (!daphne::color_active(probe)) SKIP("a release build: Tube Color cannot run here (the test above covers it)");
+    const auto path = write_dsf("daphne_player_color_tc.dsf", 2822400 / 8 / 2 / 5);   // 0.1 s per channel
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        Rig r;
+        r.caps.native_dsd = native;
+        Settings s;
+        s.output.dsd_lead_in_ms = 20;
+        s.color.enabled = true;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK_FALSE(r.dev->opens.front().dsd);
+        CHECK(r.saw("DSD converted to PCM (Tube Color)"));
+        CHECK(rep.source.dsd_rate == 2822400);
+        // PCM, not DoP: no run of alternating 0x05 / 0xFA markers (DoP carries one in every frame)
+        const auto m = dop_markers(r.dev->take(), 2);
+        REQUIRE(m.size() > 1000);
+        size_t run = 0, longest = 0;
+        for (size_t i = 0; i < m.size(); ++i) {
+            const bool mk = (m[i] == 0x05 || m[i] == 0xFA) && (i == 0 || m[i] != m[i - 1]);
+            run = mk ? run + 1 : 0;
+            longest = std::max(longest, run);
+        }
+        CHECK(longest < 64);
+        r.player.reset();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST_CASE("Crossfader: a warm-up in rounds starts the same crossfade as one warm-up", "[player][crossfade]") {
     // 44.1 -> 88.2 kHz on a 16-bit device: a resampler and a TPDF quantizer (the dither depends on every
     // frame the chain has made)
