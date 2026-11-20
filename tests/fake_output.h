@@ -33,6 +33,7 @@ struct FakeDevice {
     int container_bits = 32, valid_bits = 32;
     int buffer_frames = 512;
     double speed = 0;                                // 0: as fast as the player fills; else x real time
+    double time_scale = 1.0;                         // with speed: the wall clock runs this much slower (test_timing.h)
     int lock_rate = 0;                               // nonzero: every PCM open locks this rate, with a note why
     bool can_convert = false;                        // with lock_rate: an open with OutputRequest::convert resamples
                                                      // to it (format() the rate asked for, system_rate() lock_rate)
@@ -104,7 +105,7 @@ public:
         drained_ = false, stop_ = false;
         feeder_.configure(fmt_);
         th_ = std::thread([this] { loop(); });
-        if (d_->start_s > 0) std::this_thread::sleep_for(std::chrono::duration<double>(d_->start_s));
+        if (d_->start_s > 0) std::this_thread::sleep_for(std::chrono::duration<double>(d_->start_s * d_->time_scale));
         return true;
     }
     bool drained() const override { return drained_; }
@@ -126,11 +127,14 @@ private:
         std::vector<uint8_t> buf(need);
         // paced by the clock, not by sleep lengths (sleeps overshoot, more on some systems): buffer k is due at
         // start + k periods
-        const auto period = std::chrono::duration<double>(d_->speed > 0 ? static_cast<double>(n) / fmt_.frame_rate() / d_->speed : 0.0);
+        const auto period = std::chrono::duration<double>(
+            d_->speed > 0 ? static_cast<double>(n) / fmt_.frame_rate() / d_->speed * d_->time_scale : 0.0);
         auto due = std::chrono::steady_clock::now();
         while (!stop_) {
             // a whole buffer of data (or the end, or a pause) before taking one
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                      std::chrono::duration<double>(0.2 * d_->time_scale));
             while (!stop_ && !eof_->load() && !paused() && ring_->readable() < need && std::chrono::steady_clock::now() < deadline)
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
             if (stop_) break;

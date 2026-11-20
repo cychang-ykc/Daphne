@@ -26,11 +26,15 @@ jobs:
           - { name: tsan, flags: "thread", tests: "[player],[capi],[live],[modulator]" }
           # Tube Color's stage (curve, oversampling, the DSD switch's threads, 6b) runs only in the test builds (doc/N28)
           - { name: asan-color, flags: "address,undefined", tests: "", color_test: true }
-          - { name: tsan-color, flags: "thread", tests: "[player],[capi],[live],[modulator],[color]", color_test: true }
+          # (a tag names hidden tests too: ~[.bench] keeps the benchmarks out)
+          - { name: tsan-color, flags: "thread", tests: "[player]~[.bench],[capi],[live],[modulator],[color]~[.bench]", color_test: true }
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     env:
       ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+      # the tests' wall clock 4 x slower (tests/test_timing.h, doc/N28): a sanitized build cannot keep real time
+      # (the Tube Color stage takes about 1.5 cores under TSan); no audio criterion changes
+      DAPHNE_TEST_TIME_SCALE: 4
       UBSAN_OPTIONS: print_stacktrace=1
       TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
     steps:

@@ -14,12 +14,14 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <random>
 #include <functional>
 #include <future>
 #include <thread>
 
 #include <nlohmann/json.hpp>
+#include "test_timing.h"
 
 #if defined(DAPHNE_COLOR_TEST_CURVE)
 #include "daphne/color/oversampler.h"
@@ -87,6 +89,32 @@ struct Rig {
     std::unique_ptr<Player> player;
     OutputCaps caps;   // what the fake output says it offers
 
+    Rig() {
+        dev->time_scale = test::time_scale();
+        test::watchdog_set_state([this] { return state(); });
+    }
+    ~Rig() { test::watchdog_set_state(nullptr); }
+    Rig(const Rig&) = delete;
+    Rig& operator=(const Rig&) = delete;
+
+    // where the playback is, for a failure's message: position, what the device took, the events so far
+    std::string state() {
+        std::ostringstream o;
+        o << "position " << (player ? player->position_seconds() : -1.0) << " s";
+        {
+            std::lock_guard<std::mutex> l(dev->m);
+            const int rate = dev->fmt.frame_rate();
+            const size_t align = dev->fmt.block_align();
+            if (rate > 0 && align > 0) o << ", the device took " << static_cast<double>(dev->bytes.size() / align) / rate << " s";
+            o << ", " << dev->opens.size() << " open(s)";
+        }
+        std::lock_guard<std::mutex> l(m);
+        o << ", ended " << (ended ? "yes" : "no") << ", " << events.size() << " event(s)";
+        const size_t from = events.size() > 8 ? events.size() - 8 : 0;
+        for (size_t i = from; i < events.size(); ++i) o << "\n    [" << i << "] " << events[i];
+        return o.str();
+    }
+
     PlayerDeps deps() {
         PlayerDeps d;
         d.open_output = test::fake_opener(dev);
@@ -130,7 +158,7 @@ struct Rig {
     PlayReport finish(double limit = 30.0) {
         const auto t0 = std::chrono::steady_clock::now();
         while (!player->finished()) {
-            if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(limit)) player->stop();
+            if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(test::wall_s(limit))) player->stop();
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         PlayReport r;
@@ -151,7 +179,7 @@ struct Rig {
     }
 };
 
-void sleep_s(double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); }
+void sleep_s(double s) { std::this_thread::sleep_for(std::chrono::duration<double>(test::wall_s(s))); }
 
 // frequency from the zero crossings of channel 0 in [from, to) frames
 double frequency(const std::vector<float>& y, int ch, size_t from, size_t to, double rate) {
@@ -438,7 +466,7 @@ TEST_CASE("Player: a seek while the next track is decoded ahead goes back into t
         REQUIRE(r.player->start(platform::path_from_utf8("a"), s, OutputChoice{}, r.callbacks(), &e, 0.0));
         r.player->set_next(platform::path_from_utf8("b"));
         const auto t0 = std::chrono::steady_clock::now();
-        while (!a_read && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5))
+        while (!a_read && std::chrono::steady_clock::now() - t0 < test::wall(std::chrono::seconds(5)))
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         REQUIRE(a_read);
         sleep_s(0.02);   // the decoder has moved on to "b"; "a" is still heard for about the ring's 0.5 s
@@ -446,7 +474,7 @@ TEST_CASE("Player: a seek while the next track is decoded ahead goes back into t
         a_gone = gone;
         const size_t before = r.dev->samples32().size() / 2;   // frames played before the seek
         r.player->seek(0.5);
-        while (!r.player->finished() && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(15))
+        while (!r.player->finished() && std::chrono::steady_clock::now() - t0 < test::wall(std::chrono::seconds(15)))
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         REQUIRE(r.player->finished());
         PlayReport rep;
@@ -606,7 +634,7 @@ TEST_CASE("Player: live input plays the producer's stream", "[player][live]") {
                 const auto t0 = std::chrono::steady_clock::now();
                 while (!stop) {
                     const int64_t due =
-                        static_cast<int64_t>(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 48000);
+                        static_cast<int64_t>(test::test_seconds_since(t0) * 48000);
                     for (; t < due; ++t) {
                         const float v = static_cast<float>(0.5 * std::sin(2 * kPi * 1000.0 * t / 48000.0));
                         const size_t k = static_cast<size_t>(t % cap);
@@ -662,7 +690,7 @@ TEST_CASE("Player: a live source resumed after a pause goes back to the writer",
         auto* index = reinterpret_cast<uint32_t*>(mem.data());
         const auto t0 = std::chrono::steady_clock::now();
         while (!stop) {
-            const auto t = static_cast<uint32_t>(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 48000);
+            const auto t = static_cast<uint32_t>(test::test_seconds_since(t0) * 48000);
             std::atomic_thread_fence(std::memory_order_release);
             test::store_release(index, t);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -708,7 +736,7 @@ TEST_CASE("Player: a live source starts with the target buffered, not the target
         auto* index = reinterpret_cast<uint32_t*>(mem.data());
         const auto t0 = std::chrono::steady_clock::now();
         while (!stop) {
-            const auto t = static_cast<uint32_t>(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 48000);
+            const auto t = static_cast<uint32_t>(test::test_seconds_since(t0) * 48000);
             std::atomic_thread_fence(std::memory_order_release);
             test::store_release(index, t);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1006,13 +1034,24 @@ std::filesystem::path write_dsf_bytes(const std::string& name, const std::vector
 }
 
 
+// waits up to `limit` test seconds (test_timing.h)
 bool wait_for(const std::function<bool()>& f, double limit = 10.0) {
     const auto t0 = std::chrono::steady_clock::now();
     while (!f()) {
-        if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(limit)) return false;
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(test::wall_s(limit))) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return true;
+}
+
+// wait_for with the rig's state in the failure: what was awaited, where the playback was, the events it had sent
+bool wait_until(Rig& r, const std::function<bool()>& f, const std::string& what, double limit = 10.0) {
+    if (wait_for(f, limit)) return true;
+    UNSCOPED_INFO("waited " << limit << " s (test time, x" << test::time_scale() << " wall) for " << what << "\n  " << r.state());
+    return false;
+}
+bool wait_saw(Rig& r, const std::string& part, double limit = 10.0) {
+    return wait_until(r, [&] { return r.saw(part); }, "the event \"" + part + "\"", limit);
 }
 
 int starts(Rig& r) {
@@ -1216,11 +1255,11 @@ TEST_CASE("Player: Tube Color switched while a DSD file plays keeps the position
         sleep_s(0.1);
         const double p0 = r.player->position_seconds();
         r.player->apply(on, OutputChoice{});
-        REQUIRE(wait_for([&] { return starts(r) >= 2; }));
+        REQUIRE(wait_until(r, [&] { return starts(r) >= 2; }, "start 2"));
         sleep_s(0.05);
         const double p1 = r.player->position_seconds();
         r.player->apply(off, OutputChoice{});
-        REQUIRE(wait_for([&] { return starts(r) >= 3; }));
+        REQUIRE(wait_until(r, [&] { return starts(r) >= 3; }, "start 3"));
         sleep_s(0.05);
         const double p2 = r.player->position_seconds();
         UNSCOPED_INFO("positions " << p0 << " -> " << p1 << " -> " << p2 << " s");
@@ -1266,7 +1305,7 @@ TEST_CASE("Player: Tube Color on the dsd core only rebuilds the chain", "[player
         REQUIRE(r.start("sine", off));
         sleep_s(0.3);
         r.player->apply(on, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }));
+        REQUIRE(wait_saw(r, "now playing with filter"));
         const auto rep = r.finish();
         CHECK(r.ended);
         CHECK(r.dev->opens.size() == 1);   // never reopened
@@ -1309,6 +1348,7 @@ TEST_CASE("Player: Tube Color's drive crossing 0 is taken in place", "[player][c
     r.player->apply(z, OutputChoice{});
     const auto rep = r.finish();
     CHECK(r.ended);
+    INFO("after the run: " << r.state());
     CHECK(count_events(r, "applied in place") == 4);
     CHECK(count_events(r, "in the background") == 0);
     CHECK(r.dev->opens.size() == 1);
@@ -1379,6 +1419,7 @@ TEST_CASE("Player: Tube Color in the path report and the log", "[player][color]"
     sleep_s(0.2);
     const auto rep = r.finish();
     CHECK(rep.not_bit_perfect_reason == "DSP active (Tube Color)");
+    INFO("after the run: " << r.state());
     CHECK(count_events(r, "is outside this preset's range") == 1);
     r.player.reset();
 }
@@ -1398,11 +1439,11 @@ TEST_CASE("Player: a Tube Color preset change is rebuilt and crossfaded, the dri
     d.color.drive = 1.6;
     d.color.makeup_gain_db = 1.0;
     r.player->apply(d, OutputChoice{});
-    REQUIRE(wait_for([&] { return r.saw("applied in place"); }, 5.0));
+    REQUIRE(wait_saw(r, "applied in place", 5.0));
     Settings p = d;
     p.color.preset = daphne::ColorPreset::Set845;
     r.player->apply(p, OutputChoice{});
-    REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }, 5.0));
+    REQUIRE(wait_saw(r, "now playing with filter", 5.0));
     r.finish();
     CHECK(r.ended);
     CHECK(count_events(r, "in the background") == 1);   // the preset: one rebuild
@@ -1823,28 +1864,31 @@ TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening
         REQUIRE(r.start(platform::path_to_utf8(path), off));
         sleep_s(0.5);
         r.player->apply(on, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "taken over at DSD byte", 5.0));
         sleep_s(0.6);
         r.player->apply(off, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "sent directly again from DSD byte", 5.0));
         r.finish();
         CHECK(r.ended);
         check_seamless(r, fl, fr, "dop");   // (one device open among its checks)
         r.player.reset();
     }
     SECTION("the preparation late: the switch moves on, the file plays on") {
-        daphne::playback::g_remod_prep_delay_ms = 700;   // more than the 0.4 s lead
+        daphne::playback::g_remod_prep_delay_ms = static_cast<int>(700 * test::time_scale());   // more than the 0.4 s lead
         Rig r;
         r.dev->speed = 1.0;
         REQUIRE(r.start(platform::path_to_utf8(path), off));
         sleep_s(0.3);
         r.player->apply(on, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "taken over at DSD byte", 5.0));
         daphne::playback::g_remod_prep_delay_ms = 0;
         CHECK(r.saw("not ready at its point; it takes over later"));
+        // in the log of a passing run too: the path this section is for, at this run's time scale
+        WARN("time scale x" << test::time_scale() << ", preparation delayed " << static_cast<int>(700 * test::time_scale())
+                            << " ms: late path " << (r.saw("not ready at its point; it takes over later") ? "taken" : "NOT taken"));
         sleep_s(0.5);
         r.player->apply(off, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "sent directly again from DSD byte", 5.0));
         r.finish();
         CHECK(r.ended);
         check_seamless(r, fl, fr, "late");
@@ -1857,10 +1901,10 @@ TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening
         REQUIRE(r.start(platform::path_to_utf8(path), off));
         sleep_s(0.5);
         r.player->apply(on, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "taken over at DSD byte", 5.0));
         sleep_s(0.5);
         r.player->apply(off, OutputChoice{});
-        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "sent directly again from DSD byte", 5.0));
         r.finish();
         CHECK(r.ended);
         CHECK(r.dev->opens.size() == 1);
@@ -1989,7 +2033,7 @@ TEST_CASE("Player: Tube Color on a 48 kHz-family DSD file reopens the device", "
     REQUIRE(r.start(platform::path_to_utf8(path), off));
     sleep_s(0.3);
     r.player->apply(on, OutputChoice{});
-    REQUIRE(wait_for([&] { return starts(r) >= 2; }));
+    REQUIRE(wait_until(r, [&] { return starts(r) >= 2; }, "start 2"));
     r.finish();
     CHECK(r.ended);
     CHECK(r.dev->opens.size() == 2);
@@ -2003,7 +2047,7 @@ TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file",
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     const auto path = write_counting_dsf("daphne_color_switch_fast.dsf", 2822400 / 8 * 2);   // 2 s
     auto spin = [](double s) {   // (a sleep can overshoot by tens of ms on a busy machine)
-        const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(test::wall_s(s));
         while (std::chrono::steady_clock::now() < until) {
         }
     };
@@ -2025,11 +2069,11 @@ TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file",
         spin(0.03);
         r.player->apply(on, OutputChoice{});
         const auto took = std::chrono::steady_clock::now() - t0;
-        const double took_ms = std::chrono::duration<double>(took).count() * 1000.0;
+        const double took_ms = std::chrono::duration<double>(took).count() * 1000.0 / test::time_scale();   // test time
         UNSCOPED_INFO("three switches in " << took_ms << " ms");
-        CHECK(took < std::chrono::milliseconds(100));
+        CHECK(took < test::wall(std::chrono::milliseconds(100)));
         // the last setting (on) takes over, once, on the open device; nothing hangs
-        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        REQUIRE(wait_saw(r, "taken over at DSD byte", 5.0));
         r.finish(10.0);
         CHECK(r.ended);
         CHECK(r.dev->opens.size() == 1);
@@ -2281,8 +2325,8 @@ TEST_CASE("Player: a disk that stalls during playback is not heard while the rea
         FileBytes::set_read_hook_for_tests([t0](int64_t, size_t) {
             if (!t0->load()) return;
             const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            const auto from = std::chrono::steady_clock::duration(t0->load()) + std::chrono::milliseconds(1000);
-            const auto to = from + std::chrono::milliseconds(1500);
+            const auto from = std::chrono::steady_clock::duration(t0->load()) + test::wall(std::chrono::milliseconds(1000));
+            const auto to = from + test::wall(std::chrono::milliseconds(1500));
             if (now >= from && now < to) std::this_thread::sleep_for(to - now);
         });
         Rig r;
