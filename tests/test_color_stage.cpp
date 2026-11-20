@@ -173,7 +173,7 @@ TEST_CASE("color test curve: shape", "[color][curve]") {
 TEST_CASE("color stage: drive 0 is a pure delay, bit for bit", "[color]") {
     // 48 kHz: the stage is oversampled, its content delay the round trip's (223 frames); idle, it delays the input by
     // exactly that, nothing else
-    TubeColorStage st(StageParams{.drive = 0.0});
+    TubeColorStage st(StageParams{.drive = 0.0, .linear = {}});
     CHECK(st.is_identity());
     const auto x = sine(48000, 997.0, 0.9, 20000);
     const auto y = run(st, x, 48000);

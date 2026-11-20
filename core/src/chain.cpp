@@ -48,7 +48,9 @@ std::string DspChain::structure_key(const Settings& s) {
     // without_inactive_color); the drive, 0 included, is taken in place by the stage and its other fields are applied
     // there (doc/N28)
     Settings k = without_inactive_color(s);
-    k.color = {.enabled = k.color.enabled};
+    const bool color_on = k.color.enabled;
+    k.color = ColorSettings{};
+    k.color.enabled = color_on;
     k.eq = {};
     k.crossfeed = {};
     k.volume = {};
@@ -140,7 +142,8 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     // Tube Color (doc/N28), an effect: after the upsampler, before the limiters and the final quantizer; only while
     // active (enabled, and a build that can run it), so with it off the chain is the one without it
     if (color_active(s)) {
-        color::StageParams cp{.drive = s.color.drive};
+        color::StageParams cp;
+        cp.drive = s.color.drive;
 #if defined(DAPHNE_COLOR_TEST_CURVE)
         cp.linear = color::test_linear_model();
 #endif
