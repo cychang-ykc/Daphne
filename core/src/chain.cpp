@@ -95,6 +95,7 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     color_ = nullptr;
 #endif
     clips_taken_ = 0;
+    in_frames_ = 0;
     src_ = src;
     dev_ = dev;
     max_buf_ = chunk * std::max(src.channels, dev.channels);
@@ -144,6 +145,18 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     if (color_active(s)) {
         color::StageParams cp;
         cp.drive = s.color.drive;
+        cp.level = src.dsd_pcm ? 2.0 : 1.0;   // the DSD -> PCM conversion's +6 dB, cancelled like the volume
+        cp.volume = color_volume_ = color_volume(s);
+        // where the gain stage's changes reach the stage: its rate over the source's, and the content delay of what
+        // lies between (the upsampler), in the stage's frames
+        color_ratio_ = std::max(1, rate / std::max(1, src.rate));
+        color_lead_ = 0;
+        bool after_gain = false;
+        for (const auto& x : st_) {
+            if (x.block.get() == gain_) after_gain = true;
+            else if (after_gain) color_lead_ += x.block->content_delay_frames() * std::max(1, rate / std::max(1, x.block->output_format().rate));
+        }
+        gain_ramp_ = static_cast<int>(std::max(1.0, dsp::Gain::kRampMs * 1e-3 * src.rate)) * color_ratio_;
 #if defined(DAPHNE_COLOR_TEST_CURVE)
         cp.linear = color::test_linear_model();
 #endif
@@ -190,6 +203,10 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     return true;
 }
 
+double DspChain::color_volume(const Settings& s) {
+    return s.volume.mode == VolumeMode::Digital ? dsp::Gain::db_to_linear(s.volume.db) : 1.0;
+}
+
 bool DspChain::update(const Settings& s) {
     // the quantizer there or not, and (there) kept for Tube Color or needed anyway, as when the chain was built
     if (st_.empty() || structure_key(s) != key_ || quantizer_present(s, src_, dev_, pre_transparent_) != quantized_ ||
@@ -199,7 +216,14 @@ bool DspChain::update(const Settings& s) {
     configure_crossfeed(*xf_, s.crossfeed);
     peq_->set_params(make_peq_params(s.eq, eq_rate_));
 #if defined(DAPHNE_COLOR)
-    if (color_) color_->set_drive(s.color.drive);   // glides; 0 takes it idle, in place
+    if (color_) {
+        color_->set_drive(s.color.drive);   // glides; 0 takes it idle, in place
+        // the volume, cancelled around it: from where the gain stage's ramp (starting with the next input frame) reaches it
+        if (const double v = color_volume(s); v != color_volume_) {
+            color_volume_ = v;
+            color_->set_volume(v, in_frames_ * color_ratio_ + color_lead_, gain_ramp_);
+        }
+    }
 #endif
     return true;
 }
@@ -231,6 +255,7 @@ int DspChain::run_from(size_t first, const double* in, int frames, double* out) 
 
 int DspChain::process(const double* in, int frames, double* out) {
     if (st_.empty()) return 0;
+    in_frames_ += frames;
     return run_from(0, in, frames, out);
 }
 
@@ -245,6 +270,7 @@ int DspChain::flush(double* out) {
 }
 
 void DspChain::reset() {
+    in_frames_ = 0;
     for (auto& s : st_) s.block->reset();
     clips_taken_ = 0;   // the quantizer's count restarts with it
 }

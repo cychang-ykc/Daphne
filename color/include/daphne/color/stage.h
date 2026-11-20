@@ -11,6 +11,14 @@
 //
 // Below 8x the rate family all of it runs oversampled (oversampler.h), the round trip delaying the content by D frames.
 //
+// The user's digital volume is cancelled around it (doc/N28, item 7): the input is divided by it and the output
+// multiplied back, so the curve sees the music at the same level whatever the volume (the tube character does not
+// change with it; ReplayGain is not cancelled). The volume reaches the stage after the chain's gain stage, ramped there
+// and delayed by the stages between: the chain schedules the same ramp at the stage input frame where the gain's ramp
+// arrives (set_volume), and the output is multiplied by the volume of the content it holds (D frames earlier).
+// Below kSkipBelow (-80 dB) the curve is skipped (the linear part only). A DSD file converted to PCM (+6 dB) has it
+// divided out the same way (StageParams::level).
+//
 // Drive 0: the stage is idle, a pure delay of D frames (the input samples as they are: with the content delay
 // compensated the output is bit for bit the input); nothing else runs, it only keeps the last input frames. Crossing 0
 // is done in place, in the stage, so the chain is never rebuilt for it:
@@ -33,6 +41,8 @@ namespace daphne::color {
 struct StageParams {
     double drive = 1.0;   // 0 .. kColorDriveMax
     LinearModel linear;   // the preset's pre / post sections (empty: none)
+    double level = 1.0;   // a fixed gain before the stage, cancelled with the volume (2: a DSD file converted, +6 dB)
+    double volume = 1.0;  // the digital volume at the start (linear)
 };
 
 class TubeColorStage final : public dsp::Block {
@@ -43,6 +53,7 @@ public:
     static constexpr double kRiseFrom = 1e-4;   // the drive the processing path crosses at
     static constexpr int kControl = 16;         // frames between updates of the fade while the drive glides
     static constexpr int kHistory = 2 * Oversampler::kTapsPerPhase;   // input frames that prime the oversampler
+    static constexpr double kSkipBelow = 1e-4;                        // -80 dB of volume: the curve skipped
 
     explicit TubeColorStage(StageParams p = {});
     void prepare(const dsp::Format& in) override;
@@ -59,6 +70,10 @@ public:
 
     // A new drive, gliding there from the current one (any thread; from the next process()); 0 takes the stage idle.
     void set_drive(double d);
+    // The digital volume (linear) from the stage's input frame `at` (counted from prepare / reset) on, reached by a
+    // linear ramp of `ramp` frames from where it is there, as the chain's gain stage does. On the processing thread.
+    void set_volume(double v, int64_t at, int ramp);
+    double volume_at(int64_t frame) const;   // the scheduled volume of an input frame
     double drive() const { return d_; }   // the current (gliding) drive, on the processing thread
     bool idle() const { return w_ <= 0.0; }
     int oversampling() const { return os_.factor(); }
@@ -70,6 +85,14 @@ private:
     void glide_to(double v);
     void prime();
     void run_frame(const double* x, double* y);      // one frame at the processing rate
+    struct VolumeRamp {
+        int64_t at;      // input frame it starts at
+        double from, to;
+        int len;
+    };
+    std::vector<VolumeRamp> vol_;                   // the schedule (the newest last); pruned behind the output
+    int64_t in_count_ = 0;                          // input frames since prepare / reset
+    bool skip_curve_ = false;                       // this frame: the volume below kSkipBelow
     void process_path(const double* x, double* y);   // one input frame through the processing path
 
     StageParams p_;

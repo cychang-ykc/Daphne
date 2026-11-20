@@ -14,7 +14,8 @@ namespace daphne::dsp {
 
 class Gain final : public Block {
 public:
-    explicit Gain(double db = 0.0, double ramp_ms = 20.0) : db_(db), ramp_ms_(ramp_ms) {}
+    static constexpr double kRampMs = 20.0;
+    explicit Gain(double db = 0.0, double ramp_ms = kRampMs) : db_(db), ramp_ms_(ramp_ms) {}
 
     void set_db(double db) { db_.store(db, std::memory_order_relaxed); }
     double db() const { return db_.load(std::memory_order_relaxed); }

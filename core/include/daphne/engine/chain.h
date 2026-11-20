@@ -100,6 +100,7 @@ private:
     bool needs_quantizer(const Settings& s) const { return needs_quantizer(s, src_, dev_, pre_transparent_); }
     static bool needs_quantizer(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
     static bool quantizer_present(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
+    static double color_volume(const Settings& s);   // the digital volume Tube Color cancels (linear)
 
     std::vector<Stage> st_;
     std::vector<double> a_, b_, flush_;
@@ -110,6 +111,11 @@ private:
     std::string key_;
     bool quantized_ = false;
     bool quant_follows_color_ = false;   // kept only for Tube Color: passes while the stage is idle (doc/N28)
+    // Tube Color's volume cancellation (doc/N28): the input frames so far, the stage's frames per input frame, the
+    // frames (the stage's) between the gain stage's output and the stage's input, the volume it was last given
+    int64_t in_frames_ = 0;
+    int color_ratio_ = 1, color_lead_ = 0, gain_ramp_ = 1;
+    double color_volume_ = 1.0;
     bool pre_transparent_ = true;   // the stages other than gain / crossfeed / EQ
     dsp::Gain* gain_ = nullptr;
     dsp::Crossfeed* xf_ = nullptr;

@@ -589,4 +589,152 @@ TEST_CASE("color stage: crossing drive 0 is taken in place, like any drive chang
     CHECK(c0.update(a));
 }
 
+
+// ---- M1 item 7: the digital volume cancelled around the stage ----
+
+namespace {
+
+struct VolRun {
+    std::vector<double> y;   // channel 0, chain output
+    int delay = 0;
+};
+
+// x (stereo) through a chain with Tube Color at `drive`, the volume at db0 and, from input block `at_block` on, db1
+VolRun run_volume(const std::vector<double>& x, int src_rate, int dev_rate, double drive, double db0, double db1, int at_block, bool dsd = false) {
+    daphne::AudioInfo src;
+    src.rate = src_rate, src.channels = 2, src.bits = 0, src.lossless_int = false, src.codec = "test", src.dsd_pcm = dsd;
+    if (dsd) src.dsd_rate = 2822400;
+    daphne::DeviceFormat dev;
+    dev.rate = dev_rate, dev.channels = 2, dev.type = daphne::SampleType::Float64, dev.container_bits = dev.valid_bits = 64;
+    daphne::Settings s;
+    s.filter.taps = 4096;
+    s.output.rate = std::to_string(dev_rate);
+    s.output.dsd_pcm_limiter = false;
+    s.volume.mode = daphne::VolumeMode::Digital;
+    s.volume.db = db0;
+    s.color.enabled = true;
+    s.color.drive = drive;
+    daphne::DspChain c;
+    std::string e;
+    REQUIRE(c.build(s, src, dev, 4096, &e));
+    VolRun r;
+    r.delay = c.content_delay();
+    std::vector<double> o(static_cast<size_t>(c.max_output_frames()) * 2);
+    const int frames = static_cast<int>(x.size() / 2);
+    for (int at = 0, b = 0; at < frames; at += 4096, ++b) {
+        if (b == at_block) {
+            s.volume.db = db1;
+            REQUIRE(c.update(s));
+        }
+        const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(4096, frames - at), o.data());
+        for (int i = 0; i < n; ++i) r.y.push_back(o[2 * static_cast<size_t>(i)]);
+    }
+    return r;
+}
+
+std::vector<double> two_tones(int rate, double seconds, double amp) {
+    const int n = static_cast<int>(seconds * rate);
+    std::vector<double> x(static_cast<size_t>(n) * 2);
+    for (int i = 0; i < n; ++i)
+        x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] =
+            amp * (0.7 * std::sin(2 * kPi * 997.0 * i / rate) + 0.3 * std::sin(2 * kPi * 3001.0 * i / rate));
+    return x;
+}
+
+}  // namespace
+
+// The curve sees the music at the same level whatever the digital volume: the output at -20 or -60 dB is the output at
+// 0 dB scaled, the distortion included (doc/N28, item 7).
+TEST_CASE("color volume: the tube character does not change with the volume", "[color][volume]") {
+    for (int dev_rate : {44100, 176400}) {   // oversampled 8x in the stage; upsampled 4x before it (its delay between)
+        INFO(dev_rate << " Hz");
+        const auto x = two_tones(44100, 1.0, 0.8);
+        const auto a = run_volume(x, 44100, dev_rate, 1.0, 0.0, 0.0, -1);
+        for (double db : {-20.0, -60.0}) {
+            const auto b = run_volume(x, 44100, dev_rate, 1.0, db, db, -1);
+            const double g = std::pow(10.0, db / 20.0);
+            double err = 0.0, peak = 0.0;
+            for (size_t i = 0; i < std::min(a.y.size(), b.y.size()); ++i) {
+                err = std::max(err, std::abs(b.y[i] / g - a.y[i]));
+                peak = std::max(peak, std::abs(a.y[i]));
+            }
+            UNSCOPED_INFO(db << " dB: the output over the gain against 0 dB, " << err / peak << " of its peak");
+            CHECK(err < 1e-9 * peak);
+        }
+    }
+}
+
+// A volume change (0 -> -20 dB) mid-stream: the cancellation follows the gain stage's ramp where it reaches the stage
+// (the upsampler's delay between, the oversampling's in the stage), so the output is the 0 dB output times the gain as
+// heard at the output, through the ramp too.
+TEST_CASE("color volume: a volume change is cancelled in step with the gain stage's ramp", "[color][volume]") {
+    for (int dev_rate : {44100, 176400}) {
+        INFO(dev_rate << " Hz");
+        const auto x = two_tones(44100, 1.5, 0.8);
+        const int at_block = 8;
+        const auto a = run_volume(x, 44100, dev_rate, 1.0, 0.0, 0.0, -1);
+        const auto b = run_volume(x, 44100, dev_rate, 1.0, 0.0, -20.0, at_block);
+        // the gain as heard at the output: the same chains with Tube Color idle (a pure delay, the same content delay)
+        const auto a0 = run_volume(x, 44100, dev_rate, 0.0, 0.0, 0.0, -1);
+        const auto b0 = run_volume(x, 44100, dev_rate, 0.0, 0.0, -20.0, at_block);
+        double peak = 0.0;
+        for (double v : a0.y) peak = std::max(peak, std::abs(v));
+        auto worst = [&](int shift) {
+            double err = 0.0;
+            const size_t n = std::min({a.y.size(), b.y.size(), a0.y.size(), b0.y.size()});
+            for (size_t i = 200; i + 200 < n; ++i) {
+                const size_t j = static_cast<size_t>(static_cast<int64_t>(i) + shift);
+                if (std::abs(a0.y[j]) < 0.2 * peak) continue;   // (the gain read where the signal is well above 0)
+                const double g = b0.y[j] / a0.y[j];
+                err = std::max(err, std::abs(b.y[i] - g * a.y[i]));
+            }
+            return err / peak;
+        };
+        const double aligned = worst(0), off = worst(64);
+        WARN(dev_rate << " Hz, 0 -> -20 dB: the output against the 0 dB output times the heard gain, " << aligned
+                      << " of the peak (the gain read 64 frames off: " << off << ")");
+        CHECK(aligned < 1e-3);
+        CHECK(off > 10 * aligned);
+    }
+}
+
+TEST_CASE("color volume: below -80 dB the curve is skipped", "[color][volume]") {
+    auto h2_over_h1 = [](const std::vector<double>& y, int rate) {
+        auto level = [&](double hz) {
+            double c = 0.0, s = 0.0;
+            const size_t from = y.size() / 2, to = from + static_cast<size_t>(rate) / 2;   // 0.5 s: whole periods of 1 and 2 kHz
+            for (size_t i = from; i < to && i < y.size(); ++i) {
+                const double w = 2 * kPi * hz * static_cast<double>(i) / rate;
+                c += y[i] * std::cos(w), s += y[i] * std::sin(w);
+            }
+            return std::hypot(c, s);
+        };
+        return level(2000.0) / level(1000.0);
+    };
+    std::vector<double> x(44100 * 2);
+    for (int i = 0; i < 44100; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = 0.8 * std::sin(2 * kPi * 1000.0 * i / 44100);
+    const double at70 = h2_over_h1(run_volume(x, 44100, 44100, 1.0, -70.0, -70.0, -1).y, 44100);
+    const double at90 = h2_over_h1(run_volume(x, 44100, 44100, 1.0, -90.0, -90.0, -1).y, 44100);
+    UNSCOPED_INFO("H2 / H1: " << 20 * std::log10(at70) << " dB at -70 dB volume, " << 20 * std::log10(at90 + 1e-300) << " dB at -90 dB");
+    CHECK(at70 > 1e-3);   // the curve's H2 at -70 dB as at full volume
+    CHECK(at90 < 1e-7);   // none: the curve skipped
+}
+
+// A DSD file converted to PCM comes 6 dB up (50 % modulation -> 0 dBFS): Tube Color takes it out too, so a DSD file and
+// a PCM file of the same music get the same drive.
+TEST_CASE("color volume: a converted DSD file's +6 dB is cancelled", "[color][volume]") {
+    const auto x = two_tones(176400, 0.5, 0.4);
+    auto x2 = x;
+    for (auto& v : x2) v *= 2.0;
+    const auto pcm = run_volume(x, 176400, 176400, 1.0, 0.0, 0.0, -1);
+    const auto dsd = run_volume(x2, 176400, 176400, 1.0, 0.0, 0.0, -1, true);
+    double err = 0.0, peak = 0.0;
+    for (size_t i = 0; i < std::min(pcm.y.size(), dsd.y.size()); ++i) {
+        err = std::max(err, std::abs(dsd.y[i] / 2.0 - pcm.y[i]));
+        peak = std::max(peak, std::abs(pcm.y[i]));
+    }
+    UNSCOPED_INFO("the DSD file's output over 2 against the PCM file's: " << err / peak << " of the peak");
+    CHECK(err < 1e-12 * peak);
+}
+
 #endif
