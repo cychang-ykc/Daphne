@@ -1353,6 +1353,50 @@ TEST_CASE("Player: Tube Color on the dsd core only rebuilds the chain", "[player
     }
 }
 
+// The drive crossing 0 takes the stage in or out of the signal (a rebuild and crossfade, doc/N28): it waits 300 ms for
+// the slider to settle. Other drive changes glide in place.
+TEST_CASE("Player: Tube Color's drive crossing 0 rebuilds once it settles", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["sine"] = sine(44100, 1000.0, 4.0);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.5;
+    Settings z = s, back = s, more = s;
+    z.color.drive = 0.0;
+    back.color.drive = 0.6;
+    more.color.drive = 1.4;
+    REQUIRE(r.start("sine", s));
+    sleep_s(0.3);
+    const auto builds = [&] { return count_events(r, "in the background"); };
+    r.player->apply(more, OutputChoice{});   // in place: no rebuild
+    sleep_s(0.2);
+    CHECK(r.saw("applied in place"));
+    // across 0 and back within 100 ms: held, then dropped
+    r.player->apply(z, OutputChoice{});
+    sleep_s(0.1);
+    r.player->apply(back, OutputChoice{});
+    sleep_s(0.6);
+    CHECK(r.saw("Tube Color drive crosses 0"));
+    CHECK(builds() == 0);
+    // across 0 and staying there: rebuilt, 300 ms after
+    const auto t0 = std::chrono::steady_clock::now();
+    r.player->apply(z, OutputChoice{});
+    REQUIRE(wait_for([&] { return builds() >= 1; }, 5.0));
+    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    UNSCOPED_INFO("rebuilt after " << waited << " s");
+    CHECK(waited >= 0.3);
+    CHECK(waited < 0.6);
+    REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }, 5.0));
+    const auto rep = r.finish();
+    CHECK(r.ended);
+    CHECK(builds() == 1);
+    CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) == rep.chain.end());   // passing through
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+}
+
 TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file", "[player][dsd][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     const auto path = write_counting_dsf("daphne_color_switch_fast.dsf", 2822400 / 8);   // 1 s

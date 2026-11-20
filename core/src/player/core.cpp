@@ -22,6 +22,11 @@ public:
             p_.queued.reset();
             return p_.handle(q.first, q.second);
         }
+        if (p_.held && std::chrono::steady_clock::now() >= p_.held_until) {   // the drive crossed 0 and stayed there
+            auto h = *p_.held;
+            p_.held.reset();
+            return p_.handle(h.first, h.second, true);
+        }
         return true;
     }
     bool produce() override { return p_.produce(); }

@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "daphne/color/linear.h"
+
 namespace daphne::color {
 
 struct TestCurve {
@@ -32,6 +34,16 @@ struct TestCurve {
         return soft_limit(x + kA2 * x * x + kA3 * x * x * x);
     }
 };
+
+// The M1 test response, shaped like the M2 references (doc/N28): a coupling capacitor (5 Hz, first order) before the
+// curve; after it an output transformer's low end (second order, 20.4 Hz: -3.27 dB at 20 Hz, like pp-el34-ul at 6 dB
+// of feedback) and high end (second order, 26.6 kHz: -1.2 dB at 20 kHz, like set-2a3).
+inline LinearModel test_linear_model() {
+    LinearModel m;
+    m.pre = {{Section::Kind::HighPass1, 5.0, 0.7071}};
+    m.post = {{Section::Kind::HighPass2, 20.4, 0.7071}, {Section::Kind::LowPass2, 26600.0, 0.7071}};
+    return m;
+}
 
 }  // namespace daphne::color
 

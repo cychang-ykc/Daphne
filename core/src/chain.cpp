@@ -2,6 +2,7 @@
 
 #if defined(DAPHNE_COLOR)
 #include "daphne/color/stage.h"
+#include "daphne/color/test_curve.h"
 #endif
 
 #include <algorithm>
@@ -43,10 +44,14 @@ DspChain::DspChain() = default;
 DspChain::~DspChain() = default;
 
 std::string DspChain::structure_key(const Settings& s) {
-    // Tube Color: only whether it is in the chain changes the structure (an inactive one is cleared by
-    // without_inactive_color); its other fields are applied inside the stage (doc/N28)
+    // Tube Color: whether it is in the chain, and whether its drive is 0 (the stage is then skipped, bit for bit, and
+    // crossing 0 rebuilds) change the structure (an inactive one is cleared by without_inactive_color); the drive
+    // otherwise glides in the stage and its other fields are applied there (doc/N28)
     Settings k = without_inactive_color(s);
-    k.color = {.enabled = k.color.enabled};
+    const bool color_on = k.color.enabled, driven = color_on && k.color.drive > 0.0;
+    k.color = {};
+    k.color.enabled = color_on;
+    k.color.drive = driven ? 1.0 : 0.0;
     k.eq = {};
     k.crossfeed = {};
     k.volume = {};
@@ -80,6 +85,9 @@ void DspChain::add(std::string name, std::unique_ptr<dsp::Block> b, int& frames,
 bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, int chunk, std::string* error) {
     st_.clear();
     gain_ = nullptr, xf_ = nullptr, peq_ = nullptr, quant_ = nullptr;
+#if defined(DAPHNE_COLOR)
+    color_ = nullptr;
+#endif
     clips_taken_ = 0;
     src_ = src;
     dev_ = dev;
@@ -127,7 +135,15 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
 #if defined(DAPHNE_COLOR)
     // Tube Color (doc/N28), an effect: after the upsampler, before the limiters and the final quantizer; only while
     // active (enabled, and a build that can run it), so with it off the chain is the one without it
-    if (color_active(s)) add("tube color", std::make_unique<color::TubeColorStage>(color::StageParams{.drive = s.color.drive}), frames, rate, ch);
+    if (color_active(s)) {
+        color::StageParams cp{.drive = s.color.drive};
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+        cp.linear = color::test_linear_model();
+#endif
+        auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
+        color_ = c.get();
+        add("tube color", std::move(c), frames, rate, ch);
+    }
 #endif
     if (s.core == CoreMode::Dsd) add("modulator limiter", modulator_limiter(s.modulator), frames, rate, ch);
 
@@ -166,6 +182,9 @@ bool DspChain::update(const Settings& s) {
     gain_->set_db(gain_db(s));
     configure_crossfeed(*xf_, s.crossfeed);
     peq_->set_params(make_peq_params(s.eq, eq_rate_));
+#if defined(DAPHNE_COLOR)
+    if (color_) color_->set_drive(s.color.drive);   // glides (a drive of 0 changed the key above)
+#endif
     return true;
 }
 

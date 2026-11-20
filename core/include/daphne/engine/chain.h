@@ -30,6 +30,10 @@ class Peq;
 class Quantizer;
 }  // namespace daphne::dsp
 
+namespace daphne::color {
+class TubeColorStage;
+}  // namespace daphne::color
+
 namespace daphne {
 
 class DspChain {
@@ -107,6 +111,9 @@ private:
     dsp::Crossfeed* xf_ = nullptr;
     dsp::Peq* peq_ = nullptr;
     dsp::Quantizer* quant_ = nullptr;
+#if defined(DAPHNE_COLOR)
+    color::TubeColorStage* color_ = nullptr;   // Tube Color (doc/N28), when in the chain
+#endif
     int64_t clips_taken_ = 0;
 };
 

@@ -101,7 +101,25 @@ bool Player::Impl::restart(const Settings& ns, const OutputChoice& no, bool drai
     return true;
 }
 
-bool Player::Impl::handle(const Settings& ns, const OutputChoice& no) {
+bool Player::Impl::zero_cross_only(const Settings& ns) const {
+    const Settings a = chain_settings(s, run_osr);
+    Settings b = chain_settings(ns, run_osr);
+    if (DspChain::structure_key(a) == DspChain::structure_key(b)) return false;
+    b.color.drive = a.color.drive;
+    return DspChain::structure_key(a) == DspChain::structure_key(b);
+}
+
+bool Player::Impl::handle(const Settings& ns, const OutputChoice& no, bool from_hold) {
+    // the drive crossing 0 (the stage in or out of the signal): held, the latest settings kept (doc/N28)
+    if (!from_hold && cur && !needs_restart(playing(), ns, no) && zero_cross_only(ns)) {
+        if (!held) {
+            held_until = std::chrono::steady_clock::now() + kZeroCrossHold;
+            event("Tube Color drive crosses 0: the chain is rebuilt once the drive settles (300 ms)");
+        }
+        held = std::make_pair(ns, no);
+        return true;
+    }
+    held.reset();   // newer settings (back across 0, or anything else) replace it
     queue.drop();   // a chain prepared for the next track was built for the old settings
     if (chain_busy()) {   // one change at a time (and not across a rate switch); the latest waits
         queued = std::make_pair(ns, no);

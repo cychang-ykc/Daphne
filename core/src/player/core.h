@@ -96,6 +96,11 @@ struct Player::Impl {
     int warm_rounds = 0;
     int64_t warm_last = 0;             // input frames of the last round
     std::optional<std::pair<Settings, OutputChoice>> build_target, queued;
+    // Tube Color's drive crossing 0 (doc/N28): the rebuild it needs waits kZeroCrossHold for the slider to settle (the
+    // latest settings are kept; a change back across 0 drops it)
+    static constexpr auto kZeroCrossHold = std::chrono::milliseconds(300);
+    std::optional<std::pair<Settings, OutputChoice>> held;
+    std::chrono::steady_clock::time_point held_until{};
     std::vector<double> pcm, dsp, tmp_c, tmp_n;
     int64_t in_total = 0;              // source frames read since the start of the track
     int ratio = 1, ch = 0, dch = 0, want = 0;
@@ -283,7 +288,8 @@ struct Player::Impl {
     // ------------------------------------------------------------------ changes.cpp: settings changes
 
     // Applies a pending settings change; false on a fatal error.
-    bool handle(const Settings& ns, const OutputChoice& no);
+    bool handle(const Settings& ns, const OutputChoice& no, bool from_hold = false);
+    bool zero_cross_only(const Settings& ns) const;   // the chain's structure changes only by the drive crossing 0
     // the background rebuild (a new chain for the new settings)
     void launch_build(const Settings& ns, const OutputChoice& no);
     bool poll_build();
