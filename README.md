@@ -53,6 +53,7 @@ flowchart TD
     N1 -->|"wav · aiff · flac · mp3 · …"| N2["N2 PCM decoders<br/>dr_wav · dr_flac · minimp3 · FFmpeg<br/>→ float64, ±1.0 full scale"]
     N1 -->|dsf · dff| N3["N3 DSD files<br/>DSF / DFF reader"]
     N3 -->|"device takes no DSD:<br/>→ PCM, +6 dB"| N5
+    N3 -->|"Tube Color on, device takes DSD:<br/>→ PCM, remodulated at the file's DSD rate"| N5
     N3 -->|device takes DSD: sent as is| N20
     N2 --> N5["N5 downmix<br/>BS.775-based, more than 2 channels"]
     subgraph SR [at the source rate]
@@ -61,11 +62,11 @@ flowchart TD
     N5 --> N15
     N17 --> N6{"N6 core"}
     N6 -->|pcm| RS["N6 resampler<br/>polyphase overlap-save FFT<br/>skipped at 1x without apodizing"]
-    N6 -->|dsd| PF["N18 pre-filter + limiter<br/>→ 705.6 / 768 kHz"]
+    N6 -->|dsd| PF["N18 pre-filter<br/>→ 705.6 / 768 kHz"]
     D["N7 filter design<br/>N8 double-double"] -.-> RS
     D -.-> PF
-    RS --> LIM["N18 limiter<br/>DSD-to-PCM sources only"] --> N21["N21 final quantization<br/>TPDF, device word length<br/>skipped when bit-perfect"] --> N22["N22 device format conversion"]
-    PF --> N19["N19 DSD modulator<br/>1-bit CIFF, order 5 / 8"] --> N20["N20 DSD packing<br/>DoP or native DSD, lead-in silence"]
+    RS --> TC1["N28 Tube Color<br/>effect, off by default"] --> LIM["N18 limiter<br/>DSD-to-PCM sources only"] --> N21["N21 final quantization<br/>TPDF, device word length<br/>skipped when bit-perfect"] --> N22["N22 device format conversion"]
+    PF --> TC2["N28 Tube Color<br/>effect, off by default"] --> ML["N18 limiter"] --> N19["N19 DSD modulator<br/>1-bit CIFF, order 5 / 8"] --> N20["N20 DSD packing<br/>DoP or native DSD, lead-in silence"]
     N22 --> N23["N23 ring buffer + feeder<br/>lock-free, about 0.5 s"]
     N20 --> N23
     N23 --> N24["N24 output<br/>WASAPI exclusive / shared · ASIO"] --> DAC
@@ -80,6 +81,7 @@ flowchart TD
 | **Parametric EQ** (N17) | Peaking, shelving, low- and high-pass biquads at the source rate, with an automatic preamp. Changes glide or crossfade. |
 | **Resampler** (N6–N8) | Integer-ratio polyphase FIR upsampling to 2x, the family maximum, or a fixed rate. Taps from 16 to 1,048,576; phase from linear (α 0) to minimum (α 1); apodizing removes the recording's own ringing (pass band to 0.4535 fs, i.e. 20 kHz at 44.1 kHz). |
 | **Modulator** (N18–N19) | The same filter upsamples to 705.6 / 768 kHz, a limiter keeps the input at 0.85 of the loop's stable maximum, and the 1-bit loop runs at 44.1 kHz × 64 … 1024 (one thread per channel). |
+| **Tube Color** (N28) | An optional effect, off by default and not in the chain then: the harmonic signature of four tube amplifiers (2A3, 300B, 845 single-ended; EL34 push-pull), after the upsampler and before the limiters. It never changes the output format: with it on, a DSD file that would go out as DSD is remodulated at its own DSD rate (native or DoP as before), and only an output that takes no DSD gets PCM. In development: not available in releases before M2. |
 | **Quantization** (N21) | TPDF dither to the device word length, applied only when the samples were changed. No noise shaping. |
 | **Output** (N23–N24) | A lock-free ring feeds the device callback. WASAPI exclusive is event-driven and negotiates the widest format the device takes; ASIO handles every PCM sample type and native DSD, reopens on driver resets, and never ends native DSD with a switch to PCM. Core Audio (macOS) plays shared or exclusive (hog mode), sets the device's rate and, exclusive, its widest integer format, and sends DSD as DoP. |
 

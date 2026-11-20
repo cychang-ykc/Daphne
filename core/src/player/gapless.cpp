@@ -159,6 +159,7 @@ void Player::Impl::undo_cross() {
 bool Player::Impl::try_gapless() {
     const auto [np, nh] = queue.get();
     if (np.empty() || is_dsd_path(np) != (dsdf != nullptr)) return false;
+    if (remodulating() && !is_dsd_path(np)) return false;   // a PCM file after a remodulated DSD file: its own start
     const std::shared_ptr<Prep> p = queue.take(np, cancel);   // opened ahead (kick_prepare)
     std::string e;
     // a next track that cannot be opened (a damaged file, also one that throws) is not gapless: this one ends and the

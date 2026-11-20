@@ -358,8 +358,15 @@ PlayReport play_captured(const std::string& uid, const std::shared_ptr<test::Sig
 TEST_CASE("Core Audio: PCM reaches a loopback device bit-perfectly, exclusive", "[.blackhole]") {
     const std::string uid = blackhole_uid();
     if (uid.empty()) SKIP("BlackHole is not installed");
+    // also with Tube Color on at drive 0 (doc/N28, test builds): the stage is a pure delay, compensated, and the final
+    // quantizer it keeps passes the samples through
+    Settings color_idle;
+    color_idle.color.enabled = true;
+    color_idle.color.drive = 0.0;
+    for (const Settings& settings : {Settings{}, color_idle})
     for (int rate : {44100, 96000, 192000, 384000}) {
-        INFO(rate << " Hz");
+        if (settings.color.enabled && !daphne::color_active(settings)) continue;
+        INFO(rate << " Hz" << (settings.color.enabled ? ", Tube Color at drive 0" : ""));
         // 0.5 s of silence, then 0.5 s of full-scale 24-bit noise, a different stream on each channel
         auto sig = std::make_shared<test::Signal>();
         sig->info.rate = rate, sig->info.channels = 2, sig->info.bits = 24, sig->info.lossless_int = true, sig->info.codec = "test";
@@ -371,7 +378,7 @@ TEST_CASE("Core Audio: PCM reaches a loopback device bit-perfectly, exclusive", 
         sig->x.assign(src.size(), 0.0);
         for (int32_t v : src) sig->x.push_back(v / 8388608.0);
         Capture cap;
-        const auto rep = play_captured(uid, sig, Settings{}, cap, 3.0);
+        const auto rep = play_captured(uid, sig, settings, cap, 3.0);
         CHECK(rep.bit_perfect);
         CHECK(rep.device.rate == rate);
         const auto got = cap.int24();

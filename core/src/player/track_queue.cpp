@@ -28,7 +28,10 @@ void TrackQueue::restore(const std::filesystem::path& path) {
     if (next_path_.empty()) next_path_ = path;
 }
 
-std::string TrackQueue::chain_key(const Settings& cs, const DeviceFormat& cf) { return settings_to_json(cs).dump() + "|" + describe(cf); }
+// without_inactive_color: Tube Color's fields count only while it is active (editing them otherwise keeps the prepared chain)
+std::string TrackQueue::chain_key(const Settings& cs, const DeviceFormat& cf) {
+    return settings_to_json(without_inactive_color(cs)).dump() + "|" + describe(cf);
+}
 
 void TrackQueue::kick(const std::function<Context()>& make) {
     for (auto it = threads_.begin(); it != threads_.end();) {   // reap the finished ones

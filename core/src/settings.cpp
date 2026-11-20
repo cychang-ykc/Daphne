@@ -1,5 +1,9 @@
 #include "daphne/engine/settings.h"
 
+#if defined(DAPHNE_COLOR)
+#include "daphne/color/tube_color.h"
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
@@ -26,6 +30,10 @@ const EnumTable<EqType> kEqType = {{"PK", EqType::PK},       {"LS", EqType::LS},
                                    {"BP", EqType::BP}};
 const EnumTable<VolumeMode> kVolumeMode = {
     {"digital", VolumeMode::Digital}, {"fixed", VolumeMode::Fixed}};
+const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}};
+const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {"set-300b", ColorPreset::Set300b},
+                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul}};
+const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
 
 template <class E>
 const char* to_name(const EnumTable<E>& t, E v) {
@@ -137,16 +145,15 @@ public:
         out = v;
     }
 
-private:
-    static std::string range_msg(double lo, double hi) {
-        auto f = [](double x) {
-            std::string s = std::to_string(x);
-            s.erase(s.find_last_not_of('0') + 1);
-            if (!s.empty() && s.back() == '.') s.pop_back();
-            return s;
-        };
-        return "must be between " + f(lo) + " and " + f(hi);
+    static std::string number_text(double x) {
+        std::string s = std::to_string(x);
+        s.erase(s.find_last_not_of('0') + 1);
+        if (!s.empty() && s.back() == '.') s.pop_back();
+        return s;
     }
+
+private:
+    static std::string range_msg(double lo, double hi) { return "must be between " + number_text(lo) + " and " + number_text(hi); }
     std::vector<Diagnostic>& d_;
 };
 
@@ -214,6 +221,46 @@ void read_eq(Reader& r, const json& o, EqSettings& s) {
     }
 }
 
+void read_color(Reader& r, const json& o, ColorSettings& s) {
+    const std::string p = "color";
+    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "makeup_gain"});
+    r.boolean(o, "enabled", p, s.enabled);
+    r.enumeration(o, "model", p, s.model, kColorModel);
+    r.enumeration(o, "preset", p, s.preset, kColorPreset);
+    r.number(o, "drive", p, s.drive, 0.0, kColorDriveMax);
+    r.integer(o, "feedback_db", p, s.feedback_db, 0, 0, {0, 6, 12, 20, 30});
+    // "cool" | "standard" | "hot", or a cathode current in mA. A current no preset allows is an error; one outside the
+    // current preset's range is kept (another preset may use it) with a warning, and the standard bias applies
+    if (auto it = o.find("bias"); it != o.end()) {
+        double lo = 1e9, hi = 0.0;
+        for (const auto& [name, e] : kColorPreset) {
+            lo = std::min(lo, color_bias_range(e).lo_ma);
+            hi = std::max(hi, color_bias_range(e).hi_ma);
+        }
+        bool ok = false;
+        if (it->is_number()) {
+            const double ma = it->get<double>();
+            if (ma >= lo && ma <= hi) s.bias_ma = ma, ok = true;
+        } else if (it->is_string()) {
+            for (const auto& [name, e] : kColorBias)
+                if (it->get<std::string>() == name) s.bias = e, s.bias_ma.reset(), ok = true;
+        }
+        if (!ok) {
+            r.error("color.bias", "must be \"cool\", \"standard\", \"hot\" or a cathode current in mA (" + Reader::number_text(lo) +
+                                      " .. " + Reader::number_text(hi) + ", per preset)");
+        } else if (color_bias_falls_back(s)) {
+            const std::string preset = to_name(kColorPreset, s.preset);
+            const auto range = color_bias_range(s.preset);
+            r.warn("color.bias", (s.bias_ma ? "outside " + preset + "'s range (" + Reader::number_text(range.lo_ma) + " .. " +
+                                                  Reader::number_text(range.hi_ma) + " mA)"
+                                            : "hot does not apply to " + preset + " (no room above its standard bias)") +
+                                     ": the standard bias applies; kept for the other presets");
+        }
+    }
+    r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
+    r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -kColorMakeupTrimMaxDb, kColorMakeupTrimMaxDb);
+}
+
 json auto_or(const std::optional<double>& v) { return v ? json(*v) : json("auto"); }
 
 }  // namespace
@@ -232,7 +279,7 @@ LoadResult settings_from_json(const json& j) {
     }
     Settings& s = res.settings;
     r.check_keys(j, "", {"version", "output", "core", "filter", "eq", "crossfeed", "volume", "headroom_db", "dsd_modulator",
-                         "design"});
+                         "design", "color"});
     int version = kSettingsVersion;
     r.integer(j, "version", "", version, 1, 1000);
     if (version > kSettingsVersion)
@@ -265,6 +312,7 @@ LoadResult settings_from_json(const json& j) {
         r.integer(*o, "threads", "design", s.design.threads, 0, 256);
         r.integer(*o, "cache_limit_mb", "design", s.design.cache_limit_mb, 0, 1 << 20);
     }
+    if (auto* o = r.object(j, "color", "")) read_color(r, *o, s.color);
     return res;
 }
 
@@ -309,7 +357,68 @@ json settings_to_json(const Settings& s) {
         {"headroom_db", s.headroom_db},
         {"dsd_modulator", {{"order", s.modulator.order}, {"osr", s.modulator.osr}}},
         {"design", {{"threads", s.design.threads}, {"cache_limit_mb", s.design.cache_limit_mb}}},
+        {"color",
+         {{"enabled", s.color.enabled},
+          {"model", to_name(kColorModel, s.color.model)},
+          {"preset", to_name(kColorPreset, s.color.preset)},
+          {"drive", s.color.drive},
+          {"feedback_db", s.color.feedback_db},
+          {"bias", s.color.bias_ma ? json(*s.color.bias_ma) : json(to_name(kColorBias, s.color.bias))},
+          {"load_ohms", s.color.load_ohms},
+          {"makeup_gain", auto_or(s.color.makeup_gain_db)}}},
     };
+}
+
+ColorBiasRange color_bias_range(ColorPreset p) {
+    // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
+    // lo = 0.6 x standard; hi = the rating; hot_cap = 90 % of the rated plate dissipation (plus the screen current)
+    switch (p) {
+        case ColorPreset::Set2a3: return {35.0, 58.9, 59.0, 53.8};     // RCA: 15 W at 251 V
+        case ColorPreset::Set300b: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V
+        case ColorPreset::Set845: return {44.0, 72.5, 79.0, 71.8};     // RCA: 100 W at 1253 V
+        case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0, 63.0};   // Philips: 25 W at 399 V, plus 6.7 mA screen current
+    }
+    return {0.0, 0.0, 0.0, 0.0};
+}
+
+double color_cool_ma(ColorPreset p) { return kColorCoolFactor * color_bias_range(p).standard_ma; }
+
+std::optional<double> color_hot_ma(ColorPreset p) {
+    const auto r = color_bias_range(p);
+    const double hot = std::min(kColorHotFactor * r.standard_ma, r.hot_cap_ma);
+    if (hot < (1.0 + kColorHotMinStep) * r.standard_ma) return std::nullopt;
+    return hot;
+}
+
+double color_bias_current_ma(const ColorSettings& c) {
+    const auto r = color_bias_range(c.preset);
+    if (c.bias_ma) return *c.bias_ma >= r.lo_ma && *c.bias_ma <= r.hi_ma ? *c.bias_ma : r.standard_ma;
+    switch (c.bias) {
+        case ColorBias::Cool: return color_cool_ma(c.preset);
+        case ColorBias::Hot: return color_hot_ma(c.preset).value_or(r.standard_ma);
+        case ColorBias::Standard: break;
+    }
+    return r.standard_ma;
+}
+
+bool color_bias_falls_back(const ColorSettings& c) {
+    const auto r = color_bias_range(c.preset);
+    if (c.bias_ma) return *c.bias_ma < r.lo_ma || *c.bias_ma > r.hi_ma;
+    return c.bias == ColorBias::Hot && !color_hot_ma(c.preset);
+}
+
+bool color_active(const Settings& s) {
+#if defined(DAPHNE_COLOR)
+    return s.color.enabled && color::available();
+#else
+    (void)s;
+    return false;
+#endif
+}
+
+Settings without_inactive_color(Settings s) {
+    if (!color_active(s)) s.color = {};
+    return s;
 }
 
 int pcm_output_rate(int fs_in, const std::string& rate) {

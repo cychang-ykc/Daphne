@@ -46,6 +46,17 @@ public:
     // so the DAC stays in DSD mode while the stream ends or restarts.
     void idle(int frames, std::vector<uint8_t>& out);
 
+    // A stream that takes over from another on the same device without a gap (Tube Color switching a DSD file between
+    // sent directly and remodulated, doc/N28): modulate without packing, drop what lies before the switch point,
+    // continue the other's DoP marker sequence, pack what is left.
+    void modulate(const double* pcm, int frames);
+    void drop_front(size_t bytes_per_channel);
+    size_t pending_per_channel() const { return (bits_.size() - bits_off_) / static_cast<size_t>(ch_); }
+    void follow(const DsdEncoder& prev) { marker_ = prev.marker_; }
+    void pack_pending(std::vector<uint8_t>& out) { pack(out); }
+    // DSD bytes per channel since init, packed into device frames or dropped (the modulator's: its content position)
+    int64_t emitted_per_channel() const { return packed_ + dropped_; }
+
     int dsd_rate() const { return clock_; }
     bool dop() const { return tr_ == DsdTransport::Dop; }
     int bytes_per_frame() const { return dev_.block_align(); }
@@ -69,6 +80,7 @@ private:
     std::vector<uint8_t> bits_;   // modulator output / file bytes, interleaved bytes per channel
     size_t bits_off_ = 0;
     bool marker_ = false;         // false: 0x05 next
+    int64_t packed_ = 0, dropped_ = 0;   // DSD bytes per channel packed / dropped since init
 };
 
 }  // namespace daphne

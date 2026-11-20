@@ -5,23 +5,37 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <random>
+#include <functional>
 #include <future>
 #include <thread>
 
 #include <nlohmann/json.hpp>
 
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+#include "daphne/color/oversampler.h"
+#include "daphne/color/stage.h"
+#include "daphne/color/test_curve.h"
+#endif
+#include "daphne/dsp/modulator.h"
+#include "daphne/dsp/resampler.h"
+#include "daphne/engine/dsd_file.h"
 #include "daphne/engine/file_bytes.h"
+#include "daphne/engine/filters.h"
 #include "daphne/engine/live_source.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/settings.h"
 #include "../core/src/player/crossfader.h"
+#include "../core/src/player/dsd_switch.h"
 #include "../core/src/player/throughput.h"
 #include "fake_output.h"
 #include "test_util.h"
@@ -865,6 +879,1165 @@ TEST_CASE("Player: the output's caps decide the DSD path, not its API", "[player
         CHECK_FALSE(rep.bit_perfect);
         CHECK(rep.not_bit_perfect_reason == "shared mode (system mixer)");
     }
+}
+
+// Tube Color (doc/N28): where it cannot run (every build but the test builds, before M2), color.enabled true must
+// change nothing: a DSD file still goes out as DSD (not converted to PCM), and every byte is the same as with it off.
+TEST_CASE("Player: color.enabled true changes nothing where Tube Color cannot run", "[player][dsd][color]") {
+    Settings probe;
+    probe.color.enabled = true;
+    if (daphne::color_active(probe)) SKIP("a test build: Tube Color runs here (the M1 stage tests cover it)");
+    auto play = [](bool native, bool color, const std::filesystem::path& path) {
+        Rig r;
+        r.caps.native_dsd = native;
+        Settings s;
+        s.output.dsd_lead_in_ms = 20;
+        s.color.enabled = color;
+        s.color.drive = 2.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        struct Out {
+            bool dsd;
+            int rate;
+            bool bit_perfect;
+            std::vector<std::string> chain;
+            std::vector<uint8_t> bytes;
+        } o{r.dev->opens.front().dsd, r.dev->opens.front().rate, rep.bit_perfect, rep.chain, r.dev->take()};
+        r.player.reset();
+        return o;
+    };
+    const auto path = write_dsf("daphne_player_color.dsf", 2822400 / 8 / 2 / 5);   // 0.1 s per channel
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        const auto off = play(native, false, path);
+        const auto on = play(native, true, path);
+        CHECK(on.dsd == native);                 // native: DSD; DoP: DSD packed in PCM frames, never converted
+        CHECK(on.rate == off.rate);
+        CHECK(on.bit_perfect);
+        CHECK(on.chain == off.chain);
+        CHECK(on.bytes.size() > 0);
+        CHECK(on.bytes == off.bytes);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    // a PCM source the same way
+    auto play_pcm = [](bool color) {
+        Rig r;
+        r.sources["a"] = int24_noise(44100, 2, 44100 / 5, 1);
+        Settings s;
+        s.color.enabled = color;
+        REQUIRE(r.start("a", s));
+        const auto rep = r.finish();
+        CHECK(rep.bit_perfect);
+        return r.dev->take();
+    };
+    CHECK(play_pcm(true) == play_pcm(false));
+}
+
+
+namespace {
+
+// A DSF file (DSD64, stereo) whose bytes count its DoP frames: DoP frame f carries bytes 2f and 2f + 1 of each
+// channel; channel 0 holds f's low and middle byte, channel 1 its high byte and 0x5A. Sent directly, every frame
+// tells which frame of the file it is (DSF stores each byte LSB first; the player sends it MSB first)
+uint8_t reverse_bits(uint8_t x) {
+    uint8_t r = 0;
+    for (int i = 0; i < 8; ++i) r = static_cast<uint8_t>(r | (((x >> i) & 1) << (7 - i)));
+    return r;
+}
+
+std::filesystem::path write_counting_dsf(const std::string& name, int64_t bytes, int dsd_rate = 2822400) {
+    auto le = [](std::vector<uint8_t>& v, uint64_t x, int n) {
+        for (int k = 0; k < n; ++k) v.push_back(static_cast<uint8_t>(x >> (8 * k)));
+    };
+    const int ch = 2, block = 4096;
+    const int64_t blocks = (bytes + block - 1) / block;
+    const uint64_t data = static_cast<uint64_t>(blocks) * block * ch;
+    std::vector<uint8_t> f;
+    f.insert(f.end(), {'D', 'S', 'D', ' '});
+    le(f, 28, 8), le(f, 28 + 52 + 12 + data, 8), le(f, 0, 8);
+    f.insert(f.end(), {'f', 'm', 't', ' '});
+    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, static_cast<uint64_t>(dsd_rate), 4), le(f, 1, 4);
+    le(f, static_cast<uint64_t>(bytes) * 8, 8), le(f, block, 4), le(f, 0, 4);
+    f.insert(f.end(), {'d', 'a', 't', 'a'});
+    le(f, 12 + data, 8);
+    for (int64_t b = 0; b < blocks; ++b)
+        for (int c = 0; c < ch; ++c)
+            for (int i = 0; i < block; ++i) {
+                const int64_t k = b * block + i, fr = k / 2;
+                uint8_t v = 0x69;
+                if (k < bytes) v = static_cast<uint8_t>(c == 0 ? (k % 2 == 0 ? fr : fr >> 8) : (k % 2 == 0 ? fr >> 16 : 0x5A));
+                f.push_back(v);
+            }
+    const auto p = test::temp_path(name);
+    std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+    return p;
+}
+
+// A DSF file (stereo) of these DSD bytes (MSB first, as the player sends them; DSF stores each byte LSB first)
+std::filesystem::path write_dsf_bytes(const std::string& name, const std::vector<uint8_t>& l, const std::vector<uint8_t>& r, int dsd_rate) {
+    auto le = [](std::vector<uint8_t>& v, uint64_t x, int n) {
+        for (int k = 0; k < n; ++k) v.push_back(static_cast<uint8_t>(x >> (8 * k)));
+    };
+    const int ch = 2, block = 4096;
+    const auto bytes = static_cast<int64_t>(std::min(l.size(), r.size()));
+    const int64_t blocks = (bytes + block - 1) / block;
+    const uint64_t data = static_cast<uint64_t>(blocks) * block * ch;
+    std::vector<uint8_t> f;
+    f.insert(f.end(), {'D', 'S', 'D', ' '});
+    le(f, 28, 8), le(f, 28 + 52 + 12 + data, 8), le(f, 0, 8);
+    f.insert(f.end(), {'f', 'm', 't', ' '});
+    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, static_cast<uint64_t>(dsd_rate), 4), le(f, 1, 4);
+    le(f, static_cast<uint64_t>(bytes) * 8, 8), le(f, block, 4), le(f, 0, 4);
+    f.insert(f.end(), {'d', 'a', 't', 'a'});
+    le(f, 12 + data, 8);
+    for (int64_t b = 0; b < blocks; ++b)
+        for (int c = 0; c < ch; ++c)
+            for (int i = 0; i < block; ++i) {
+                const int64_t k = b * block + i;
+                const auto& v = c == 0 ? l : r;
+                f.push_back(k < bytes ? reverse_bits(v[static_cast<size_t>(k)]) : 0x69);
+            }
+    const auto p = test::temp_path(name);
+    std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+    return p;
+}
+
+
+bool wait_for(const std::function<bool()>& f, double limit = 10.0) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!f()) {
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(limit)) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+
+int starts(Rig& r) {
+    std::lock_guard<std::mutex> l(r.m);
+    return r.started;
+}
+
+int count_events(Rig& r, const std::string& part) {
+    std::lock_guard<std::mutex> l(r.m);
+    return static_cast<int>(
+        std::count_if(r.events.begin(), r.events.end(), [&](const std::string& e) { return e.find(part) != std::string::npos; }));
+}
+
+bool color_runs() {
+    Settings probe;
+    probe.color.enabled = true;
+    return daphne::color_active(probe);
+}
+
+// a block: what the player decodes at a time (kChunk source frames), at the converted PCM rate (176.4 kHz)
+constexpr double kBlockSec = 4096.0 / 176400.0;
+
+}  // namespace
+
+namespace {
+
+// A DSF file (DSD64, stereo) of a sine: `amp` x full scale PCM through the modulator (full scale -> 50 % modulation)
+std::filesystem::path write_sine_dsf(const std::string& name, double seconds, double hz, double amp, std::vector<uint8_t>* bits0) {
+    const int pcm_rate = 352800, frames = static_cast<int>(seconds * pcm_rate);
+    std::vector<double> x(static_cast<size_t>(frames) * 2);
+    for (int i = 0; i < frames; ++i)
+        x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = amp * std::sin(2 * 3.14159265358979323846 * hz * i / pcm_rate);
+    daphne::dsp::DsdModulator mod(pcm_rate, 64, 8);
+    std::vector<uint8_t> out;   // interleaved L R bytes, MSB first
+    mod.process(x.data(), frames, 2, out);
+    const int64_t bytes = static_cast<int64_t>(out.size() / 2);
+    if (bits0) {
+        bits0->clear();
+        for (int64_t k = 0; k < bytes; ++k) bits0->push_back(out[2 * static_cast<size_t>(k)]);
+    }
+    auto le = [](std::vector<uint8_t>& v, uint64_t v64, int n) {
+        for (int k = 0; k < n; ++k) v.push_back(static_cast<uint8_t>(v64 >> (8 * k)));
+    };
+    const int ch = 2, block = 4096;
+    const int64_t blocks = (bytes + block - 1) / block;
+    const uint64_t data = static_cast<uint64_t>(blocks) * block * ch;
+    std::vector<uint8_t> f;
+    f.insert(f.end(), {'D', 'S', 'D', ' '});
+    le(f, 28, 8), le(f, 28 + 52 + 12 + data, 8), le(f, 0, 8);
+    f.insert(f.end(), {'f', 'm', 't', ' '});
+    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, 2822400, 4), le(f, 1, 4);
+    le(f, static_cast<uint64_t>(bytes) * 8, 8), le(f, block, 4), le(f, 0, 4);
+    f.insert(f.end(), {'d', 'a', 't', 'a'});
+    le(f, 12 + data, 8);
+    for (int64_t b = 0; b < blocks; ++b)
+        for (int c = 0; c < ch; ++c)
+            for (int i = 0; i < block; ++i) {
+                const int64_t k = b * block + i;
+                f.push_back(k < bytes ? reverse_bits(out[2 * static_cast<size_t>(k) + static_cast<size_t>(c)]) : 0x69);   // DSF: LSB first
+            }
+    const auto p = test::temp_path(name);
+    std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+    return p;
+}
+
+// Channel 0's DSD bytes (MSB first) carried by DoP frames (stereo, Int32); idle and non-DoP frames give nothing
+std::vector<uint8_t> dop_bytes_ch0(const std::vector<uint8_t>& b, size_t* first_music = nullptr) {
+    std::vector<uint8_t> v;
+    bool music = false;
+    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
+        if (b[i + 3] != 0x05 && b[i + 3] != 0xFA) continue;
+        const uint8_t hi = b[i + 2], lo = b[i + 1];
+        if (!music && hi == 0x69 && lo == 0x69) continue;   // the lead-in
+        if (!music && first_music) *first_music = i / 8;
+        music = true;
+        v.push_back(hi);
+        v.push_back(lo);
+    }
+    return v;
+}
+
+// The amplitude of `hz` in a DSD bit stream (bytes MSB first, +-1 per bit) over [from, from + n) bits
+double dsd_amplitude(const std::vector<uint8_t>& bytes, double hz, size_t from, size_t n) {
+    double c = 0.0, s = 0.0;
+    for (size_t k = 0; k < n; ++k) {
+        const size_t bit = from + k;
+        const double v = (bytes[bit / 8] >> (7 - bit % 8)) & 1 ? 1.0 : -1.0;
+        const double w = 2 * 3.14159265358979323846 * hz * static_cast<double>(k) / 2822400.0;
+        c += v * std::cos(w);
+        s += v * std::sin(w);
+    }
+    return 2.0 * std::hypot(c, s) / static_cast<double>(n);
+}
+
+}  // namespace
+
+// Tube Color does not change the output format (doc/N28): a DSD file that goes out as DSD (native or DoP) is
+// remodulated at its own DSD multiple while Tube Color is active; only an output that takes no DSD gets PCM.
+TEST_CASE("Player: a DSD file with Tube Color is remodulated at its own rate", "[player][dsd][color]") {
+    Settings probe;
+    probe.color.enabled = true;
+    if (!daphne::color_active(probe)) SKIP("a release build: Tube Color cannot run here (the test above covers it)");
+    const auto path = write_dsf("daphne_player_color_tc.dsf", 2822400 / 8 / 2 / 5);   // 0.1 s per channel
+    SECTION("native and DoP: still DSD, at the file's rate") {
+        for (bool native : {true, false}) {
+            INFO((native ? "native DSD device" : "DoP device"));
+            Rig r;
+            r.caps.native_dsd = native;
+            Settings s;
+            s.output.dsd_lead_in_ms = 20;
+            s.color.enabled = true;
+            REQUIRE(r.start(platform::path_to_utf8(path), s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            REQUIRE(r.dev->opens.size() == 1);
+            CHECK(r.dev->opens.front().dsd == native);
+            CHECK(r.dev->opens.front().rate == (native ? 2822400 : 176400));
+            CHECK(r.saw("DSD remodulated (Tube Color)"));
+            CHECK_FALSE(r.saw("DSD converted to PCM"));
+            CHECK(rep.source.dsd_rate == 2822400);
+            CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) != rep.chain.end());
+            CHECK(rep.filter.find("DSD64") != std::string::npos);
+            if (!native) {   // DoP: every frame carries its marker, alternating
+                // (up to the PCM silence the stream ends on, which takes the DAC out of DSD mode)
+                const auto m = dop_markers(r.dev->take(), 2);
+                REQUIRE(m.size() > 1000);
+                size_t bad = 0, n = 0;
+                for (size_t i = 1; i < m.size() && (m[i] == 0x05 || m[i] == 0xFA); ++i, ++n) bad += m[i] == m[i - 1];
+                CHECK(bad == 0);
+                CHECK(n >= 176400 / 10);
+            }
+            r.player.reset();
+        }
+    }
+    SECTION("an output that takes no DSD: PCM") {
+        Rig r;
+        Settings s;
+        s.output.dsd = daphne::DsdMode::Pcm;
+        s.color.enabled = true;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK_FALSE(r.dev->opens.front().dsd);
+        CHECK(r.saw("DSD converted to PCM (Tube Color)"));
+        CHECK_FALSE(r.saw("remodulated"));
+        r.player.reset();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// DSD -> PCM is x2 (+6.02 dB, 50 % modulation -> 0 dBFS), the modulator x0.5: remodulated, a DSD file keeps its level
+TEST_CASE("Player: a remodulated DSD file keeps its level", "[player][dsd][color]") {
+    Settings probe;
+    probe.color.enabled = true;
+    if (!daphne::color_active(probe)) SKIP("a release build: Tube Color cannot run here");
+    const double hz = 1102.5;   // 2560 bits per period at DSD64
+    std::vector<uint8_t> in_bits;
+    const auto path = write_sine_dsf("daphne_player_color_level.dsf", 1.0, hz, 0.5, &in_bits);
+    Rig r;
+    Settings s;
+    s.output.dsd_lead_in_ms = 20;
+    s.color.enabled = true;
+    s.color.drive = 0.0;   // the stage passes the signal unchanged: only the path is measured
+    REQUIRE(r.start(platform::path_to_utf8(path), s));
+    r.finish();
+    CHECK(r.ended);
+    CHECK(r.saw("DSD remodulated (Tube Color)"));
+    const auto out_bits = dop_bytes_ch0(r.dev->take());
+    const size_t n = 2560 * 441;   // 0.4 s, whole periods
+    REQUIRE(out_bits.size() * 8 > 2822400 / 10 * 5 + n);
+    const double a_in = dsd_amplitude(in_bits, hz, 2822400 / 10 * 3, n);
+    const double a_out = dsd_amplitude(out_bits, hz, 2822400 / 10 * 4, n);   // after the 20 ms fade-in and the lead-in
+    const double db = 20.0 * std::log10(a_out / a_in);
+    UNSCOPED_INFO("1102.5 Hz in the DSD stream: in " << a_in << ", out " << a_out << " (" << db << " dB)");
+    CHECK(std::abs(db) < 0.01);
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// Tube Color switched on and off while a DSD file plays (doc/N28): the engine goes on at the position heard, as PCM
+// through the chain or sent directly again, without the host loading the file again.
+TEST_CASE("Player: Tube Color switched while a DSD file plays keeps the position", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_switch_pos.dsf", 2822400 / 8);   // 1 s per channel
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        Rig r;
+        r.caps.native_dsd = native;
+        r.dev->speed = 1.0;
+        Settings off;
+        off.output.dsd_lead_in_ms = 20;
+        Settings on = off;
+        on.color.enabled = true;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.4);
+        // paused, the position does not move by itself: what the switch does to it is all there is
+        r.player->pause(true);
+        sleep_s(0.1);
+        const double p0 = r.player->position_seconds();
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return starts(r) >= 2; }));
+        sleep_s(0.05);
+        const double p1 = r.player->position_seconds();
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return starts(r) >= 3; }));
+        sleep_s(0.05);
+        const double p2 = r.player->position_seconds();
+        UNSCOPED_INFO("positions " << p0 << " -> " << p1 << " -> " << p2 << " s");
+        CHECK(p0 > 0.05);
+        CHECK(std::abs(p1 - p0) <= kBlockSec);
+        CHECK(std::abs(p2 - p1) <= kBlockSec);
+        CHECK(r.saw("DSD remodulated (Tube Color)"));
+        CHECK(r.saw("Tube Color off: the DSD file is sent directly again"));
+        r.player->pause(false);
+        r.finish();
+        CHECK(r.ended);
+        // the device: sent directly, remodulated, sent directly again, all at the file's rate (native: DSD64, DoP:
+        // 176.4 kHz frames)
+        REQUIRE(r.dev->opens.size() == 3);
+        for (const auto& o : r.dev->opens) {
+            CHECK(o.dsd == native);
+            CHECK(o.rate == (native ? 2822400 : 176400));
+        }
+        r.player.reset();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+
+// A PCM file on the dsd core (DSD upsampling): Tube Color goes in the chain before the modulator, switched on by a
+// rebuild and crossfade like any other chain change; the device stays as it is.
+TEST_CASE("Player: Tube Color on the dsd core only rebuilds the chain", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        Rig r;
+        r.caps.native_dsd = native;
+        r.dev->speed = 1.0;
+        r.sources["sine"] = sine(44100, 1000.0, 2.0);
+        Settings off;
+        off.core = daphne::CoreMode::Dsd;
+        off.modulator.osr = 64;
+        off.filter.taps = 256;
+        off.output.dsd_lead_in_ms = 20;
+        Settings on = off;
+        on.color.enabled = true;
+        REQUIRE(r.start("sine", off));
+        sleep_s(0.3);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK(r.dev->opens.size() == 1);   // never reopened
+        CHECK_FALSE(r.saw("remodulated"));
+        CHECK_FALSE(r.saw("converted to PCM"));
+        CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) != rep.chain.end());
+        if (!native) {   // DoP throughout: the markers never break (up to the PCM silence at the end)
+            const auto m = dop_markers(r.dev->take(), 2);
+            size_t bad = 0, n = 0;
+            for (size_t i = 1; i < m.size() && (m[i] == 0x05 || m[i] == 0xFA); ++i, ++n) bad += m[i] == m[i - 1];
+            CHECK(bad == 0);
+            CHECK(n >= 176400);
+        }
+        r.player.reset();
+    }
+}
+
+// The drive crossing 0 takes the stage in or out of the signal (a rebuild and crossfade, doc/N28): it waits 300 ms for
+// the slider to settle. Other drive changes glide in place.
+// The drive crossing 0 is taken in place by the stage (doc/N28): no rebuild, the chain and the device as they are.
+TEST_CASE("Player: Tube Color's drive crossing 0 is taken in place", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["sine"] = sine(44100, 1000.0, 2.0);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.5;
+    Settings z = s, more = s;
+    z.color.drive = 0.0;
+    more.color.drive = 1.4;
+    REQUIRE(r.start("sine", s));
+    sleep_s(0.3);
+    r.player->apply(more, OutputChoice{});
+    sleep_s(0.1);
+    r.player->apply(z, OutputChoice{});
+    sleep_s(0.1);
+    r.player->apply(s, OutputChoice{});
+    sleep_s(0.1);
+    r.player->apply(z, OutputChoice{});
+    const auto rep = r.finish();
+    CHECK(r.ended);
+    CHECK(count_events(r, "applied in place") == 4);
+    CHECK(count_events(r, "in the background") == 0);
+    CHECK(r.dev->opens.size() == 1);
+    CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) == rep.chain.end());   // idle at the end
+    r.player.reset();
+}
+
+namespace {
+
+// pink noise (Paul Kellet's filter on uniform white noise) at about `rms`, plus a sine; stereo, the same on both sides
+std::shared_ptr<Signal> pink_and_sine(int rate, double seconds, double rms, double sine_amp, double hz) {
+    auto s = std::make_shared<Signal>();
+    const int64_t frames = static_cast<int64_t>(seconds * rate);
+    s->info.rate = rate, s->info.channels = 2, s->info.frames = frames, s->info.codec = "TEST";
+    s->x.resize(static_cast<size_t>(frames) * 2);
+    std::mt19937 g(7);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    std::vector<double> p(static_cast<size_t>(frames));
+    double acc = 0.0;
+    for (int64_t i = 0; i < frames; ++i) {
+        const double w = u(g);
+        b0 = 0.99886 * b0 + w * 0.0555179, b1 = 0.99332 * b1 + w * 0.0750759, b2 = 0.96900 * b2 + w * 0.1538520;
+        b3 = 0.86650 * b3 + w * 0.3104856, b4 = 0.55000 * b4 + w * 0.5329522, b5 = -0.7616 * b5 - w * 0.0168980;
+        p[static_cast<size_t>(i)] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+        b6 = w * 0.115926;
+        acc += p[static_cast<size_t>(i)] * p[static_cast<size_t>(i)];
+    }
+    const double k = rms / std::sqrt(acc / static_cast<double>(frames));
+    for (int64_t i = 0; i < frames; ++i)
+        s->x[2 * static_cast<size_t>(i)] = s->x[2 * static_cast<size_t>(i) + 1] =
+            k * p[static_cast<size_t>(i)] + sine_amp * std::sin(2 * kPi * hz * static_cast<double>(i) / rate);
+    return s;
+}
+
+// channel 0 of an Int32 stereo device stream
+std::vector<double> ch0_int32(const std::vector<uint8_t>& b) {
+    std::vector<double> y;
+    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
+        int32_t v;
+        std::memcpy(&v, &b[i], 4);
+        y.push_back(v / 2147483648.0);
+    }
+    return y;
+}
+
+}  // namespace
+
+// The reports (doc/N28): Tube Color as the reason the path is not bit-perfect; a bias current outside the preset's
+// range said once, when it starts to apply.
+TEST_CASE("Player: Tube Color in the path report and the log", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["a"] = int24_noise(44100, 2, 44100 * 2, 3);
+    Settings s;
+    s.color.enabled = true;
+    s.color.bias_ma = 80.0;   // in set-300b's range
+    REQUIRE(r.start("a", s));
+    sleep_s(0.2);
+    Settings p = s;
+    p.color.preset = daphne::ColorPreset::Set845;   // 80 mA: outside 845's range
+    r.player->apply(p, OutputChoice{});
+    sleep_s(0.2);
+    Settings q = p;
+    q.color.drive = 1.3;   // still outside: not said again
+    r.player->apply(q, OutputChoice{});
+    sleep_s(0.2);
+    const auto rep = r.finish();
+    CHECK(rep.not_bit_perfect_reason == "DSP active (Tube Color)");
+    CHECK(count_events(r, "is outside this preset's range") == 1);
+    r.player.reset();
+}
+
+// What Tube Color's curve and response are made from (the preset here) changes by a new chain built in the background
+// and crossfaded in; the drive and the makeup gain change in place (doc/N28).
+TEST_CASE("Player: a Tube Color preset change is rebuilt and crossfaded, the drive applied in place", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["sine"] = sine(44100, 1000.0, 2.0);
+    Settings s;
+    s.color.enabled = true;
+    REQUIRE(r.start("sine", s));
+    sleep_s(0.3);
+    Settings d = s;
+    d.color.drive = 1.6;
+    d.color.makeup_gain_db = 1.0;
+    r.player->apply(d, OutputChoice{});
+    REQUIRE(wait_for([&] { return r.saw("applied in place"); }, 5.0));
+    Settings p = d;
+    p.color.preset = daphne::ColorPreset::Set845;
+    r.player->apply(p, OutputChoice{});
+    REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }, 5.0));
+    r.finish();
+    CHECK(r.ended);
+    CHECK(count_events(r, "in the background") == 1);   // the preset: one rebuild
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+}
+
+// Tube Color's drive crossing 0 where the stage runs oversampled (44.1 kHz: 8x, 223 frames of content delay): the
+// stage crossfades its delay path and its processing path aligned (doc/N28), so the output stays where the input is (the
+// cross-correlation peak does not move) and the switches show no comb notch.
+TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage is oversampled", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const int rate = 44100;
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["pink"] = pink_and_sine(rate, 3.5, 0.003, 0.003, 997.0);   // about -50 dBFS: the curve stays linear
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.5;
+    Settings z = s;
+    z.color.drive = 0.0;
+    REQUIRE(r.start("pink", s));
+    sleep_s(0.6);
+    r.player->apply(z, OutputChoice{});
+    sleep_s(0.4);
+    r.player->apply(s, OutputChoice{});
+    const auto rep = r.finish();
+    CHECK(r.ended);
+    const auto y = ch0_int32(r.dev->take());
+    const auto& src = r.sources["pink"]->x;
+    std::vector<double> x(src.size() / 2);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = src[2 * i];
+    REQUIRE(y.size() >= x.size() - 4096);
+    // the lag of the cross-correlation peak, window by window (20 ms), on the first differences (pink noise whitened: its
+    // low end, where the test response turns the phase, does not blur the peak)
+    std::vector<double> dx(x.size(), 0.0), dy(y.size(), 0.0);
+    for (size_t i = 1; i < x.size(); ++i) dx[i] = x[i] - x[i - 1];
+    for (size_t i = 1; i < y.size(); ++i) dy[i] = y[i] - y[i - 1];
+    std::map<int, int> lags;
+    const int win = rate / 50, span = 400;
+    for (size_t at = static_cast<size_t>(rate / 10); at + win + span < std::min(x.size(), y.size()); at += win) {
+        double best = -1e300;
+        int lag = 0;
+        for (int l = -span; l <= span; ++l) {
+            double c = 0.0;
+            for (int i = 0; i < win; ++i) c += dy[at + static_cast<size_t>(i)] * dx[static_cast<size_t>(static_cast<int64_t>(at) + i - l)];
+            if (c > best) best = c, lag = l;
+        }
+        ++lags[lag];
+    }
+    std::string seen;
+    for (const auto& [l, n] : lags) seen += std::to_string(l) + " (" + std::to_string(n) + " windows) ";
+    WARN("cross-correlation peak, by 20 ms window: " << seen);
+    CHECK(lags.size() == 1);
+    CHECK(lags.begin()->first == 0);
+    // the power ratio |Y / X|^2 in third-octave bands from 200 Hz to 15 kHz, 46 ms windows every 12 ms (each 50 ms
+    // crossfade falls in several): between the two chains' responses (0 dB without the stage, down to -0.3 dB with it
+    // here), never the comb of a misaligned mix (223 frames apart, half and half: -1 to -3.7 dB in these bands)
+    const int n = 2048;
+    double lowest = 0.0, highest = -1e9;
+    std::vector<double> cen;
+    for (double c = 200.0; c <= 15000.0; c *= std::pow(2.0, 1.0 / 3.0)) cen.push_back(c);
+    std::vector<std::complex<double>> X(static_cast<size_t>(n / 2 + 1)), Y(X.size());
+    for (size_t at = static_cast<size_t>(rate / 10); at + n < std::min(x.size(), y.size()); at += n / 4) {
+        for (int k = 0; k <= n / 2; ++k) {   // (a plain DFT of the window: the bins the bands need)
+            if (k * static_cast<double>(rate) / n < 170.0 || k * static_cast<double>(rate) / n > 17000.0) continue;
+            std::complex<double> xs = 0.0, ys = 0.0;
+            for (int i = 0; i < n; ++i) {
+                const double w = 0.5 - 0.5 * std::cos(2 * kPi * i / n);
+                const auto e = std::polar(w, -2 * kPi * k * i / n);
+                xs += x[at + static_cast<size_t>(i)] * e;
+                ys += y[at + static_cast<size_t>(i)] * e;
+            }
+            X[static_cast<size_t>(k)] = xs, Y[static_cast<size_t>(k)] = ys;
+        }
+        for (double c : cen) {
+            double px = 0.0, py = 0.0;
+            for (int k = 0; k <= n / 2; ++k) {
+                const double f = k * static_cast<double>(rate) / n;
+                if (f < c / std::pow(2.0, 1.0 / 6.0) || f >= c * std::pow(2.0, 1.0 / 6.0)) continue;
+                px += std::norm(X[static_cast<size_t>(k)]), py += std::norm(Y[static_cast<size_t>(k)]);
+            }
+            const double db = 10 * std::log10(py / px);
+            lowest = std::min(lowest, db), highest = std::max(highest, db);
+        }
+    }
+    WARN("third-octave |Y / X|, 200 Hz .. 15 kHz, over every window: " << lowest << " .. " << highest << " dB");
+    CHECK(lowest > -0.8);
+    CHECK(highest < 0.5);
+    CHECK(count_events(r, "in the background") == 0);   // in place
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+}
+
+// Benchmarks (not run by default): Tube Color's reaction off drive 0 with a 1M-tap filter, and the oversampling's cost.
+// DAPHNE_BENCH_FILTER_CACHE=<dir>: the filter cache they use (the first run designs the filter).
+
+// The benchmarks run with a filter cache (the other tests turn it off): DAPHNE_BENCH_FILTER_CACHE=<dir>
+struct BenchCache {
+    BenchCache() {
+        const auto d = platform::get_env("DAPHNE_BENCH_FILTER_CACHE");
+        if (!d) SKIP("DAPHNE_BENCH_FILTER_CACHE=<dir> runs it");
+        const std::filesystem::path p = platform::path_from_utf8(*d);
+        test::set_env("DAPHNE_FILTER_CACHE", &p);
+    }
+    ~BenchCache() {
+        const std::filesystem::path off("off");
+        test::set_env("DAPHNE_FILTER_CACHE", &off);
+    }
+};
+
+TEST_CASE("Bench: a 1M-tap chain build and speed with Tube Color", "[.bench][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    BenchCache cache;
+    using clock = std::chrono::steady_clock;
+    auto secs = [](clock::time_point a) { return std::chrono::duration<double>(clock::now() - a).count(); };
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.bits = 0, src.lossless_int = false, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 88200, dev.channels = 2, dev.type = daphne::SampleType::Int32, dev.container_bits = dev.valid_bits = 32;
+    Settings base;
+    base.output.rate = "88200";
+    base.filter.taps = 1048576;
+    {   // the first time: designed and stored
+        const auto t0 = clock::now();
+        const auto h = daphne::design_filter(base.filter, 44100, 88200);
+        WARN("1M taps: first design_filter " << secs(t0) << " s (cached now: " << daphne::filter_cached(base.filter, 44100, 88200) << ")");
+    }
+    // the parts, from the cache
+    auto t0 = clock::now();
+    auto h = daphne::design_filter(base.filter, 44100, 88200);
+    const double load = secs(t0);
+    t0 = clock::now();
+    daphne::dsp::Resampler rs(std::move(h), 2, daphne::dsp::resampler_block_size(1048576LL * 2));
+    rs.prepare({44100, 2, 4096});
+    const double fft = secs(t0);
+    WARN("1M taps from the cache: coefficients loaded in " << load << " s, the resampler's FFT partitions set up in " << fft << " s");
+    for (int k = 0; k < 3; ++k) {
+        Settings s = base;
+        s.color.enabled = k > 0;
+        s.color.drive = k == 2 ? 0.5 : 0.0;
+        t0 = clock::now();
+        daphne::DspChain c;
+        std::string e;
+        REQUIRE(c.build(s, src, dev, 4096, &e));
+        const double build = secs(t0);
+        std::vector<double> x(4096 * 2), y(static_cast<size_t>(c.max_output_frames()) * 2);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = 0.1 * std::sin(0.01 * static_cast<double>(i));
+        t0 = clock::now();
+        const int blocks = 3 * 44100 / 4096;   // 3 s: what a warm-up runs through at most
+        for (int b = 0; b < blocks; ++b) c.process(x.data(), 4096, y.data());
+        const double run = secs(t0);
+        WARN("1M taps, " << (k == 0 ? "Tube Color off" : k == 1 ? "Tube Color on, drive 0" : "Tube Color on, drive 0.5") << ": chain build " << build
+                         << " s, 3 s of input through it " << run << " s (" << 3.0 / run << " x real time)");
+    }
+}
+
+TEST_CASE("Bench: Tube Color off drive 0 with 1M taps", "[.bench][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    BenchCache cache;
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["pink"] = pink_and_sine(44100, 30.0, 0.05, 0.05, 997.0);
+    Settings z;
+    z.output.rate = "88200";   // 2x: the stage at 88.2 kHz, oversampled 4x
+    z.filter.taps = 1048576;
+    z.color.enabled = true;
+    z.color.drive = 0.0;
+    Settings s = z;
+    s.color.drive = 0.5;
+    REQUIRE(r.start("pink", z, 0.0));
+    sleep_s(3.0);
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    r.player->apply(s, OutputChoice{});
+    auto at = [&](const std::string& what) {
+        REQUIRE(wait_for([&] { return r.saw(what); }, 60.0));
+        return std::chrono::duration<double>(clock::now() - t0).count();
+    };
+    const double t_applied = at("applied in place");
+    const std::string d = r.player->debug_json();
+    const auto ring = std::stod(d.substr(d.find("\"ring\":") + 7));
+    const double ring_s = ring / (8.0 * 88200.0);   // Int32 stereo
+    // the stage switches paths (20 ms) and glides (20 ms) from the next chunk on, behind what the ring already holds
+    WARN("off drive 0 at 1M taps: applied in place after " << t_applied << " s (no rebuild: " << !r.saw("in the background")
+                                                           << "); the ring holds " << ring_s << " s: heard after about " << t_applied + ring_s
+                                                           << " s, the full drive 40 ms later");
+    r.player->stop();
+    r.finish();
+}
+
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+TEST_CASE("Bench: Tube Color cost with and without the oversampling", "[.bench][color]") {
+    for (int rate : {44100, 88200, 176400, 352800}) {
+        const int frames = rate * 10, block = 4096;
+        std::vector<double> x(static_cast<size_t>(frames) * 2), y(x.size());
+        for (size_t i = 0; i < x.size(); ++i) x[i] = 0.3 * std::sin(0.001 * static_cast<double>(i));
+        auto time = [&](auto&& run) {
+            const auto t0 = std::chrono::steady_clock::now();
+            run();
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() / 10.0;   // per second of audio
+        };
+        daphne::color::TubeColorStage st(daphne::color::StageParams{.drive = 0.5, .linear = daphne::color::test_linear_model()});
+        st.prepare({rate, 2, block});
+        const double full = time([&] {
+            for (int a = 0; a < frames; a += block)
+                st.process(x.data() + 2 * static_cast<size_t>(a), std::min(block, frames - a), y.data() + 2 * static_cast<size_t>(a));
+        });
+        double os_only = 0.0;
+        const int l = daphne::color::Oversampler::factor(rate);
+        if (l > 1) {
+            daphne::color::Oversampler os;
+            os.prepare(rate, l, 2, block);
+            std::vector<double> hi(static_cast<size_t>(l) * 2);
+            os_only = time([&] {
+                for (int i = 0; i < frames; ++i) {
+                    os.up(x.data() + 2 * static_cast<size_t>(i), hi.data());
+                    os.down(hi.data(), y.data() + 2 * static_cast<size_t>(i));
+                }
+            });
+        }
+        WARN(rate << " Hz stereo, L " << l << ": the stage " << 100 * full << " % of one core, the oversampling alone " << 100 * os_only << " %");
+    }
+}
+#endif
+
+// The playback path says when Tube Color is set but does nothing (doc/N28).
+TEST_CASE("Player: the path report says when Tube Color does nothing", "[player][color]") {
+    Rig r;
+    r.sources["sine"] = int24_noise(44100, 2, 44100 / 5, 1);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.0;
+    REQUIRE(r.start("sine", s));
+    const auto rep = r.finish();
+    INFO(rep.filter << " | " << rep.not_bit_perfect_reason);
+    if (color_runs()) {
+        CHECK(rep.filter.find("Tube Color idle (drive 0)") != std::string::npos);
+        CHECK(rep.bit_perfect);   // a 24-bit source: nothing changes its samples
+    } else {
+        CHECK(rep.filter.find("Tube Color unavailable (before M2)") != std::string::npos);
+    }
+    Rig r2;
+    r2.sources["sine"] = sine(44100, 1000.0, 0.3);
+    s.color.drive = 0.5;
+    REQUIRE(r2.start("sine", s));
+    const auto rep2 = r2.finish();
+    INFO(rep2.filter);
+    CHECK(rep2.filter.find("idle") == std::string::npos);
+    CHECK((rep2.filter.find("unavailable") == std::string::npos) == color_runs());
+}
+
+// Tube Color on at drive 0 (doc/N28): the stage a pure delay the player compensates, the quantizer it keeps passing the
+// samples through: every byte as with Tube Color off, at a rate oversampled 8x and one oversampled 4x.
+TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here (covered above)");
+    for (int rate : {44100, 96000}) {
+        INFO(rate << " Hz");
+        auto play = [&](bool color) {
+            Rig r;
+            r.sources["a"] = int24_noise(rate, 2, rate / 2, 9);
+            Settings s;
+            s.color.enabled = color;
+            s.color.drive = 0.0;
+            REQUIRE(r.start("a", s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            CHECK(rep.bit_perfect);
+            CHECK(rep.device.rate == rate);
+            auto b = r.dev->take();
+            r.player.reset();
+            return b;
+        };
+        const auto off = play(false), on = play(true);
+        REQUIRE(off.size() > static_cast<size_t>(rate) / 2 * 8);
+        CHECK(on == off);
+    }
+}
+
+namespace {
+
+// A DSF file of real music: pink noise and a sine (about -20 dBFS) modulated to DSD64. l, r: its bytes, MSB first.
+std::filesystem::path write_music_dsf(const std::string& name, double seconds, std::vector<uint8_t>* l, std::vector<uint8_t>* r) {
+    const int pcm_rate = 352800;
+    const auto sig = pink_and_sine(pcm_rate, seconds, 0.1, 0.1, 441.0);
+    const int frames = static_cast<int>(sig->x.size() / 2);
+    daphne::dsp::DsdModulator mod(pcm_rate, 64, 8);
+    std::vector<uint8_t> out;   // interleaved L R bytes, MSB first
+    mod.process(sig->x.data(), frames, 2, out);
+    l->clear(), r->clear();
+    for (size_t k = 0; k + 1 < out.size(); k += 2) l->push_back(out[k]), r->push_back(out[k + 1]);
+    return write_dsf_bytes(name, *l, *r, 2822400);
+}
+
+// The DSD bytes (MSB first) the DoP frames of a stereo Int32 stream carry, frame by frame; marker_ok: they alternate
+// from the first to the last (before the PCM silence the stream ends on)
+struct DopPayload {
+    std::vector<uint8_t> l, r;
+    size_t frames = 0;   // DoP frames
+    bool markers_alternate = true;
+};
+DopPayload dop_payload(const std::vector<uint8_t>& b) {
+    DopPayload p;
+    int last = -1;
+    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
+        const uint8_t mk = b[i + 3];
+        if (mk != 0x05 && mk != 0xFA) {
+            if (last >= 0) break;   // the end
+            continue;
+        }
+        if (mk == last) p.markers_alternate = false;
+        last = mk;
+        p.l.push_back(b[i + 2]), p.l.push_back(b[i + 1]);
+        p.r.push_back(b[i + 6]), p.r.push_back(b[i + 5]);
+        ++p.frames;
+    }
+    return p;
+}
+
+// Channel 0 of a DSD stream (bytes MSB first, both channels) as PCM at 176.4 kHz: Daphne's DSD -> PCM converter
+std::vector<double> dsd_to_pcm(const std::vector<uint8_t>& l, const std::vector<uint8_t>& r, const std::string& name) {
+    const auto path = write_dsf_bytes(name, l, r, 2822400);
+    auto d = daphne::make_dsd_pcm_decoder(0, 24);
+    std::string e;
+    REQUIRE(d->open(path, &e));
+    std::vector<double> buf(8192 * 2), y;
+    for (int n; (n = d->read(buf.data(), 8192)) > 0;)
+        for (int i = 0; i < n; ++i) y.push_back(buf[2 * static_cast<size_t>(i)]);
+    d.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return y;
+}
+
+// The 10 ms windows' cross-correlation peaks of y against x (first differences), over [from, to) of x, lags +-span
+std::map<int, int> window_lags(const std::vector<double>& x, const std::vector<double>& y, size_t from, size_t to, int win, int span) {
+    std::map<int, int> lags;
+    for (size_t at = std::max<size_t>(from, static_cast<size_t>(span) + 1); at + win + span + 1 < std::min({to, x.size(), y.size()}); at += win) {
+        double best = -1e300;
+        int lag = 0;
+        for (int l = -span; l <= span; ++l) {
+            double c = 0.0;
+            for (int i = 0; i < win; ++i) {
+                const size_t a = at + static_cast<size_t>(i), bb = static_cast<size_t>(static_cast<int64_t>(a) - l);
+                c += (y[a] - y[a - 1]) * (x[bb] - x[bb - 1]);
+            }
+            if (c > best) best = c, lag = l;
+        }
+        ++lags[lag];
+    }
+    return lags;
+}
+
+// The checks of a seamless switch on and back off (DoP): one device open, no break in the DoP marker sequence, no
+// silence, the direct stretches the file's own bytes at one alignment (so nothing lost or repeated anywhere), and the
+// remodulated stretch where the file is (decoded to PCM: the cross-correlation peak at lag 0 in every 10 ms window).
+void check_seamless(Rig& r, const std::vector<uint8_t>& fl, const std::vector<uint8_t>& fr, const std::string& tag) {
+    REQUIRE(r.dev->opens.size() == 1);
+    const auto p = dop_payload(r.dev->take());
+    CHECK(p.markers_alternate);
+    // where the file starts in the stream (after the lead-in silence)
+    size_t off = SIZE_MAX;
+    for (size_t i = 0; i + 64 <= p.l.size() && off == SIZE_MAX; i += 2)
+        if (std::equal(fl.begin(), fl.begin() + 64, p.l.begin() + static_cast<std::ptrdiff_t>(i))) off = i;
+    REQUIRE(off != SIZE_MAX);
+    // the file's bytes at that one alignment: from the start up to the switch on, and from the switch off to the end
+    const size_t n = std::min(fl.size(), p.l.size() - off);
+    size_t head = 0, tail = 0;
+    while (head < n && p.l[off + head] == fl[head] && p.r[off + head] == fr[head]) ++head;
+    while (tail < n && p.l[off + n - 1 - tail] == fl[n - 1 - tail] && p.r[off + n - 1 - tail] == fr[n - 1 - tail]) ++tail;
+    UNSCOPED_INFO(tag << ": sent directly up to byte " << head << ", remodulated to byte " << n - tail << ", directly again to "
+                      << n << " (the file has " << fl.size() << ")");
+    CHECK(n == fl.size());                      // the whole file came out, no more and no less
+    CHECK(head > 2822400 / 8 / 4);              // a direct stretch before
+    CHECK(tail > 2822400 / 8 / 4);              // and after: at the same alignment, so no byte lost or repeated between
+    CHECK(head + tail < n - 2822400 / 8 / 10);  // with a remodulated stretch between them
+    // no silence anywhere in the music (a run of DSD idle bytes)
+    size_t run = 0, longest = 0;
+    for (size_t i = off; i < off + n; ++i) {
+        run = p.l[i] == 0x69 && p.r[i] == 0x69 ? run + 1 : 0;
+        longest = std::max(longest, run);
+    }
+    CHECK(longest < 8);
+    // the content: the stream and the file as PCM, lined up by the same alignment
+    const auto got = dsd_to_pcm(std::vector<uint8_t>(p.l.begin() + static_cast<std::ptrdiff_t>(off), p.l.begin() + static_cast<std::ptrdiff_t>(off + n)),
+                                std::vector<uint8_t>(p.r.begin() + static_cast<std::ptrdiff_t>(off), p.r.begin() + static_cast<std::ptrdiff_t>(off + n)),
+                                "daphne_6b_got_" + tag + ".dsf");
+    const auto ref = dsd_to_pcm(fl, fr, "daphne_6b_ref_" + tag + ".dsf");
+    const size_t from = head / 2 > 4410 ? head / 2 - 4410 : 0, to = std::min(got.size(), (n - tail) / 2 + 4410);   // the remodulated stretch, 25 ms either side
+    const auto lags = window_lags(ref, got, from, to, 1764, 40);
+    std::string seen;
+    for (const auto& [l, k] : lags) seen += std::to_string(l) + " (" + std::to_string(k) + " windows) ";
+    WARN(tag << ": cross-correlation peak, by 10 ms window across the remodulated stretch and both switches: " << seen
+             << "| direct up to byte " << head << ", from byte " << n - tail);
+    CHECK(lags.size() == 1);
+    CHECK(lags.begin()->first == 0);
+}
+
+}  // namespace
+
+// Tube Color switched on and off while a DSD file plays (doc/N28, M1 6b): on the open device, the remodulation prepared
+// while the file plays on directly takes over at a DSD byte, and the file's own bytes take over again at the byte the
+// modulator would have made next.
+TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening the device", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    std::vector<uint8_t> fl, fr;
+    const auto path = write_music_dsf("daphne_color_6b.dsf", 4.0, &fl, &fr);   // (room after the switch off on a busy machine)
+    Settings off;
+    off.output.dsd_lead_in_ms = 20;
+    // the switch's alignment is measured at drive 1 % (the response all but flat, doc/N28): a higher drive adds the
+    // amplifier's own phase (its output transformer's low-pass: some 1.5 samples of group delay in the test response)
+    Settings on = off;
+    on.color.enabled = true;
+    on.color.drive = 0.01;
+    SECTION("DoP: aligned to the byte") {
+        Rig r;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.5);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        sleep_s(0.6);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        check_seamless(r, fl, fr, "dop");   // (one device open among its checks)
+        r.player.reset();
+    }
+    SECTION("the preparation late: the switch moves on, the file plays on") {
+        daphne::playback::g_remod_prep_delay_ms = 700;   // more than the 0.4 s lead
+        Rig r;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.3);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        daphne::playback::g_remod_prep_delay_ms = 0;
+        CHECK(r.saw("not ready at its point; it takes over later"));
+        sleep_s(0.5);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        check_seamless(r, fl, fr, "late");
+        r.player.reset();
+    }
+    SECTION("native DSD: the device opened once") {
+        Rig r;
+        r.caps.native_dsd = true;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.5);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        sleep_s(0.5);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        CHECK(r.dev->opens.size() == 1);
+        CHECK(r.dev->opens.front().dsd);
+        r.player.reset();
+    }
+    daphne::playback::g_remod_prep_delay_ms = 0;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// The DSD -> PCM converter is a causal filter: its output frame f once stood for the file's content 119 frames earlier
+// (DSD64, 0.68 ms), so a converted file's last 0.68 ms never came out and a gapless join lost it (doc/N28). It now
+// takes the whole frames of its delay out: frame f is the file's frame f, a fraction of a frame left (reported).
+TEST_CASE("DSD to PCM: frame f is the file's frame f, and the end comes out", "[dsd]") {
+    const int64_t bytes = 40000;
+    std::vector<uint8_t> l(static_cast<size_t>(bytes));
+    for (int64_t k = 0; k < bytes; ++k) l[static_cast<size_t>(k)] = k < 20000 || k >= bytes - 100 ? 0x00 : 0xFF;   // -, +, - (last 50 frames)
+    const auto path = write_dsf_bytes("daphne_dsd_pcm_align.dsf", l, l, 2822400);
+    auto d = daphne::make_dsd_pcm_decoder(0, 24);
+    std::string e;
+    REQUIRE(d->open(path, &e));
+    CHECK(d->content_delay_frames() >= 0.0);
+    CHECK(d->content_delay_frames() < 1.0);
+    std::vector<double> buf(static_cast<size_t>(bytes)), y;
+    for (int n; (n = d->read(buf.data(), 4096)) > 0;)
+        for (int i = 0; i < n; ++i) y.push_back(buf[2 * static_cast<size_t>(i)]);
+    CHECK(static_cast<int64_t>(y.size()) == d->info().frames);   // as long as the file
+    // the step up at byte 20000 = frame 10000: its zero crossing there
+    double up = -1;
+    for (size_t i = 5000; i < y.size(); ++i)
+        if (y[i - 1] < 0.0 && y[i] >= 0.0) {
+            up = static_cast<double>(i - 1) + y[i - 1] / (y[i - 1] - y[i]);
+            break;
+        }
+    UNSCOPED_INFO("the step up comes out at frame " << up << " (frame 10000 in the file); left over " << d->content_delay_frames());
+    CHECK(std::abs(up - 10000.0) < 1.0);
+    // the step down in the last 50 frames is there (it used to be cut with the filter's delay)
+    CHECK(y[y.size() - 20] < -1.0);
+    d.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// A converted DSD track followed gaplessly by a PCM track: the DSD track's last frames are heard before the next one.
+TEST_CASE("Player: a converted DSD track's end comes out before a gapless next track", "[player][dsd]") {
+    const int64_t bytes = 2822400 / 8 * 3 / 2;   // 1.5 s: the next track's chain is built ahead meanwhile
+    std::vector<uint8_t> l(static_cast<size_t>(bytes));
+    for (int64_t k = 0; k < bytes; ++k) l[static_cast<size_t>(k)] = k < bytes - 100 ? 0xFF : 0x00;   // +, then - (last 50 frames)
+    const auto path = write_dsf_bytes("daphne_dsd_gapless_end.dsf", l, l, 2822400);
+    Rig r;
+    use_float_device(*r.dev);
+    r.dev->speed = 1.0;   // (the next track is set while this one plays)
+    r.sources["next"] = sine(176400, 1000.0, 0.3, 0.0);   // silence at the converted rate
+    Settings s;
+    s.output.dsd = daphne::DsdMode::Pcm;
+    s.output.dsd_pcm_limiter = false;
+    s.output.rate = "176400";
+    REQUIRE(r.start(platform::path_to_utf8(path), s));
+    r.player->set_next("next");
+    r.finish();
+    CHECK(r.ended);
+    CHECK(r.saw("gapless"));
+    const auto b = r.dev->take();
+    std::vector<float> y(b.size() / 4);
+    std::memcpy(y.data(), b.data(), y.size() * 4);
+    // the last frame of the positive stretch, then the negative end, then the next track's silence
+    size_t last_pos = 0;
+    for (size_t i = 0; i < y.size(); i += 2)
+        if (y[i] > 1.0f) last_pos = i / 2;
+    size_t neg = 0;
+    for (size_t i = last_pos + 1; i < y.size() / 2 && i < last_pos + 200; ++i) neg += y[2 * i] < -1.0f;
+    UNSCOPED_INFO("frames below -1 after the positive stretch: " << neg);
+    CHECK(neg >= 30);
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// Daphne's own DSD -> PCM -> DSD path (Tube Color off: the dsd core, the DSD file converted, output.dsd = pcm) and the
+// remodulation Tube Color uses are the same chain: the converter's DSD limiter included in both (doc/N28: Tube Color
+// leaves the limiters as they are).
+TEST_CASE("Player: the remodulation is Daphne's own DSD -> PCM -> DSD path, limiters included", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_paths.dsf", 2822400 / 8 / 2);   // 0.5 s
+    auto play = [&](const Settings& s) {
+        Rig r;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK(r.dev->opens.front().rate == 176400);   // DoP, DSD64
+        r.player.reset();
+        return rep.chain;
+    };
+    Settings own;   // Tube Color off: the file converted and modulated again by the dsd core
+    own.core = daphne::CoreMode::Dsd;
+    own.modulator.osr = 64;
+    own.output.dsd = daphne::DsdMode::Pcm;
+    own.output.dsd_lead_in_ms = 20;
+    Settings remod;   // Tube Color on: remodulated at the file's multiple
+    remod.output.dsd_lead_in_ms = 20;
+    remod.color.enabled = true;
+    const auto a = play(own), b = play(remod);
+    INFO(nlohmann::json(a).dump() << " / " << nlohmann::json(b).dump());
+    CHECK(std::find(a.begin(), a.end(), std::string("dsd limiter")) != a.end());
+    CHECK(std::find(a.begin(), a.end(), std::string("modulator limiter")) != a.end());
+    auto without = b;
+    without.erase(std::remove(without.begin(), without.end(), std::string("tube color")), without.end());
+    CHECK(without == a);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// A 48 kHz-family DSD file: the modulator runs at 44.1 kHz x osr, so its remodulation changes the rate: the device is
+// reopened as before (doc/N28, a known limitation).
+TEST_CASE("Player: Tube Color on a 48 kHz-family DSD file reopens the device", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_48k.dsf", 3072000 / 8, 3072000);
+    Rig r;
+    r.dev->speed = 1.0;
+    Settings off;
+    off.output.dsd_lead_in_ms = 20;
+    Settings on = off;
+    on.color.enabled = true;
+    REQUIRE(r.start(platform::path_to_utf8(path), off));
+    sleep_s(0.3);
+    r.player->apply(on, OutputChoice{});
+    REQUIRE(wait_for([&] { return starts(r) >= 2; }));
+    r.finish();
+    CHECK(r.ended);
+    CHECK(r.dev->opens.size() == 2);
+    CHECK_FALSE(r.saw("taken over at DSD byte"));
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_switch_fast.dsf", 2822400 / 8 * 2);   // 2 s
+    auto spin = [](double s) {   // (a sleep can overshoot by tens of ms on a busy machine)
+        const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
+        while (std::chrono::steady_clock::now() < until) {
+        }
+    };
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        Rig r;
+        r.caps.native_dsd = native;
+        r.dev->speed = 1.0;
+        Settings off;
+        off.output.dsd_lead_in_ms = 20;
+        Settings on = off;
+        on.color.enabled = true;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.2);
+        const auto t0 = std::chrono::steady_clock::now();
+        r.player->apply(on, OutputChoice{});
+        spin(0.03);
+        r.player->apply(off, OutputChoice{});
+        spin(0.03);
+        r.player->apply(on, OutputChoice{});
+        const auto took = std::chrono::steady_clock::now() - t0;
+        const double took_ms = std::chrono::duration<double>(took).count() * 1000.0;
+        UNSCOPED_INFO("three switches in " << took_ms << " ms");
+        CHECK(took < std::chrono::milliseconds(100));
+        // the last setting (on) takes over, once, on the open device; nothing hangs
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        r.finish(10.0);
+        CHECK(r.ended);
+        CHECK(r.dev->opens.size() == 1);
+        CHECK(count_events(r, "taken over at DSD byte") == 1);
+        r.player.reset();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST_CASE("Crossfader: a warm-up in rounds starts the same crossfade as one warm-up", "[player][crossfade]") {

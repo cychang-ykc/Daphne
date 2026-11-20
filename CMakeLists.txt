@@ -24,6 +24,14 @@ if(MSVC)
 endif()
 
 option(DAPHNE_BUILD_TESTS "Build unit tests" ON)
+# Tube Color (doc/N28): the stage and its settings. Off with color.enabled false (the default), the chain is the same
+# as without it. DAPHNE_COLOR_TEST_CURVE: the M1 stage with its polynomial test curve, for test builds only and never
+# for a release: without it (every release build) Tube Color is unavailable until M2 brings the real curves.
+option(DAPHNE_COLOR "Build Tube Color (N28)" ON)
+option(DAPHNE_COLOR_TEST_CURVE "Tube Color with the M1 test curve: test builds only, never a release (N28)" OFF)
+if(DAPHNE_COLOR_TEST_CURVE AND NOT DAPHNE_COLOR)
+    message(FATAL_ERROR "DAPHNE_COLOR_TEST_CURVE needs DAPHNE_COLOR")
+endif()
 option(DAPHNE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (CI)" OFF)
 # Sanitizers for every target (Clang / GCC; CI): e.g. "address,undefined" or "thread". A finding stops the
 # program (no recovery), so a test run fails on it.
@@ -60,6 +68,9 @@ target_include_directories(daphne_vendor SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE
 
 add_subdirectory(platform)
 add_subdirectory(dsp)
+if(DAPHNE_COLOR)
+    add_subdirectory(color)
+endif()
 add_subdirectory(core)
 add_subdirectory(cli)
 add_subdirectory(capi)

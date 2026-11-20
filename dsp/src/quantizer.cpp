@@ -47,8 +47,17 @@ void Quantizer::reset() {
 
 double Quantizer::uniform() { return static_cast<double>(xoshiro_next(s_) >> 11) * 1.1102230246251565e-16; }   // [0, 1)
 
+void Quantizer::set_pass_through(bool on) {
+    if (pass_ && !on) seed_state(s_, seed_);   // the dither starts afresh
+    pass_ = on;
+}
+
 int Quantizer::process(const double* in, int frames, double* out) {
     const size_t n = static_cast<size_t>(frames) * std::max(1, in_.channels);
+    if (pass_) {
+        if (in != out) std::copy(in, in + n, out);
+        return frames;
+    }
     const double scale = std::ldexp(1.0, bits_ - 1), lsb = 1.0 / scale;
     const double top = (scale - 1.0) * lsb;
     for (size_t i = 0; i < n; ++i) {

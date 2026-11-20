@@ -9,6 +9,7 @@ add_library(daphne_engine STATIC
     src/player/core.cpp
     src/player/crossfader.cpp
     src/player/dsd_stream.cpp
+    src/player/dsd_switch.cpp
     src/player/gapless.cpp
     src/player/output_session.cpp
     src/player/pcm_stream.cpp
@@ -31,6 +32,10 @@ add_library(daphne_engine STATIC
 )
 target_include_directories(daphne_engine PUBLIC include)
 target_link_libraries(daphne_engine PUBLIC daphne_dsp daphne_platform daphne_vendor)
+if(DAPHNE_COLOR)
+    target_link_libraries(daphne_engine PUBLIC daphne_color)
+    target_compile_definitions(daphne_engine PUBLIC DAPHNE_COLOR=1)
+endif()
 # the device outputs (N24, N25): WASAPI and ASIO on Windows, Core Audio on macOS; none yet on Linux
 if(WIN32)
     target_sources(daphne_engine PRIVATE

@@ -1,4 +1,5 @@
 build/
+build-tc/
 *.user
 .vs/
 third_party/ffmpeg/

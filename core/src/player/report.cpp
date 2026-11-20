@@ -1,5 +1,7 @@
 #include "report.h"
 
+#include <algorithm>
+
 #include "common.h"
 #include "daphne/engine/chain.h"
 #include "daphne/engine/dsd_output.h"
@@ -20,7 +22,10 @@ void Report::bit_perfect(const DspChain* c) {
     rep.not_bit_perfect_reason.clear();
     if (src.dsd_pcm) rep.not_bit_perfect_reason = "DSD converted to PCM";
     else if (!src.lossless_int) rep.not_bit_perfect_reason = "source is not integer PCM";
-    else if (!c->transparent()) rep.not_bit_perfect_reason = "DSP active";
+    else if (!c->transparent()) {
+        const auto st = c->stages();
+        rep.not_bit_perfect_reason = std::find(st.begin(), st.end(), std::string("tube color")) != st.end() ? "DSP active (Tube Color)" : "DSP active";
+    }
     else if (rep.system_rate > 0) rep.not_bit_perfect_reason = "the system resamples to the device's " + std::to_string(rep.system_rate) + " Hz";
     else if (shared_mix) rep.not_bit_perfect_reason = "shared mode (system mixer)";
     else if (effective_bits(rep.device) < src.bits)
@@ -48,6 +53,9 @@ std::string Report::filter(const Settings& s, const DsdEncoder* enc) const {
         d += ", " + std::to_string(rep.source.rate) + " -> " + std::to_string(rep.device.rate) + " Hz";
     else if (enc)
         d += " | " + enc->describe();
+    // Tube Color (doc/N28): said when it is set but does nothing, so it is not taken for working
+    if (s.color.enabled && !color_active(s)) d += " | Tube Color unavailable (before M2)";
+    else if (color_active(s) && s.color.drive <= 0.0) d += " | Tube Color idle (drive 0)";
     return pre + d;
 }
 

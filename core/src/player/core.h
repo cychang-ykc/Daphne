@@ -32,6 +32,7 @@
 #include "change_plan.h"
 #include "common.h"
 #include "crossfader.h"
+#include "dsd_switch.h"
 #include "join.h"
 #include "output_session.h"
 #include "report.h"
@@ -82,7 +83,9 @@ struct Player::Impl {
     std::atomic<bool> cancel{false}, done{false};
     std::atomic<int64_t> pos{0};
     bool ok = false;
-    Stream* stream = nullptr;          // what is playing (play)
+    Stream* stream = nullptr;          // what is playing (play); switches between the two below (Tube Color, doc/N28)
+    Stream* pcm_stream = nullptr;      // run_playback's two streams
+    Stream* dsd_stream = nullptr;
     std::string err;
 
     // playback (processing thread only)
@@ -105,6 +108,29 @@ struct Player::Impl {
     std::unique_ptr<DsdFile> dsdf;     // DSD file played directly (no chain)
     std::vector<uint8_t> dsd_in;
     int dsd_pcm_rate = 0;              // DSD -> PCM fallback at this rate (0 = 176.4 / 192 kHz)
+    bool dsd_chain_for_color = false;  // a DSD file goes through the chain only because Tube Color is active
+    bool bias_noted = false;           // the bias falling back to standard (outside the preset's range) is in the log
+    // Tube Color's bias current outside the preset's range (doc/N28): said once in the log each time it starts to apply
+    void note_bias() {
+        const bool falls = color_active(s) && color_bias_falls_back(s.color);
+        if (falls && !bias_noted) {
+            const auto r = color_bias_range(s.color.preset);
+            event("Tube Color: the bias set (" + std::to_string(static_cast<int>(std::lround(s.color.bias_ma.value_or(0.0)))) +
+                  " mA) is outside this preset's range (" + std::to_string(static_cast<int>(r.lo_ma)) + " .. " +
+                  std::to_string(static_cast<int>(r.hi_ma)) + " mA, or hot where it has none): the standard bias applies");
+        }
+        bias_noted = falls;
+    }
+    // Tube Color switching a DSD file between sent directly and remodulated on the open device (doc/N28, dsd_switch.h)
+    static constexpr double kSwitchLead = 0.4;                // s of DSD past the write position the switch is put at
+    std::future<std::unique_ptr<RemodPrep>> remod_job;        // the remodulation being prepared
+    std::shared_ptr<std::atomic<bool>> remod_cancel;
+    std::unique_ptr<RemodPrep> remod_ready;                   // prepared, for its file byte p
+    int64_t switch_at = -1;                                   // the file byte the direct stream stops at for it
+    std::optional<std::pair<Settings, OutputChoice>> switch_on, switch_off;   // the settings each switch goes to
+    int64_t mod0 = 0;                                         // the modulator's input sample 0: its content (chain frames)
+    int mod_q = 0;                                            // chain frames per DSD byte; 0: no direct stream can follow on
+    std::filesystem::path mod_path;                           // the file the modulator's stream is of
     int dop_locked = 0;                // the PCM rate the device locked instead of the DoP rate (0: none)
     double start_sec = 0.0;            // Player::start position
     // transport requests (under m) and state
@@ -115,6 +141,10 @@ struct Player::Impl {
     bool was_paused = false;           // the last pause request seen (service_transport: a live source resumed)
     std::atomic<double> meter_l{0.0}, meter_r{0.0};
     bool end_queued = false;           // the stream end (DSD silence) is queued
+    // What the position does not count (heard_out / heard_input): the silence queued after the last music (queue_end;
+    // device frames), and the start of the device session (the DSD silence queued before the music plays there)
+    int64_t end_pad = 0;
+    int64_t session_in = 0;            // stream input frame the device session started at
     std::atomic<bool> device_fail{false};
     std::atomic<bool> internal_fail{false};   // start() failed by an exception (abort_run)
     int run_osr = 0;                   // dsd core: the DSD multiple the device runs
@@ -154,7 +184,9 @@ struct Player::Impl {
     // a faded frame on an integer device: TPDF re-quantization (FadeQuantizer)
     void requantize(double* frame) { fq.requantize(frame, rep.device, dch, dsdenc != nullptr); }
     // Stream input frame being heard (Timeline::heard_input).
-    int64_t heard_input() const { return tl.heard_input(heard_out(), dsdf ? 0 : cur ? cur->content_delay() : 0, ratio); }
+    int64_t heard_input() const {
+        return std::max(session_in, tl.heard_input(heard_out(), dsdf ? 0 : cur ? cur->content_delay() : 0, ratio));
+    }
     // (the chain's tail at the end of the stream runs past the last frame: held there)
     int64_t heard_position() const {
         const int64_t p = std::max<int64_t>(0, heard_input() - tl.track_origin_in);
@@ -174,7 +206,7 @@ struct Player::Impl {
     void abort_run(const std::string& what);
     // The playback loop until the end, a stop or a fatal error, then finish_playback.
     void play(Stream& st);
-    void loop(Stream& st);
+    void loop();
     class PcmStream;
     class DsdDirectStream;
     // One pass of the transport requests (processing thread). False: the playback cannot go on (err says why).
@@ -223,6 +255,26 @@ struct Player::Impl {
     // DSD files: straight to the device, every processing stage bypassed.
     // ASIO with output.dsd none / native: native DSD; otherwise DoP at the DSD rate / 16.
     bool open_dsd(int64_t from, std::string* error);
+    void set_dsd_source();             // rep.source from the DSD file (dsdf)
+    // Tube Color does not change the output format (doc/N28): while it is active, a DSD file that would go out as DSD
+    // is remodulated at its own DSD multiple (the dsd core, with its modulator and limiter settings). The settings
+    // that does it, or nullopt (not a DSD file, Tube Color off, an output that takes no DSD: converted to PCM).
+    std::optional<Settings> remodulation(const Settings& ns, const OutputChoice& no) const;
+    Settings effective(const Settings& ns, const OutputChoice& no) const { return remodulation(ns, no).value_or(ns); }
+    bool remodulating() const { return !dsdf && remodulation(s, out).has_value(); }
+    // Tube Color switched on / off while a DSD file plays (doc/N28): the file goes on at the heard position, as PCM
+    // through the chain or sent directly again
+    bool dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no);
+    bool back_to_dsd_direct(const Settings& ns) const;
+    bool pcm_to_dsd_direct(int64_t from);
+    // the switch without reopening the device (6b)
+    bool seamless_on_ok(const Settings& ns, const OutputChoice& no) const;
+    bool seamless_off_ok(const Settings& ns, const OutputChoice& no) const;
+    void begin_remod_switch(const Settings& ns, const OutputChoice& no);
+    void cancel_remod_switch();
+    bool poll_remod_switch();
+    bool take_over_remod();
+    bool take_over_direct();
     bool produce_dsd();
     // DSD direct: only the output can change (no processing applies to DSD sent directly).
     // reset: a driver reset reopens the device as it is (nothing more is queued for it).

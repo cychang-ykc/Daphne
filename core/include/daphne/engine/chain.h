@@ -30,6 +30,10 @@ class Peq;
 class Quantizer;
 }  // namespace daphne::dsp
 
+namespace daphne::color {
+class TubeColorStage;
+}  // namespace daphne::color
+
 namespace daphne {
 
 class DspChain {
@@ -59,6 +63,10 @@ public:
     bool transparent() const;
     // Names of the stages that change the signal, in order, for reports.
     std::vector<std::string> stages() const;
+    // Tube Color's stage is idle (drive 0, the crossfade back to its delay path done), or there is none.
+    bool color_idle() const;
+    // Names of every stage, in order, including those that currently pass samples through (tests, diagnostics).
+    std::vector<std::string> all_stages() const;
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).
     // Its output is already inside the device range, so convert_to_device() never sees these.
     int64_t take_clips();
@@ -91,6 +99,8 @@ private:
     int run_from(size_t first, const double* in, int frames, double* out);
     bool needs_quantizer(const Settings& s) const { return needs_quantizer(s, src_, dev_, pre_transparent_); }
     static bool needs_quantizer(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
+    static bool quantizer_present(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
+    static double color_volume(const Settings& s);   // the digital volume Tube Color cancels (linear)
 
     std::vector<Stage> st_;
     std::vector<double> a_, b_, flush_;
@@ -100,11 +110,20 @@ private:
     DeviceFormat dev_{};
     std::string key_;
     bool quantized_ = false;
+    bool quant_follows_color_ = false;   // kept only for Tube Color: passes while the stage is idle (doc/N28)
+    // Tube Color's volume cancellation (doc/N28): the input frames so far, the stage's frames per input frame, the
+    // frames (the stage's) between the gain stage's output and the stage's input, the volume it was last given
+    int64_t in_frames_ = 0;
+    int color_ratio_ = 1, color_lead_ = 0, gain_ramp_ = 1;
+    double color_volume_ = 1.0;
     bool pre_transparent_ = true;   // the stages other than gain / crossfeed / EQ
     dsp::Gain* gain_ = nullptr;
     dsp::Crossfeed* xf_ = nullptr;
     dsp::Peq* peq_ = nullptr;
     dsp::Quantizer* quant_ = nullptr;
+#if defined(DAPHNE_COLOR)
+    color::TubeColorStage* color_ = nullptr;   // Tube Color (doc/N28), when in the chain
+#endif
     int64_t clips_taken_ = 0;
 };
 

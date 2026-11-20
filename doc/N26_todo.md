@@ -105,6 +105,7 @@ M0–M4 照規格書的 milestone 進行（分支 `tube-color-m0` 起）。之�
 
 ## 已知問題（暫不處理）
 
+- [ ] **DSD→PCM→DSD 路徑會限制 SACD 超過 50% 調變的峰值**（Tube Color 以外的獨立項目；2026-11-21 由 Tube Color 的重新調變查到，N28）。現況：DSD 檔在 dsd core 上轉 PCM 再調變時（`output.dsd: pcm` 加 dsd core，或裝置不接受檔案的 DSD；Tube Color 的重新調變也走這一條），鏈是「modulator pre-filter → modulator limiter → dsd limiter」，其中 DSD 轉 PCM 用的 dsd limiter 上限是 0 dBFS（= 50% 調變，SACD 的參考準位），PCM 檔走 DSD 升頻時沒有它。影響：SACD 偶爾超過參考準位的峰值（最高約 +3 dB，71% 調變）被壓縮，而 DSD 輸出本身其實裝得下（調變器限制器的上限是穩定輸入的 0.85 倍）。若要在 dsd core 上拿掉 dsd limiter，要先做調變器的穩定度測試：71% 調變（參考準位 +3 dB）的正弦波與接近這個峰值的實際 SACD 片段，調變器 5 階與 8 階，DSD64／128／256，確認沒有不穩定（迴路重置）、modulator limiter 不會過度作用，並回報它的上限值。這次不處理。
 - **Vorbis 的搜尋偶爾不精確**：Linux 上 20 秒的 Vorbis 檔隨機 seek 300 次後讀 4096 frames，與整檔解碼比對有 3 次不同（main 與預讀相同，其他格式 0 次）。原因未查（FFmpeg 解碼器提前 4096 frames 起解，見 N2）。
 - **處理執行緒的 sleep 輪詢**（環滿時 2 ms、排空時 5 ms、等待裝置的迴圈）：之後改成事件等待。
 - **helper 在 Mac 上實機確認**：✅ 2026-10-22，`e7db5e6`，Intel Mac（macOS 11.7）、Core Audio 獨佔、Audiobyte BLACK DRAGON（USB），以模擬 MIKU 的腳本驅動 helper（同 N4「helper 程序」的情境：1M taps 第一次設計中排第二首，再按停止，PCM 176.4 kHz）。連跑 4 次：排隊的那首 0 ms、設計中的那首 2 – 76 ms 回 `DC_ERR_CANCELLED`，停止 0.82 – 0.89 s，之後再載入正常播放；合併 #45 前的 helper（`adaa2b6`）在同一台 Mac（BlackHole）上停止要約 160 s，回覆時狀態已是 playing。DAC 在設計前就被 hog（要先設好取樣率才知道濾波器怎麼設計），但 `start()` 之前 IO 回呼只送靜音，取消後不會開始播；停止的 0.8 s 是把取樣率改回原本的 352.8 kHz 並等 DAC 確認（與一般停止相同）。沒有在 Mac 的 MIKU 介面裡操作（使用者決定不需要）。
