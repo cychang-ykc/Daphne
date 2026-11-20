@@ -25,7 +25,7 @@ add_executable(daphne_tests
 )
 target_link_libraries(daphne_tests PRIVATE daphne_engine daphne_core catch2_main)
 if(DAPHNE_COLOR)
-    target_sources(daphne_tests PRIVATE test_color.cpp)   # Tube Color (doc/N28)
+    target_sources(daphne_tests PRIVATE test_color.cpp test_color_stage.cpp)   # Tube Color (doc/N28)
 endif()
 # the Core Audio output on a real Mac (hidden tests: daphne_tests "[.coreaudio]")
 if(APPLE)

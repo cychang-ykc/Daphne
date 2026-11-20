@@ -127,7 +127,7 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
 #if defined(DAPHNE_COLOR)
     // Tube Color (doc/N28), an effect: after the upsampler, before the limiters and the final quantizer; only while
     // active (enabled, and a build that can run it), so with it off the chain is the one without it
-    if (color_active(s)) add("tube color", std::make_unique<color::TubeColorStage>(), frames, rate, ch);
+    if (color_active(s)) add("tube color", std::make_unique<color::TubeColorStage>(color::StageParams{.drive = s.color.drive}), frames, rate, ch);
 #endif
     if (s.core == CoreMode::Dsd) add("modulator limiter", modulator_limiter(s.modulator), frames, rate, ch);
 
