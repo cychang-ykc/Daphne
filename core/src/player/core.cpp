@@ -22,11 +22,6 @@ public:
             p_.queued.reset();
             return p_.handle(q.first, q.second);
         }
-        if (p_.held && std::chrono::steady_clock::now() >= p_.held_until) {   // the drive crossed 0 and stayed there
-            auto h = *p_.held;
-            p_.held.reset();
-            return p_.handle(h.first, h.second, true);
-        }
         return true;
     }
     bool produce() override { return p_.produce(); }
@@ -172,7 +167,6 @@ bool Player::Impl::do_seek(double sec) {
         auto warmed = take_warm();
         if (xf.fading || warmed) {   // a crossfade was running or warming up: the new chain takes over
             cur = warmed ? std::move(warmed) : std::move(xf.next);
-            arm_rise(cur.get());
             xf.fading = false;
             rep.chain = cur->stages();
             rep.filter = report.filter(s, dsdenc.get());

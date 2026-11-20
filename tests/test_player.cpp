@@ -27,7 +27,9 @@
 #include "daphne/color/test_curve.h"
 #endif
 #include "daphne/dsp/modulator.h"
+#include "daphne/dsp/resampler.h"
 #include "daphne/engine/file_bytes.h"
+#include "daphne/engine/filters.h"
 #include "daphne/engine/live_source.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/settings.h"
@@ -1361,45 +1363,33 @@ TEST_CASE("Player: Tube Color on the dsd core only rebuilds the chain", "[player
 
 // The drive crossing 0 takes the stage in or out of the signal (a rebuild and crossfade, doc/N28): it waits 300 ms for
 // the slider to settle. Other drive changes glide in place.
-TEST_CASE("Player: Tube Color's drive crossing 0 rebuilds once it settles", "[player][color]") {
+// The drive crossing 0 is taken in place by the stage (doc/N28): no rebuild, the chain and the device as they are.
+TEST_CASE("Player: Tube Color's drive crossing 0 is taken in place", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     Rig r;
     r.dev->speed = 1.0;
-    r.sources["sine"] = sine(44100, 1000.0, 4.0);
+    r.sources["sine"] = sine(44100, 1000.0, 2.0);
     Settings s;
     s.color.enabled = true;
     s.color.drive = 0.5;
-    Settings z = s, back = s, more = s;
+    Settings z = s, more = s;
     z.color.drive = 0.0;
-    back.color.drive = 0.6;
     more.color.drive = 1.4;
     REQUIRE(r.start("sine", s));
     sleep_s(0.3);
-    const auto builds = [&] { return count_events(r, "in the background"); };
-    r.player->apply(more, OutputChoice{});   // in place: no rebuild
-    sleep_s(0.2);
-    CHECK(r.saw("applied in place"));
-    // across 0 and back within 100 ms: held, then dropped
+    r.player->apply(more, OutputChoice{});
+    sleep_s(0.1);
     r.player->apply(z, OutputChoice{});
     sleep_s(0.1);
-    r.player->apply(back, OutputChoice{});
-    sleep_s(0.6);
-    CHECK(r.saw("Tube Color drive crosses 0"));
-    CHECK(builds() == 0);
-    // across 0 and staying there: rebuilt, 300 ms after
-    const auto t0 = std::chrono::steady_clock::now();
+    r.player->apply(s, OutputChoice{});
+    sleep_s(0.1);
     r.player->apply(z, OutputChoice{});
-    REQUIRE(wait_for([&] { return builds() >= 1; }, 5.0));
-    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    UNSCOPED_INFO("rebuilt after " << waited << " s");
-    CHECK(waited >= 0.3);
-    CHECK(waited < 0.6);
-    REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }, 5.0));
     const auto rep = r.finish();
     CHECK(r.ended);
-    CHECK(builds() == 1);
-    CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) == rep.chain.end());   // passing through
+    CHECK(count_events(r, "applied in place") == 4);
+    CHECK(count_events(r, "in the background") == 0);
     CHECK(r.dev->opens.size() == 1);
+    CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) == rep.chain.end());   // idle at the end
     r.player.reset();
 }
 
@@ -1445,8 +1435,8 @@ std::vector<double> ch0_int32(const std::vector<uint8_t>& b) {
 }  // namespace
 
 // Tube Color's drive crossing 0 where the stage runs oversampled (44.1 kHz: 8x, 223 frames of content delay): the
-// chain with the stage and the one without it are crossfaded aligned by their content delays (Crossfader, N4), so the
-// output stays where the input is (the cross-correlation peak does not move) and the crossfades show no comb notch.
+// stage crossfades its delay path and its processing path aligned (doc/N28), so the output stays where the input is (the
+// cross-correlation peak does not move) and the switches show no comb notch.
 TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage is oversampled", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     const int rate = 44100;
@@ -1461,10 +1451,8 @@ TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage i
     REQUIRE(r.start("pink", s));
     sleep_s(0.6);
     r.player->apply(z, OutputChoice{});
-    REQUIRE(wait_for([&] { return count_events(r, "now playing with filter") >= 1; }, 5.0));
     sleep_s(0.4);
     r.player->apply(s, OutputChoice{});
-    REQUIRE(wait_for([&] { return count_events(r, "now playing with filter") >= 2; }, 5.0));
     const auto rep = r.finish();
     CHECK(r.ended);
     const auto y = ch0_int32(r.dev->take());
@@ -1528,42 +1516,77 @@ TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage i
     WARN("third-octave |Y / X|, 200 Hz .. 15 kHz, over every window: " << lowest << " .. " << highest << " dB");
     CHECK(lowest > -0.8);
     CHECK(highest < 0.5);
-    CHECK(count_events(r, "in the background") == 2);
+    CHECK(count_events(r, "in the background") == 0);   // in place
     CHECK(r.dev->opens.size() == 1);
     r.player.reset();
 }
 
 // Benchmarks (not run by default): Tube Color's reaction off drive 0 with a 1M-tap filter, and the oversampling's cost.
-// DAPHNE_FILTER_CACHE should point at a scratch directory (the first run designs the filter).
+// DAPHNE_BENCH_FILTER_CACHE=<dir>: the filter cache they use (the first run designs the filter).
+
+// The benchmarks run with a filter cache (the other tests turn it off): DAPHNE_BENCH_FILTER_CACHE=<dir>
+struct BenchCache {
+    BenchCache() {
+        const auto d = platform::get_env("DAPHNE_BENCH_FILTER_CACHE");
+        if (!d) SKIP("DAPHNE_BENCH_FILTER_CACHE=<dir> runs it");
+        const std::filesystem::path p = platform::path_from_utf8(*d);
+        test::set_env("DAPHNE_FILTER_CACHE", &p);
+    }
+    ~BenchCache() {
+        const std::filesystem::path off("off");
+        test::set_env("DAPHNE_FILTER_CACHE", &off);
+    }
+};
+
 TEST_CASE("Bench: a 1M-tap chain build and speed with Tube Color", "[.bench][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    BenchCache cache;
+    using clock = std::chrono::steady_clock;
+    auto secs = [](clock::time_point a) { return std::chrono::duration<double>(clock::now() - a).count(); };
     daphne::AudioInfo src;
     src.rate = 44100, src.channels = 2, src.bits = 0, src.lossless_int = false, src.codec = "test";
     daphne::DeviceFormat dev;
     dev.rate = 88200, dev.channels = 2, dev.type = daphne::SampleType::Int32, dev.container_bits = dev.valid_bits = 32;
-    for (double drive : {0.0, 0.5}) {
-        Settings s;
-        s.output.rate = "88200";
-        s.filter.taps = 1048576;
-        s.color.enabled = true;
-        s.color.drive = drive;
-        const auto t0 = std::chrono::steady_clock::now();
+    Settings base;
+    base.output.rate = "88200";
+    base.filter.taps = 1048576;
+    {   // the first time: designed and stored
+        const auto t0 = clock::now();
+        const auto h = daphne::design_filter(base.filter, 44100, 88200);
+        WARN("1M taps: first design_filter " << secs(t0) << " s (cached now: " << daphne::filter_cached(base.filter, 44100, 88200) << ")");
+    }
+    // the parts, from the cache
+    auto t0 = clock::now();
+    auto h = daphne::design_filter(base.filter, 44100, 88200);
+    const double load = secs(t0);
+    t0 = clock::now();
+    daphne::dsp::Resampler rs(std::move(h), 2, daphne::dsp::resampler_block_size(1048576LL * 2));
+    rs.prepare({44100, 2, 4096});
+    const double fft = secs(t0);
+    WARN("1M taps from the cache: coefficients loaded in " << load << " s, the resampler's FFT partitions set up in " << fft << " s");
+    for (int k = 0; k < 3; ++k) {
+        Settings s = base;
+        s.color.enabled = k > 0;
+        s.color.drive = k == 2 ? 0.5 : 0.0;
+        t0 = clock::now();
         daphne::DspChain c;
         std::string e;
         REQUIRE(c.build(s, src, dev, 4096, &e));
-        const double build = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const double build = secs(t0);
         std::vector<double> x(4096 * 2), y(static_cast<size_t>(c.max_output_frames()) * 2);
         for (size_t i = 0; i < x.size(); ++i) x[i] = 0.1 * std::sin(0.01 * static_cast<double>(i));
-        const auto t1 = std::chrono::steady_clock::now();
+        t0 = clock::now();
         const int blocks = 3 * 44100 / 4096;   // 3 s: what a warm-up runs through at most
         for (int b = 0; b < blocks; ++b) c.process(x.data(), 4096, y.data());
-        const double run = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
-        WARN("1M taps, drive " << drive << ": build " << build << " s, 3 s of input through it " << run << " s (" << 3.0 / run << " x real time)");
+        const double run = secs(t0);
+        WARN("1M taps, " << (k == 0 ? "Tube Color off" : k == 1 ? "Tube Color on, drive 0" : "Tube Color on, drive 0.5") << ": chain build " << build
+                         << " s, 3 s of input through it " << run << " s (" << 3.0 / run << " x real time)");
     }
 }
 
 TEST_CASE("Bench: Tube Color off drive 0 with 1M taps", "[.bench][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    BenchCache cache;
     Rig r;
     r.dev->speed = 1.0;
     r.sources["pink"] = pink_and_sine(44100, 30.0, 0.05, 0.05, 997.0);
@@ -1583,14 +1606,14 @@ TEST_CASE("Bench: Tube Color off drive 0 with 1M taps", "[.bench][color]") {
         REQUIRE(wait_for([&] { return r.saw(what); }, 60.0));
         return std::chrono::duration<double>(clock::now() - t0).count();
     };
-    const double t_build = at("in the background");
-    const double t_cross = at("now playing with filter");
+    const double t_applied = at("applied in place");
     const std::string d = r.player->debug_json();
     const auto ring = std::stod(d.substr(d.find("\"ring\":") + 7));
     const double ring_s = ring / (8.0 * 88200.0);   // Int32 stereo
-    WARN("off drive 0 at 1M taps: the build starts after " << t_build << " s (the 300 ms hold), the crossfade ends after " << t_cross
-                                                           << " s; the ring then holds " << ring_s << " s: heard after about "
-                                                           << t_cross + ring_s << " s");
+    // the stage switches paths (20 ms) and glides (20 ms) from the next chunk on, behind what the ring already holds
+    WARN("off drive 0 at 1M taps: applied in place after " << t_applied << " s (no rebuild: " << !r.saw("in the background")
+                                                           << "); the ring holds " << ring_s << " s: heard after about " << t_applied + ring_s
+                                                           << " s, the full drive 40 ms later");
     r.player->stop();
     r.finish();
 }
@@ -1654,6 +1677,33 @@ TEST_CASE("Player: the path report says when Tube Color does nothing", "[player]
     INFO(rep2.filter);
     CHECK(rep2.filter.find("idle") == std::string::npos);
     CHECK((rep2.filter.find("unavailable") == std::string::npos) == color_runs());
+}
+
+// Tube Color on at drive 0 (doc/N28): the stage a pure delay the player compensates, the quantizer it keeps passing the
+// samples through: every byte as with Tube Color off, at a rate oversampled 8x and one oversampled 4x.
+TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here (covered above)");
+    for (int rate : {44100, 96000}) {
+        INFO(rate << " Hz");
+        auto play = [&](bool color) {
+            Rig r;
+            r.sources["a"] = int24_noise(rate, 2, rate / 2, 9);
+            Settings s;
+            s.color.enabled = color;
+            s.color.drive = 0.0;
+            REQUIRE(r.start("a", s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            CHECK(rep.bit_perfect);
+            CHECK(rep.device.rate == rate);
+            auto b = r.dev->take();
+            r.player.reset();
+            return b;
+        };
+        const auto off = play(false), on = play(true);
+        REQUIRE(off.size() > static_cast<size_t>(rate) / 2 * 8);
+        CHECK(on == off);
+    }
 }
 
 TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file", "[player][dsd][color]") {

@@ -63,11 +63,6 @@ public:
     bool transparent() const;
     // Names of the stages that change the signal, in order, for reports.
     std::vector<std::string> stages() const;
-    // Tube Color's drive crossing 0 (doc/N28): a chain built for a drive above 0 that replaces one at 0 waits next to 0
-    // until update() gives it the drive (when the crossfade begins), then glides up; the chain being replaced by one at
-    // 0 glides down to next to 0 while that one is built. No-ops without the stage.
-    void color_hold_at_zero();
-    void color_glide_to_zero();
     // Names of every stage, in order, including those that currently pass samples through (tests, diagnostics).
     std::vector<std::string> all_stages() const;
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).
@@ -102,6 +97,7 @@ private:
     int run_from(size_t first, const double* in, int frames, double* out);
     bool needs_quantizer(const Settings& s) const { return needs_quantizer(s, src_, dev_, pre_transparent_); }
     static bool needs_quantizer(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
+    static bool quantizer_present(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent);
 
     std::vector<Stage> st_;
     std::vector<double> a_, b_, flush_;
@@ -111,6 +107,7 @@ private:
     DeviceFormat dev_{};
     std::string key_;
     bool quantized_ = false;
+    bool quant_follows_color_ = false;   // kept only for Tube Color: passes while the stage is idle (doc/N28)
     bool pre_transparent_ = true;   // the stages other than gain / crossfeed / EQ
     dsp::Gain* gain_ = nullptr;
     dsp::Crossfeed* xf_ = nullptr;

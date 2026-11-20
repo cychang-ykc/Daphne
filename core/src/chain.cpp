@@ -44,14 +44,11 @@ DspChain::DspChain() = default;
 DspChain::~DspChain() = default;
 
 std::string DspChain::structure_key(const Settings& s) {
-    // Tube Color: whether it is in the chain, and whether its drive is 0 (the stage is then skipped, bit for bit, and
-    // crossing 0 rebuilds) change the structure (an inactive one is cleared by without_inactive_color); the drive
-    // otherwise glides in the stage and its other fields are applied there (doc/N28)
+    // Tube Color: only whether it is in the chain changes the structure (an inactive one is cleared by
+    // without_inactive_color); the drive, 0 included, is taken in place by the stage and its other fields are applied
+    // there (doc/N28)
     Settings k = without_inactive_color(s);
-    const bool color_on = k.color.enabled, driven = color_on && k.color.drive > 0.0;
-    k.color = {};
-    k.color.enabled = color_on;
-    k.color.drive = driven ? 1.0 : 0.0;
+    k.color = {.enabled = k.color.enabled};
     k.eq = {};
     k.crossfeed = {};
     k.volume = {};
@@ -66,10 +63,17 @@ bool DspChain::needs_quantizer(const Settings& s, const AudioInfo& src, const De
     return !(pre_transparent && level_stages_identity(s) && fits);
 }
 
+// Tube Color (doc/N28): where the quantizer would be left out (exactly the condition above, the stage counted as not
+// there), an active Tube Color keeps it, passing the samples through while the stage leaves them as they are (drive 0)
+bool DspChain::quantizer_present(const Settings& s, const AudioInfo& src, const DeviceFormat& dev, bool pre_transparent) {
+    if (needs_quantizer(s, src, dev, pre_transparent)) return true;
+    return color_active(s) && s.core != CoreMode::Dsd && !is_float(dev.type) && !is_dsd(dev.type);
+}
+
 bool DspChain::fits(const Shape& sh, const Settings& s, const AudioInfo& next) {
     if (next.rate != sh.src.rate || next.channels != sh.src.channels || next.dsd_pcm != sh.src.dsd_pcm) return false;
     if (sh.src.channels != sh.dev.channels && next.channel_mask != sh.src.channel_mask) return false;   // the downmix matrix
-    return needs_quantizer(s, next, sh.dev, sh.pre_transparent) == sh.quantized;
+    return quantizer_present(s, next, sh.dev, sh.pre_transparent) == sh.quantized;
 }
 
 void DspChain::add(std::string name, std::unique_ptr<dsp::Block> b, int& frames, int& rate, int& channels) {
@@ -147,9 +151,13 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
 #endif
     if (s.core == CoreMode::Dsd) add("modulator limiter", modulator_limiter(s.modulator), frames, rate, ch);
 
-    // the stages other than gain / crossfeed / EQ pass samples through
+    // the stages other than gain / crossfeed / EQ pass samples through (Tube Color counted as not there: whether the
+    // quantizer is left out does not depend on it, see quantizer_present)
     pre_transparent_ = std::all_of(st_.begin(), st_.end(), [&](const Stage& x) {
         const dsp::Block* b = x.block.get();
+#if defined(DAPHNE_COLOR)
+        if (b == color_) return true;
+#endif
         return b == gain_ || b == xf_ || b == peq_ || b->is_identity();
     });
 
@@ -159,11 +167,13 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
         pre_transparent_ = false;
     }
 
-    // 6. final quantization
-    quantized_ = needs_quantizer(s);
+    // 6. final quantization (with Tube Color where it would be left out: passing through while the stage is idle)
+    quantized_ = quantizer_present(s, src, dev, pre_transparent_);
+    quant_follows_color_ = quantized_ && !needs_quantizer(s);
     if (quantized_) {
         auto q = std::make_unique<dsp::Quantizer>(effective_bits(dev));
         quant_ = q.get();
+        if (quant_follows_color_) q->set_pass_through(true);
         add("quantizer", std::move(q), frames, rate, ch);
     }
     if (rate != dev.rate || ch != dev.channels) return fail("internal: chain output does not match the device format");
@@ -178,12 +188,15 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
 }
 
 bool DspChain::update(const Settings& s) {
-    if (st_.empty() || structure_key(s) != key_ || needs_quantizer(s) != quantized_) return false;
+    // the quantizer there or not, and (there) kept for Tube Color or needed anyway, as when the chain was built
+    if (st_.empty() || structure_key(s) != key_ || quantizer_present(s, src_, dev_, pre_transparent_) != quantized_ ||
+        (quantized_ && quant_follows_color_ == needs_quantizer(s)))
+        return false;
     gain_->set_db(gain_db(s));
     configure_crossfeed(*xf_, s.crossfeed);
     peq_->set_params(make_peq_params(s.eq, eq_rate_));
 #if defined(DAPHNE_COLOR)
-    if (color_) color_->set_drive(s.color.drive);   // glides (a drive of 0 changed the key above)
+    if (color_) color_->set_drive(s.color.drive);   // glides; 0 takes it idle, in place
 #endif
     return true;
 }
@@ -203,6 +216,10 @@ int DspChain::run_from(size_t first, const double* in, int frames, double* out) 
     }
     for (size_t i = first; i < st_.size(); ++i) {
         double* dst = i + 1 == st_.size() ? out : (src == a_.data() ? b_.data() : a_.data());
+#if defined(DAPHNE_COLOR)
+        // the quantizer kept for Tube Color passes what the stage left as it was (the whole block), else dithers
+        if (quant_follows_color_ && st_[i].block.get() == quant_ && color_) quant_->set_pass_through(color_->untouched());
+#endif
         n = st_[i].block->process(src, n, dst);
         src = dst;
     }
@@ -238,18 +255,6 @@ int64_t DspChain::take_clips() {
 
 bool DspChain::transparent() const {
     return std::all_of(st_.begin(), st_.end(), [](const Stage& s) { return s.block->is_identity(); });
-}
-
-void DspChain::color_hold_at_zero() {
-#if defined(DAPHNE_COLOR)
-    if (color_) color_->hold_at_rise();
-#endif
-}
-
-void DspChain::color_glide_to_zero() {
-#if defined(DAPHNE_COLOR)
-    if (color_) color_->set_drive(color::TubeColorStage::kRiseFrom);
-#endif
 }
 
 std::vector<std::string> DspChain::all_stages() const {

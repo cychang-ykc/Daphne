@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <map>
 #include <numbers>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -168,11 +170,17 @@ TEST_CASE("color test curve: shape", "[color][curve]") {
     CHECK(f(-10.0) == f(-TestCurve::kMaxIn));
 }
 
-TEST_CASE("color stage: drive 0 is the identity, bit for bit", "[color]") {
+TEST_CASE("color stage: drive 0 is a pure delay, bit for bit", "[color]") {
+    // 48 kHz: the stage is oversampled, its content delay the round trip's (223 frames); idle, it delays the input by
+    // exactly that, nothing else
     TubeColorStage st(StageParams{.drive = 0.0});
     CHECK(st.is_identity());
     const auto x = sine(48000, 997.0, 0.9, 20000);
-    CHECK(run(st, x, 48000) == x);
+    const auto y = run(st, x, 48000);
+    const auto d = static_cast<size_t>(st.content_delay_frames());
+    CHECK(d == daphne::color::Oversampler::kTapsPerPhase - 1);
+    CHECK(std::equal(x.begin(), x.end() - static_cast<std::ptrdiff_t>(2 * d), y.begin() + static_cast<std::ptrdiff_t>(2 * d)));
+    CHECK(st.untouched());
     TubeColorStage on;
     CHECK_FALSE(on.is_identity());
 }
@@ -408,21 +416,147 @@ TEST_CASE("color stage: the drive glides over 20 ms", "[color][linear]") {
     for (int i = 1; i < 4096; ++i) steady = std::max(steady, std::abs(y[static_cast<size_t>(i)] - y[static_cast<size_t>(i - 1)]));
     for (int i = 4096; i < 4096 + 2 * half; ++i) during = std::max(during, std::abs(y[static_cast<size_t>(i)] - y[static_cast<size_t>(i - 1)]));
     CHECK(during < 1.05 * steady);
-    st.set_drive(0.0);   // not taken: crossing 0 is a rebuild
+    // to 0: down to next to nothing (20 ms), back to the delay path (20 ms), idle: the input as it is (no oversampling at
+    // this rate: no delay)
+    st.set_drive(0.0);
+    const int n = static_cast<int>(0.05 * rate);
+    st.process(x.data(), n, y.data());
+    CHECK(st.idle());
+    CHECK(st.drive() == 0.0);
     st.process(x.data(), 4096, y.data());
-    CHECK(st.drive() == 1.5);
+    CHECK(st.untouched());
+    CHECK(std::equal(x.begin(), x.begin() + 4096, y.begin()));
 }
 
 TEST_CASE("color stage: drive 0 skips everything, filters included", "[color][linear]") {
     TubeColorStage st(StageParams{.drive = 0.0, .linear = daphne::color::test_linear_model()});
     CHECK(st.is_identity());
-    st.set_drive(1.0);   // ignored: a stage built at 0 stays the identity
     const auto x = sine(352800, 997.0, 0.9, 40000);
-    CHECK(run(st, x, 352800) == x);
-    CHECK(st.is_identity());
+    CHECK(run(st, x, 352800) == x);   // no oversampling at this rate: no delay either
+    CHECK(st.untouched());
+    st.set_drive(1.0);   // taken in place: it leaves idle
+    CHECK_FALSE(st.is_identity());
 }
 
-TEST_CASE("color stage: crossing drive 0 rebuilds the chain, other drive changes do not", "[color][chain]") {
+// Crossing 0 in the stage (doc/N28): at 44.1 kHz (oversampled 8x, 223 frames) from idle to 50 % and back. The delay path
+// and the processing path are crossfaded aligned: the cross-correlation peak never moves, and both idle stretches are
+// the input bit for bit (delayed by the content delay).
+TEST_CASE("color stage: crossing 0 in place, aligned, idle bit for bit", "[color][linear]") {
+    const int rate = 44100, block = 512;
+    const int frames = rate * 2;
+    std::vector<double> x(static_cast<size_t>(frames) * 2);
+    std::mt19937 g(3);
+    std::uniform_real_distribution<double> u(-0.02, 0.02);
+    for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = u(g) + 0.02 * std::sin(2 * kPi * 997.0 * i / rate);
+    TubeColorStage st(StageParams{.drive = 0.0, .linear = daphne::color::test_linear_model()});
+    st.prepare({rate, 2, block});
+    std::vector<double> y(x.size());
+    const int on_at = rate / 2, off_at = rate;   // 0.5 s: to 50 %; 1 s: back to 0
+    for (int at = 0; at < frames; at += block) {
+        if (at == on_at / block * block) st.set_drive(0.5);
+        if (at == off_at / block * block) st.set_drive(0.0);
+        st.process(x.data() + 2 * static_cast<size_t>(at), std::min(block, frames - at), y.data() + 2 * static_cast<size_t>(at));
+    }
+    const int d = st.content_delay_frames();
+    REQUIRE(d == 223);
+    auto same = [&](int from, int to) {   // y[n + d] == x[n] for n in [from, to)
+        for (int n = from; n < to; ++n)
+            if (y[2 * static_cast<size_t>(n + d)] != x[2 * static_cast<size_t>(n)]) return false;
+        return true;
+    };
+    CHECK(same(0, on_at / block * block - d));                     // idle before
+    CHECK(same(off_at / block * block + rate / 10, frames - d));   // idle again, 100 ms after (20 + 20 ms of it the switch)
+    CHECK(st.idle());
+    // the cross-correlation peak (first differences), 10 ms windows across the whole stretch, at d everywhere
+    std::map<int, int> lags;
+    const int win = rate / 100;
+    for (int at = 1000; at + win + 600 < frames; at += win) {
+        double best = -1e300;
+        int lag = 0;
+        for (int l = d - 300; l <= d + 300; ++l) {
+            double c = 0.0;
+            for (int i = 0; i < win; ++i) {
+                const size_t a = 2 * static_cast<size_t>(at + i), b = 2 * static_cast<size_t>(at + i - l);
+                c += (y[a] - y[a - 2]) * (x[b] - x[b - 2]);
+            }
+            if (c > best) best = c, lag = l;
+        }
+        ++lags[lag];
+    }
+    std::string seen;
+    for (const auto& [l, n] : lags) seen += std::to_string(l) + " (" + std::to_string(n) + ") ";
+    WARN("stage crossing 0: cross-correlation peak by 10 ms window: " << seen);
+    CHECK(lags.size() == 1);
+    CHECK(lags.begin()->first == d);
+}
+
+// The final quantizer on an integer device with a source that fits it (where it is left out without Tube Color): kept,
+// passing through while the stage is idle. drive 0 -> 50 % -> 0: the input bit for bit, dithered, the input bit for bit.
+TEST_CASE("color chain: the quantizer kept for Tube Color passes while it is idle", "[color][chain]") {
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.bits = 24, src.lossless_int = true, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 44100, dev.channels = 2, dev.type = daphne::SampleType::Int24In32, dev.container_bits = 32, dev.valid_bits = 24;
+    daphne::Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.0;
+    daphne::DspChain c;
+    std::string e;
+    REQUIRE(c.build(s, src, dev, 4096, &e));
+    const auto all = c.all_stages();
+    REQUIRE(std::find(all.begin(), all.end(), std::string("quantizer")) != all.end());   // kept for Tube Color
+    CHECK(c.transparent());
+    // without Tube Color the same chain leaves it out (the condition is the existing one)
+    daphne::Settings off;
+    daphne::DspChain c_off;
+    REQUIRE(c_off.build(off, src, dev, 4096, &e));
+    const auto off_all = c_off.all_stages();
+    CHECK(std::find(off_all.begin(), off_all.end(), std::string("quantizer")) == off_all.end());
+    // with an upsampler it quantizes as always, Tube Color or not
+    daphne::DeviceFormat up = dev;
+    up.rate = 88200;
+    daphne::DspChain c_up;
+    REQUIRE(c_up.build(s, src, up, 4096, &e));
+    CHECK_FALSE(c_up.transparent());
+    // 24-bit samples through it (4 s: 43 blocks; 50 % from block 16 to block 32)
+    const int frames = 44100 * 4, block = 4096;
+    std::vector<double> x(static_cast<size_t>(frames) * 2);
+    std::mt19937 g(5);
+    for (auto& v : x) v = (static_cast<int32_t>(g() >> 8) - (1 << 23)) / 8388608.0 * 0.3;
+    for (auto& v : x) v = std::round(v * 8388608.0) / 8388608.0;   // on the 24-bit grid
+    std::vector<double> y;
+    std::vector<double> o(static_cast<size_t>(c.max_output_frames()) * 2);
+    for (int at = 0; at < frames; at += block) {
+        if (at == 16 * block) {
+            daphne::Settings on = s;
+            on.color.drive = 0.5;
+            REQUIRE(c.update(on));
+        }
+        if (at == 32 * block) REQUIRE(c.update(s));
+        const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(block, frames - at), o.data());
+        y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
+    }
+    const int d = c.content_delay();
+    REQUIRE(d == 223);
+    auto count_diff = [&](int from, int to) {
+        int k = 0;
+        for (int n = from; n < to; ++n) k += y[2 * static_cast<size_t>(n + d)] != x[2 * static_cast<size_t>(n)];
+        return k;
+    };
+    auto on_grid = [&](int from, int to) {
+        for (int n = from; n < to; ++n) {
+            const double v = y[2 * static_cast<size_t>(n + d)] * 8388608.0;
+            if (v != std::round(v)) return false;
+        }
+        return true;
+    };
+    CHECK(count_diff(0, 16 * block - d) == 0);                                  // idle: bit for bit
+    CHECK(count_diff(20 * block, 30 * block) > 30 * block - 20 * block - 100);   // running: changed (curve, dither)
+    CHECK(on_grid(20 * block, 30 * block));                                     // quantized to 24 bits
+    CHECK(count_diff(36 * block, frames - d - block) == 0);                     // idle again: bit for bit
+}
+
+TEST_CASE("color stage: crossing drive 0 is taken in place, like any drive change", "[color][chain]") {
     daphne::Settings a;
     a.color.enabled = true;
     a.color.drive = 0.5;
@@ -430,7 +564,7 @@ TEST_CASE("color stage: crossing drive 0 rebuilds the chain, other drive changes
     b.color.drive = 1.7;
     z.color.drive = 0.0;
     CHECK(daphne::DspChain::structure_key(a) == daphne::DspChain::structure_key(b));
-    CHECK(daphne::DspChain::structure_key(a) != daphne::DspChain::structure_key(z));
+    CHECK(daphne::DspChain::structure_key(a) == daphne::DspChain::structure_key(z));
     daphne::AudioInfo src;
     src.rate = 44100, src.channels = 2, src.bits = 24, src.lossless_int = true, src.codec = "test";
     daphne::DeviceFormat dev;
@@ -438,15 +572,15 @@ TEST_CASE("color stage: crossing drive 0 rebuilds the chain, other drive changes
     daphne::DspChain c;
     std::string e;
     REQUIRE(c.build(a, src, dev, 4096, &e));
-    CHECK(c.update(b));         // in place, gliding
-    CHECK_FALSE(c.update(z));   // to 0: a new chain
+    CHECK(c.update(b));
+    CHECK(c.update(z));
     daphne::DspChain c0;
     REQUIRE(c0.build(z, src, dev, 4096, &e));
     const auto stages = c0.stages();
-    CHECK(std::find(stages.begin(), stages.end(), std::string("tube color")) == stages.end());   // there, but passing through
+    CHECK(std::find(stages.begin(), stages.end(), std::string("tube color")) == stages.end());   // there, idle
     const auto all = c0.all_stages();
     CHECK(std::find(all.begin(), all.end(), std::string("tube color")) != all.end());
-    CHECK_FALSE(c0.update(a));
+    CHECK(c0.update(a));
 }
 
 #endif

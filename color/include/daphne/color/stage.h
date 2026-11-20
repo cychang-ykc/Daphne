@@ -9,11 +9,16 @@
 // distortion. f is the curve (M1: the test curve), the DC blocker (first order, kDcBlockHz) takes out the offset an
 // asymmetric curve adds. At d = 1 this is the reference amplifier: post(f(pre(x))).
 //
-// Drive 0 is the identity, by skipping everything (not by arithmetic): a stage built at drive 0 stays the identity, and
-// crossing 0 rebuilds the chain (structure_key). Other drive changes glide (kGlideMs, linear) in place (set_drive).
+// Below 8x the rate family all of it runs oversampled (oversampler.h), the round trip delaying the content by D frames.
 //
-// Below 8x the rate family the stage runs oversampled (oversampler.h): everything above at L times its input rate, the
-// round trip's delay reported as the content delay (a whole number of frames, 0 at drive 0).
+// Drive 0: the stage is idle, a pure delay of D frames (the input samples as they are: with the content delay
+// compensated the output is bit for bit the input); nothing else runs, it only keeps the last input frames. Crossing 0
+// is done in place, in the stage, so the chain is never rebuilt for it:
+//   leaving 0   the oversampler is primed from the history (kHistory frames), the delay path crossfades (kSwitchMs) to
+//               the processing path held at kRiseFrom (next to nothing: the two are the same signal while they cross,
+//               aligned), then the drive glides (kGlideMs) to its value
+//   reaching 0  the drive glides down to kRiseFrom, the processing path crossfades back to the delay path, idle
+// Other drive changes glide in place.
 
 #include <atomic>
 #include <complex>
@@ -34,45 +39,55 @@ class TubeColorStage final : public dsp::Block {
 public:
     static constexpr double kDcBlockHz = 2.0;
     static constexpr double kGlideMs = 20.0;
-    static constexpr int kControl = 16;   // frames between updates of the fade while the drive glides
+    static constexpr double kSwitchMs = 20.0;   // the crossfade between the delay path and the processing path
+    static constexpr double kRiseFrom = 1e-4;   // the drive the processing path crosses at
+    static constexpr int kControl = 16;         // frames between updates of the fade while the drive glides
+    static constexpr int kHistory = 2 * Oversampler::kTapsPerPhase;   // input frames that prime the oversampler
 
     explicit TubeColorStage(StageParams p = {});
     void prepare(const dsp::Format& in) override;
     dsp::Format output_format() const override { return fmt_; }
     int process(const double* in, int frames, double* out) override;
     int latency_frames() const override { return 0; }
-    int content_delay_frames() const override { return identity_ ? 0 : os_.delay(); }
-    int oversampling() const { return os_.factor(); }
+    int content_delay_frames() const override { return delay_; }
     void reset() override;
-    bool is_identity() const override { return identity_; }
+    // The drive is 0: idle, or about to be within kGlideMs + kSwitchMs (the reports; the samples are told apart by
+    // untouched())
+    bool is_identity() const override { return target_.load() <= 0.0; }
+    // The last process() call left every sample as it was (the delay path alone): the final quantizer may pass them
+    bool untouched() const { return untouched_; }
 
-    // A new drive, gliding there from the current one (any thread; from the next process()). Ignored by a stage built
-    // at drive 0, and a target of 0 is not taken (crossing 0 is a rebuild).
+    // A new drive, gliding there from the current one (any thread; from the next process()); 0 takes the stage idle.
     void set_drive(double d);
-    // A chain rebuilt because the drive left 0 (doc/N28): the stage waits at kRiseFrom (next to nothing) through the
-    // warm-up, and rises from there with the glide once set_drive gives it the target (when the crossfade begins);
-    // the chain it replaces is the identity, so the two are the same signal while they cross.
-    static constexpr double kRiseFrom = 1e-4;
-    void hold_at_rise();
     double drive() const { return d_; }   // the current (gliding) drive, on the processing thread
-    // The linear response at hz now (pre and post; 1 at drive 0), for tests and the M2 tools
-    std::complex<double> linear_response(double hz) const { return identity_ ? 1.0 : pre_.response(hz) * post_.response(hz); }
+    bool idle() const { return w_ <= 0.0; }
+    int oversampling() const { return os_.factor(); }
+    // The linear response at hz now (pre and post; 1 while idle), for tests and the M2 tools
+    std::complex<double> linear_response(double hz) const { return w_ <= 0.0 ? 1.0 : pre_.response(hz) * post_.response(hz); }
 
 private:
     void update_mix();
-    void run_frame(const double* x, double* y);   // one frame at the processing rate
+    void glide_to(double v);
+    void prime();
+    void run_frame(const double* x, double* y);      // one frame at the processing rate
+    void process_path(const double* x, double* y);   // one input frame through the processing path
 
     StageParams p_;
-    bool identity_;
     dsp::Format fmt_;
     std::atomic<double> target_;
     double last_target_ = 0.0, d_ = 0.0, step_ = 0.0, mix_d_ = -1.0;
     int left_ = 0, glide_frames_ = 1;
+    double w_ = 0.0, w_step_ = 1.0;   // the processing path's share (0: the delay path alone)
+    bool primed_ = false, untouched_ = true;
+    int delay_ = 0;
     SectionChain pre_, post_;
     Oversampler os_;
-    std::vector<double> hi_;                 // L frames at the high rate
-    double dc_r_ = 0.0;                    // the DC blocker's pole
-    std::vector<double> dc_x1_, dc_y1_;    // its state per channel (last input, last output)
+    std::vector<double> hi_;                        // L frames at the high rate
+    std::vector<double> hist_;                      // the last input frames (ring of hist_frames_)
+    int hist_frames_ = 0, hist_at_ = 0, fed_ = 0;   // fed: frames stored since the start (up to the ring's size)
+    std::vector<double> xin_, dly_, path_, prime_y_;   // one frame each: the input, the delay path, the processing path
+    double dc_r_ = 0.0;                             // the DC blocker's pole
+    std::vector<double> dc_x1_, dc_y1_;             // its state per channel (last input, last output)
 };
 
 }  // namespace daphne::color

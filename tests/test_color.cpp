@@ -2,15 +2,19 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "daphne/engine/chain.h"
+#include "daphne/engine/filters.h"
+#include "daphne/platform/platform.h"
 #include "daphne/engine/settings.h"
 #include "daphne/color/tube_color.h"
 #include "../core/src/player/track_queue.h"
+#include "test_util.h"
 
 using daphne::ColorBias;
 using daphne::ColorModel;
@@ -314,4 +318,50 @@ TEST_CASE("color stage: where it sits in the chain, and only while active", "[co
     };
     CHECK(without(all_stages(on, src_info(44100, 24), pcm)) == all_stages(off, src_info(44100, 24), pcm));
     CHECK(without(all_stages(dsd_core_on, src_info(44100, 16), dsd_dev)) == all_stages(dsd_core, src_info(44100, 16), dsd_dev));
+}
+
+// The upsampling filter's cache key is the filter's own (taps, phase, apodizing, rates): Tube Color, on or off, at any
+// drive or preset, never changes it, so a chain rebuilt for it finds the filter it played with (doc/N28).
+TEST_CASE("color settings: the filter cache keys do not depend on Tube Color", "[color]") {
+    Settings off;
+    off.filter.taps = 65536;
+    off.output.rate = "88200";
+    for (bool enabled : {true, false})
+        for (double drive : {0.0, 0.5, 2.0})
+            for (auto preset : {ColorPreset::Set2a3, ColorPreset::PpEl34Ul}) {
+                Settings s = off;
+                s.color.enabled = enabled;
+                s.color.drive = drive;
+                s.color.preset = preset;
+                s.color.feedback_db = 12;
+                CHECK(daphne::filter_cache_keys_in_use(s, 44100) == daphne::filter_cache_keys_in_use(off, 44100));
+                CHECK(daphne::filter_cache_key(s.filter, 44100, 88200) == daphne::filter_cache_key(off.filter, 44100, 88200));
+            }
+    // built once without it (designed, stored), the chain with it finds the filter in the cache
+    const auto dir = test::temp_path("daphne_color_filter_cache");
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    const auto before = daphne::platform::get_env("DAPHNE_FILTER_CACHE");   // (the player tests turn it off: put back)
+    test::set_env("DAPHNE_FILTER_CACHE", &dir);
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.bits = 24, src.lossless_int = true, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 88200, dev.channels = 2, dev.type = daphne::SampleType::Int32, dev.container_bits = dev.valid_bits = 32;
+    Settings small = off;
+    small.filter.taps = 1024;
+    CHECK_FALSE(daphne::filter_cached(small.filter, 44100, 88200));
+    daphne::DspChain a;
+    std::string e;
+    REQUIRE(a.build(small, src, dev, 4096, &e));
+    Settings with = small;
+    with.color.enabled = true;
+    with.color.drive = 0.7;
+    CHECK(daphne::filter_cached(with.filter, 44100, 88200));
+    if (before) {
+        const auto p = daphne::platform::path_from_utf8(*before);
+        test::set_env("DAPHNE_FILTER_CACHE", &p);
+    } else {
+        test::set_env("DAPHNE_FILTER_CACHE", nullptr);
+    }
+    std::filesystem::remove_all(dir, ec);
 }
