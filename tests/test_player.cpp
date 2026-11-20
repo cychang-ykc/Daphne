@@ -1720,13 +1720,21 @@ TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file",
         on.color.enabled = true;
         REQUIRE(r.start(platform::path_to_utf8(path), off));
         sleep_s(0.2);
+        // 30 ms apart, timed by the clock: a sleep can overshoot by tens of ms on a busy machine (CI's macOS runners)
+        auto spin = [](double s) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
+            while (std::chrono::steady_clock::now() < until) {
+            }
+        };
         const auto t0 = std::chrono::steady_clock::now();
         r.player->apply(on, OutputChoice{});
-        sleep_s(0.04);
+        spin(0.03);
         r.player->apply(off, OutputChoice{});
-        sleep_s(0.04);
+        spin(0.03);
         r.player->apply(on, OutputChoice{});
-        CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(100));
+        const double took_ms = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000.0;
+        UNSCOPED_INFO("three switches in " << took_ms << " ms");
+        CHECK(took_ms < 100.0);
         const auto rep = r.finish(10.0);   // stopped after 10 s if it hung
         CHECK(r.ended);
         // ends on the last setting (on: remodulated); one open per change of path, never the same one twice
