@@ -74,8 +74,30 @@ def harmonics(t, v, f0, cycles=10):
 OPT = {"rc_ratio": 50.0, "rcw": 200.0, "r_load": 8.0}   # rcw 200: provisional (N28, high-frequency stability)
 
 
-def opt_se(name, a, bp, raa, lp, ll, cw, dcr):
+# Nonlinear core (core_model.py, N28). Off unless set: CORE = {"A", "ALPHA", "C", "K", "MS"} (Xyce CORE model);
+# CORE_DESIGN[preset] = {"N": primary turns (pp: whole primary), "area": cm2, "path": cm, "gap_mm": air gap}.
+# With the core, the windings are turn counts coupled through the core; the leakage moves to a linear inductor in
+# series with the secondary. Xyce only (the core state is built in the transient; no harmonic balance).
+CORE = None
+CORE_DESIGN = {}
+
+
+def core_model_line(mname, preset):
+    d = CORE_DESIGN[preset]
+    return (f".model {mname} CORE (MS={CORE['MS']:.6g} A={CORE['A']:.6g} ALPHA={CORE['ALPHA']:.6g} C={CORE['C']:.6g} "
+            f"K={CORE['K']:.6g} AREA={d['area']:.6g} PATH={d['path']:.6g} GAP={d['gap_mm'] / 10:.6g} BHSIUNITS=1)")
+
+
+def opt_se(name, a, bp, raa, lp, ll, cw, dcr, preset=None):
     """Single-ended output transformer: primary a .. bp (via DCR), secondary o .. 0 into the 8 ohm loudspeaker."""
+    if CORE and preset in CORE_DESIGN:
+        n_p = CORE_DESIGN[preset]["N"]; n_s = n_p * math.sqrt(8.0 / raa)
+        return [f"R{name}p {bp} {name}x {f(dcr)}", f"L{name}p {name}x {a} {f(n_p)}",
+                f"C{name}w {a} {name}c {f(cw)}", f"R{name}cw {name}c {bp} {f(max(OPT['rcw'], 1e-3))}",
+                f"R{name}core {a} {bp} {f(OPT['rc_ratio'] * raa)}",
+                f"L{name}s o {name}y {f(n_s)}", f"L{name}l {name}y {name}z {f(ll * 8.0 / raa)}",
+                f"R{name}s {name}z 0 {f(8.0 * dcr / raa)}", f"K{name} L{name}p L{name}s 0.9999 CM{name}",
+                core_model_line(f"CM{name}", preset), f"Rspk o 0 {f(OPT['r_load'])}"]
     k = math.sqrt(1 - ll / lp)
     ls = lp * 8.0 / raa
     return [f"R{name}p {bp} {name}x {f(dcr)}", f"L{name}p {name}x {a} {f(lp)}",
@@ -120,7 +142,7 @@ def set_2a3():
            "Cc1 a1 g2 0.22e-6", "Rg2 g2 0 220k"]
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "2A3", "a2", "g2s", "k2"),
             *tube_caps("V2", "2A3", "a2", "g2s", "k2"), "Rk2 k2 0 750", "Ck2 k2 0 2.2e-4",
-            "Vb2 b2 0 DC 301"] + opt_se("T", "a2", "b2", 2500.0, 10.0, 0.010, 400e-12, 100.0)
+            "Vb2 b2 0 DC 301"] + opt_se("T", "a2", "b2", 2500.0, 10.0, 0.010, 400e-12, 100.0, preset="set-2a3")
     return net
 
 
@@ -128,7 +150,7 @@ def set_300b():
     net = ["* set-300b"] + set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
             *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1233", "Ck2 k2 0 2.2e-4",
-            "Vb2 b2 0 DC 431"] + opt_se("T", "a2", "b2", 3000.0, 15.0, 0.012, 400e-12, 120.0)
+            "Vb2 b2 0 DC 431"] + opt_se("T", "a2", "b2", 3000.0, 15.0, 0.012, 400e-12, 120.0, preset="set-300b")
     return net
 
 
@@ -138,7 +160,7 @@ def set_845():
             *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1000", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 300", "Rch b2 chx 250", "Lch chx a2 40",
             "Cc2 a2 g3 0.47e-6", "Rg3 g3 nb 100k", "Vnb nb 0 DC -195", "Rgs3 g3 g3s 1k",
-            R.triode("V3", "845", "a3", "g3s", "0"), *tube_caps("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1286"] + opt_se("T", "a3", "b3", 11000.0, 30.0, 0.020, 300e-12, 450.0)
+            R.triode("V3", "845", "a3", "g3s", "0"), *tube_caps("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1286"] + opt_se("T", "a3", "b3", 11000.0, 30.0, 0.020, 300e-12, 450.0, preset="set-845")
     return net
 
 
@@ -188,7 +210,17 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-1
            f"L3 ct4 t4 {f(l1)}", f"L4 t4 a4x {f(l2)}", f"Rd4b a4x a4 {f((1 - tap) * dcr)}",
            f"L5 o sy {f(ls)}", f"Rsy sy 0 {f(8.0 * 2 * dcr / 7000.0)}", f"Rspk o 0 {f(OPT['r_load'])}",
            f"Cw a3 cwx {f(cw)}", f"Rcw cwx a4 {f(max(OPT['rcw'], 1e-3))}", f"Rcore a3 a4 {f(OPT['rc_ratio'] * 7000.0)}"]
-    net += [f"K{a}{b} L{a} L{b} {f(v)}" for (a, b), v in K.items()]
+    if CORE and "pp-el34-ul" in CORE_DESIGN:
+        # windings as turns on the core; the second half wound the other way round (node order reversed in place
+        # of the negative couplings); the leakage as a linear inductor in series with the secondary
+        n_half = CORE_DESIGN["pp-el34-ul"]["N"] / 2
+        n1, n2, n_s = n_half * tap, n_half * (1 - tap), CORE_DESIGN["pp-el34-ul"]["N"] * math.sqrt(8.0 / 7000.0)
+        sub = {"L1 ": f"L1 ct3 t3 {f(n1)}", "L2 ": f"L2 t3 a3x {f(n2)}", "L3 ": f"L3 t4 ct4 {f(n1)}",
+               "L4 ": f"L4 a4x t4 {f(n2)}", "L5 ": f"L5 o sl {f(n_s)}"}
+        net = [sub.get(l[:3], l) for l in net]
+        net += [f"Lsl sl sy {f(ll * 8.0 / 7000.0)}", "KPP L1 L2 L3 L4 L5 0.9999 CMPP", core_model_line("CMPP", "pp-el34-ul")]
+    else:
+        net += [f"K{a}{b} L{a} L{b} {f(v)}" for (a, b), v in K.items()]
     # wiring capacitance at the nodes the tube capacitances leave floating (screens, the splitter's cathodes); the
     # transient cannot start at a node with no capacitance next to the B sources
     net += ["Cw1 s1 0 5p", "Cw2 s3 0 5p", "Cw3 s4 0 5p", "Cw4 kk 0 5p"]

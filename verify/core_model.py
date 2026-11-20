@@ -104,13 +104,25 @@ def fit(variant):
 
 
 VARIANTS = [("base", 1.0, 1.0), ("Hc x0.5", 0.5, 1.0), ("Hc x2", 2.0, 1.0), ("mu_low x0.5", 1.0, 0.5), ("mu_low x2", 1.0, 2.0)]
+# second round (N28): the low-flux permeability target doubled (effective 4000 at 0.1 T, 16000 in the rolling
+# direction), because with 2000 the hysteresis of the push-pull core at P_ref - 20 dB costs 2.8 dB at 30 Hz (6 dB step)
+# against the linear model; the sensitivity variants around the new base
+MU_BASE = 2.0
+VARIANTS2 = [("base2", 1.0, MU_BASE), ("base2 Hc x0.5", 0.5, MU_BASE), ("base2 Hc x2", 2.0, MU_BASE),
+             ("base2 mu_low x0.5", 1.0, MU_BASE * 0.5), ("base2 mu_low x2", 1.0, MU_BASE * 2.0)]
 
 if __name__ == "__main__":
     t0 = time.time()
+    second = "--round2" in sys.argv
+    fn = os.path.join(HERE, "data", "core", "ja_fit.json")
     with ProcessPoolExecutor(5) as ex:
-        res = list(ex.map(fit, VARIANTS))
+        res = list(ex.map(fit, VARIANTS2 if second else VARIANTS))
     os.makedirs(os.path.join(HERE, "data", "core"), exist_ok=True)
-    json.dump(res, open(os.path.join(HERE, "data", "core", "ja_fit.json"), "w"), indent=1)
+    if second:                                   # keep the first round, add / replace the second
+        old = [r for r in json.load(open(fn)) if not r["name"].startswith("base2")]
+        json.dump(old + res, open(fn, "w"), indent=1)
+    else:
+        json.dump(res, open(fn, "w"), indent=1)
     for r in res:
         a, tg = r["achieved"], r["targets"]
         print(f"{r['name']:<12} A {r['params']['A']:8.2f} ALPHA {r['params']['ALPHA']:.3e} C {r['params']['C']:.3f} K {r['params']['K']:7.2f} | "
@@ -133,9 +145,10 @@ def inductance(p, g, gap_cm, f=50.0, b_ac=0.01, cycles=6):
     A_m2, path_m = g["area"] * 1e-4, g["path"] * 1e-2
     i_ac = b_ac * A_m2 * g["N"] / g["lp"]              # first guess from the target inductance
     # the DC bias is ramped up first: Xyce's Jiles-Atherton state only builds up in the transient (a DC operating
-    # point leaves the core unmagnetised), and a step makes the magnetisation equation fail to converge
+    # point leaves the core unmagnetised), and a step makes the magnetisation equation fail to converge. The AC
+    # runs from t = 0: a delayed start is a slope step, which fails at high flux (0.5 T) the same way
     t_on = 0.05
-    net = ["* L test", f"Idc 0 1 PWL(0 0 {t_on:g} {g['idc']:.9g})", f"Iac 0 1 SIN(0 {i_ac:.9g} {f:g} {t_on + 0.01:g})",
+    net = ["* L test", f"Idc 0 1 PWL(0 0 {t_on:g} {g['idc']:.9g})", f"Iac 0 1 SIN(0 {i_ac:.9g} {f:g})",
            f"L1 1 0 {g['N']}", "K1 L1 0.9999 CM", "Rp 1 0 1e9", model_line("CM", p, g["area"], g["path"], gap_cm),
            f".tran {1 / f / 400:.6g} {t_on + 0.01 + cycles / f:.6g}",
            ".options timeint method=gear reltol=1e-5", ".print tran format=noindex v(1) n(ymin!k1_b)", ".end", ""]
@@ -149,3 +162,47 @@ def inductance(p, g, gap_cm, f=50.0, b_ac=0.01, cycles=6):
     k = np.exp(-2j * np.pi * f * t)
     vamp = 2 * abs(np.mean(v * k))
     return vamp / (2 * math.pi * f * i_ac), float(np.mean(b)), float(np.max(b) - np.mean(b))
+
+
+RATED_W = {"set-2a3": 4.83, "set-300b": 5.61, "set-845": 25.1, "pp-el34-ul": 20.0}
+B_OK, B_DEEP = 1.5, 1.7      # T: differential permeability about 10 % / 3.5 % of its peak on the fitted curve
+
+
+def best_gap(p, g, N):
+    """Air gap (cm) that maximises the incremental inductance at the DC bias, for N turns; returns (L, gap, Bdc)."""
+    gg = dict(g, N=N)
+    best = None
+    lo, hi = math.log(0.002), math.log(0.3)
+    grid = np.exp(np.linspace(lo, hi, 9))
+    vals = [(C_ind(p, gg, x), x) for x in grid]
+    i = int(np.argmax([v[0][0] for v in vals]))
+    a, b = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
+    for _ in range(8):                      # golden-section refinement on log(gap)
+        x1, x2 = math.exp(math.log(a) + 0.382 * (math.log(b) - math.log(a))), math.exp(math.log(a) + 0.618 * (math.log(b) - math.log(a)))
+        if C_ind(p, gg, x1)[0] > C_ind(p, gg, x2)[0]:
+            b = x2
+        else:
+            a = x1
+    x = math.sqrt(a * b)
+    L, bdc, _ = C_ind(p, gg, x)
+    return L, x, bdc
+
+
+def C_ind(p, g, gap):
+    return inductance(p, g, gap)
+
+
+def design_se(name, p):
+    """Turns so that the inductance at the optimum gap equals the target; the flux check at 20 Hz rated power."""
+    g = GEOM[name]
+    lo, hi = g["N"], 6 * g["N"]
+    for _ in range(12):
+        N = math.sqrt(lo * hi)
+        L, _, _ = best_gap(p, g, N)
+        lo, hi = (N, hi) if L < g["lp"] else (lo, N)
+    N = round(math.sqrt(lo * hi))
+    L, gap, bdc = best_gap(p, g, N)
+    vpk = math.sqrt(2 * RATED_W[name] * g["raa"])
+    bac = vpk / (2 * math.pi * 20.0 * N * g["area"] * 1e-4)
+    return dict(name=name, N=N, gap_mm=gap * 10, L=L, Bdc=bdc, Bac_20Hz_rated=bac, total=bdc + bac,
+                verdict="OK" if bdc + bac <= B_OK else ("entering saturation" if bdc + bac <= B_DEEP else "deep saturation"))
