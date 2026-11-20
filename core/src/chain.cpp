@@ -260,6 +260,14 @@ bool DspChain::transparent() const {
     return std::all_of(st_.begin(), st_.end(), [](const Stage& s) { return s.block->is_identity(); });
 }
 
+bool DspChain::color_idle() const {
+#if defined(DAPHNE_COLOR)
+    return !color_ || color_->idle();
+#else
+    return true;
+#endif
+}
+
 std::vector<std::string> DspChain::all_stages() const {
     std::vector<std::string> v;
     for (const auto& s : st_) v.push_back(s.name);

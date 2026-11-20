@@ -109,7 +109,24 @@ bool Player::Impl::handle(const Settings& ns, const OutputChoice& no) {
         return true;
     }
     dsp::set_design_threads(ns.design.threads);
-    // Tube Color switched off while a DSD file plays as PCM only for it: sent directly again (restart -> pcm_to_dsd_direct)
+    // Tube Color switched off while a DSD file is remodulated only for it: on the open device, the stage goes idle and
+    // then the file's own bytes take over (6b); else the device is reopened (restart -> pcm_to_dsd_direct)
+    if (switch_off) {
+        if (back_to_dsd_direct(ns)) {
+            switch_off = std::make_pair(ns, no);
+            return true;
+        }
+        switch_off.reset();   // on again, or something else: as usual from here
+    }
+    if (back_to_dsd_direct(ns) && seamless_off_ok(ns, no)) {
+        Settings idle = chain_settings(s, run_osr);
+        idle.color.drive = 0.0;
+        if (cur->update(idle)) {
+            switch_off = std::make_pair(ns, no);
+            event("Tube Color off: the DSD file is sent directly again once the stage is idle (on the open device)");
+            return true;
+        }
+    }
     if (needs_restart(playing(), ns, no) || back_to_dsd_direct(ns)) return restart(ns, no);
     if (cur->update(chain_settings(ns, run_osr))) {
         s = ns;

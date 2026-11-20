@@ -129,6 +129,14 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
             }
         }
         crate = chain_fmt.rate;
+        // the modulator's stream from here (Tube Color's switch to a DSD file sent directly, dsd_switch.h)
+        mod_q = 0;
+        if (dsdenc && dsd_clock(run_osr) > 0 && static_cast<int64_t>(crate) * 8 % dsd_clock(run_osr) == 0) {
+            mod_q = static_cast<int>(static_cast<int64_t>(crate) * 8 / dsd_clock(run_osr));
+            if (mod_q > 2) mod_q = 0;
+            mod0 = from * (crate / std::max(1, src.rate)) - std::llround((crate / std::max(1, src.rate)) * dec->content_delay_frames());
+            mod_path = cur_path;
+        }
         if (want_fade_in) ramp_in_left = ramp_in_len = std::max<int64_t>(1, crate / 50);   // 20 ms
         // a filter to design before the first sound: the pcm core's resampler or the modulator's pre-filter
         // (the chain's condition). Only a real design reports its progress: a cached filter can take a moment to
@@ -303,6 +311,10 @@ std::unique_ptr<DspChain> Player::Impl::take_warm() {
 
 bool Player::Impl::produce() {
     if (io.pend_off < io.pend) return true;
+    // Tube Color off on a remodulated DSD file: once the stage is idle the file's own bytes go on (dsd_switch.h)
+    if (switch_off && cur && cur->color_idle() && !xf.fading) {
+        if (take_over_direct()) return produce_dsd();
+    }
     // the chain's work on this chunk (Throughput): not the decoder, a gapless switch or the carried output
     Throughput::Clock::duration work{};
     bool carried = false;

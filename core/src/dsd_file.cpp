@@ -342,6 +342,14 @@ public:
 
     void close() override {}
 
+    // Output frame f is made once the bytes of frame f are in: stage 1 (linear phase, 8 k bits) is centred (8 k - 1) / 2
+    // bits before the last of them, stage 2 (n2 taps) (n2 - 1) / 2 frames before f. Frame f stands for the bits from
+    // 8 f step on.
+    double content_delay_frames() const override {
+        const double bits = 1.0 - 8.0 * step_ + (8.0 * k_ - 1.0) / 2.0 + (n2_ > 0 ? 4.0 * step_ * (n2_ - 1) : 0.0);
+        return bits / (8.0 * step_);
+    }
+
     int read(double* out, int frames) override {
         int done = 0;
         while (done < frames) {

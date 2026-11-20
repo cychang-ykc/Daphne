@@ -36,6 +36,7 @@ class Player::Impl::DsdDirectStream final : public Stream {
 public:
     explicit DsdDirectStream(Impl& p) : p_(p) {}
     bool apply(const Settings& ns, const OutputChoice& no) override { return p_.handle_dsd(ns, no); }
+    bool poll() override { return p_.poll_remod_switch(); }
     bool produce() override { return p_.produce_dsd() || p_.try_gapless(); }
     bool reopen() override { return p_.handle_dsd(p_.s, p_.out, true); }
 
@@ -152,6 +153,7 @@ bool Player::Impl::do_seek(double sec) {
     }
     int64_t from = static_cast<int64_t>(std::max(0.0, sec) * rep.source.rate);
     if (rep.source.frames > 0) from = std::min(from, rep.source.frames);
+    mod_q = 0;   // the modulator's stream jumps: a direct stream can no longer follow on without a reopen
     if (dsdf) {
         dsdf->seek(from);
         tl.abs_out = from;

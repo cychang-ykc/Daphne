@@ -9,6 +9,7 @@ add_library(daphne_engine STATIC
     src/player/core.cpp
     src/player/crossfader.cpp
     src/player/dsd_stream.cpp
+    src/player/dsd_switch.cpp
     src/player/gapless.cpp
     src/player/output_session.cpp
     src/player/pcm_stream.cpp

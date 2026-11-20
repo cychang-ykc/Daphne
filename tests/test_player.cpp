@@ -28,12 +28,14 @@
 #endif
 #include "daphne/dsp/modulator.h"
 #include "daphne/dsp/resampler.h"
+#include "daphne/engine/dsd_file.h"
 #include "daphne/engine/file_bytes.h"
 #include "daphne/engine/filters.h"
 #include "daphne/engine/live_source.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/settings.h"
 #include "../core/src/player/crossfader.h"
+#include "../core/src/player/dsd_switch.h"
 #include "../core/src/player/throughput.h"
 #include "fake_output.h"
 #include "test_util.h"
@@ -940,7 +942,13 @@ namespace {
 // A DSF file (DSD64, stereo) whose bytes count its DoP frames: DoP frame f carries bytes 2f and 2f + 1 of each
 // channel; channel 0 holds f's low and middle byte, channel 1 its high byte and 0x5A. Sent directly, every frame
 // tells which frame of the file it is (DSF stores each byte LSB first; the player sends it MSB first)
-std::filesystem::path write_counting_dsf(const std::string& name, int64_t bytes) {
+uint8_t reverse_bits(uint8_t x) {
+    uint8_t r = 0;
+    for (int i = 0; i < 8; ++i) r = static_cast<uint8_t>(r | (((x >> i) & 1) << (7 - i)));
+    return r;
+}
+
+std::filesystem::path write_counting_dsf(const std::string& name, int64_t bytes, int dsd_rate = 2822400) {
     auto le = [](std::vector<uint8_t>& v, uint64_t x, int n) {
         for (int k = 0; k < n; ++k) v.push_back(static_cast<uint8_t>(x >> (8 * k)));
     };
@@ -951,7 +959,7 @@ std::filesystem::path write_counting_dsf(const std::string& name, int64_t bytes)
     f.insert(f.end(), {'D', 'S', 'D', ' '});
     le(f, 28, 8), le(f, 28 + 52 + 12 + data, 8), le(f, 0, 8);
     f.insert(f.end(), {'f', 'm', 't', ' '});
-    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, 2822400, 4), le(f, 1, 4);
+    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, static_cast<uint64_t>(dsd_rate), 4), le(f, 1, 4);
     le(f, static_cast<uint64_t>(bytes) * 8, 8), le(f, block, 4), le(f, 0, 4);
     f.insert(f.end(), {'d', 'a', 't', 'a'});
     le(f, 12 + data, 8);
@@ -968,11 +976,35 @@ std::filesystem::path write_counting_dsf(const std::string& name, int64_t bytes)
     return p;
 }
 
-uint8_t reverse_bits(uint8_t x) {
-    uint8_t r = 0;
-    for (int i = 0; i < 8; ++i) r = static_cast<uint8_t>(r | (((x >> i) & 1) << (7 - i)));
-    return r;
+// A DSF file (stereo) of these DSD bytes (MSB first, as the player sends them; DSF stores each byte LSB first)
+std::filesystem::path write_dsf_bytes(const std::string& name, const std::vector<uint8_t>& l, const std::vector<uint8_t>& r, int dsd_rate) {
+    auto le = [](std::vector<uint8_t>& v, uint64_t x, int n) {
+        for (int k = 0; k < n; ++k) v.push_back(static_cast<uint8_t>(x >> (8 * k)));
+    };
+    const int ch = 2, block = 4096;
+    const auto bytes = static_cast<int64_t>(std::min(l.size(), r.size()));
+    const int64_t blocks = (bytes + block - 1) / block;
+    const uint64_t data = static_cast<uint64_t>(blocks) * block * ch;
+    std::vector<uint8_t> f;
+    f.insert(f.end(), {'D', 'S', 'D', ' '});
+    le(f, 28, 8), le(f, 28 + 52 + 12 + data, 8), le(f, 0, 8);
+    f.insert(f.end(), {'f', 'm', 't', ' '});
+    le(f, 52, 8), le(f, 1, 4), le(f, 0, 4), le(f, 2, 4), le(f, ch, 4), le(f, static_cast<uint64_t>(dsd_rate), 4), le(f, 1, 4);
+    le(f, static_cast<uint64_t>(bytes) * 8, 8), le(f, block, 4), le(f, 0, 4);
+    f.insert(f.end(), {'d', 'a', 't', 'a'});
+    le(f, 12 + data, 8);
+    for (int64_t b = 0; b < blocks; ++b)
+        for (int c = 0; c < ch; ++c)
+            for (int i = 0; i < block; ++i) {
+                const int64_t k = b * block + i;
+                const auto& v = c == 0 ? l : r;
+                f.push_back(k < bytes ? reverse_bits(v[static_cast<size_t>(k)]) : 0x69);
+            }
+    const auto p = test::temp_path(name);
+    std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+    return p;
 }
+
 
 // The file frame each DoP frame of `b` (stereo, Int32) carries; -1 for a frame that is not music (no marker, idle)
 std::vector<int64_t> dop_frames(const std::vector<uint8_t>& b) {
@@ -1228,100 +1260,6 @@ TEST_CASE("Player: Tube Color switched while a DSD file plays keeps the position
     std::filesystem::remove(path, ec);
 }
 
-TEST_CASE("Player: Tube Color switched while a DSD file plays: no gap or repeat, no click", "[player][dsd][color]") {
-    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
-    // DoP while running: the frames sent directly say which frame of the file they are, so the DSD on both sides of
-    // the remodulated stretch shows what it must have covered
-    const auto path = write_counting_dsf("daphne_color_switch_run.dsf", 2822400 / 8 * 3);   // 3 s
-    Rig r;
-    r.dev->speed = 1.0;
-    Settings off;
-    off.output.dsd_lead_in_ms = 20;
-    Settings on = off;
-    on.color.enabled = true;
-    REQUIRE(r.start(platform::path_to_utf8(path), off));
-    sleep_s(0.4);
-    r.player->apply(on, OutputChoice{});
-    REQUIRE(wait_for([&] { return starts(r) >= 2; }));
-    sleep_s(0.4);
-    r.player->apply(off, OutputChoice{});
-    REQUIRE(wait_for([&] { return starts(r) >= 3; }));
-    r.finish();
-    CHECK(r.ended);
-    REQUIRE(r.dev->opens.size() == 3);
-    const auto all = r.dev->take();
-    const auto seg = [&](size_t i) {
-        const size_t a = r.dev->open_at[i], b = i + 1 < r.dev->open_at.size() ? r.dev->open_at[i + 1] : all.size();
-        return std::vector<uint8_t>(all.begin() + static_cast<std::ptrdiff_t>(a), all.begin() + static_cast<std::ptrdiff_t>(b));
-    };
-    const auto d0 = dop_frames(seg(0)), d2 = dop_frames(seg(2));
-    // the DSD before: music runs on without a break, then idle (DSD silence), not cut off
-    int64_t last0 = -1;
-    size_t last0_at = 0, breaks = 0;
-    for (size_t i = 0; i < d0.size(); ++i)
-        if (d0[i] >= 0) {
-            if (last0 >= 0 && d0[i] != last0 + 1) ++breaks;
-            last0 = d0[i], last0_at = i;
-        }
-    CHECK(breaks == 0);
-    REQUIRE(last0 > 0);
-    const auto m0 = dop_markers(seg(0), 2);
-    REQUIRE(last0_at + 1 < m0.size());
-    CHECK((m0[last0_at + 1] == 0x05 || m0[last0_at + 1] == 0xFA));   // DoP idle follows the music
-    // the remodulated stretch (DoP): its music from the first to the last frame that is not DSD silence; its level
-    // (the density of 1 bits in 256 bits, 0 for silence) fades in and out (20 ms), no click at either end
-    const auto rm = seg(1);
-    std::vector<double> lvl;   // channel 0, per DoP frame: the level over the 16 frames (256 bits) from it
-    std::vector<int> ones;
-    size_t first = 0, last = 0;
-    bool any = false;
-    for (size_t i = 0; i + 8 <= rm.size(); i += 8) {
-        const uint8_t mk = rm[i + 3], hi = rm[i + 2], lo = rm[i + 1];
-        ones.push_back(std::popcount(static_cast<unsigned>(hi)) + std::popcount(static_cast<unsigned>(lo)));
-        if ((mk == 0x05 || mk == 0xFA) && !(hi == 0x69 && lo == 0x69)) {
-            if (!any) first = i / 8, any = true;
-            last = i / 8;
-        }
-    }
-    REQUIRE(any);
-    for (size_t i = 0; i + 16 <= ones.size(); ++i) {
-        int n = 0;
-        for (size_t k = i; k < i + 16; ++k) n += ones[k];
-        lvl.push_back(n / 128.0 - 1.0);
-    }
-    double peak = 0.0, head = 0.0, tail = 0.0;
-    for (size_t i = first; i + 16 <= last; ++i) peak = std::max(peak, std::abs(lvl[i]));
-    for (size_t i = first; i < first + 32; ++i) head = std::max(head, std::abs(lvl[i]));
-    for (size_t i = last - 48; i + 16 <= last; ++i) tail = std::max(tail, std::abs(lvl[i]));
-    UNSCOPED_INFO("remodulated: level peak " << peak << ", first 32 frames " << head << ", last 32 frames " << tail);
-    CHECK(head < 0.1 * peak);
-    CHECK(tail < 0.1 * peak);
-    // the DSD after: starts on idle (the lead-in), then music again, without a break, to the end of the file
-    int64_t first2 = -1, prev = -1;
-    size_t breaks2 = 0, first2_at = 0;
-    for (size_t i = 0; i < d2.size(); ++i)
-        if (d2[i] >= 0) {
-            if (first2 < 0) first2 = d2[i], first2_at = i;
-            else if (d2[i] != prev + 1) ++breaks2;
-            prev = d2[i];
-        }
-    CHECK(breaks2 == 0);
-    CHECK(first2_at >= static_cast<size_t>(176400 * 30 / 1000));   // >= 30 ms of lead-in after a restart
-    CHECK(prev == 2822400 / 8 * 3 / 2 - 1);                        // to the last frame of the file
-    // the remodulated stretch covered the file from last0 + 1 to first2 - 1 (DoP frames at 176.4 kHz throughout)
-    const double covered = static_cast<double>(last - first + 1), expected = static_cast<double>(first2 - last0 - 1);
-    UNSCOPED_INFO("remodulated stretch " << covered << " frames, the file between the DSD stretches " << expected << " frames");
-    CHECK(std::abs(covered - expected) <= 4096.0);
-    // the silence at each switch (what the device plays between the music on either side)
-    const double gap_on = static_cast<double>(d0.size() - 1 - last0_at + first) / 176.4;
-    const double gap_off = static_cast<double>(dop_frames(rm).size() - 1 - last + first2_at) / 176.4;
-    UNSCOPED_INFO("silence at the switch on " << gap_on << " ms, off " << gap_off << " ms");
-    WARN("silence at the switch on " << gap_on << " ms, off " << gap_off << " ms; remodulated stretch " << covered - expected
-                                      << " frames longer than the file between");
-    r.player.reset();
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-}
 
 // A PCM file on the dsd core (DSD upsampling): Tube Color goes in the chain before the modulator, switched on by a
 // rebuild and crossfade like any other chain change; the device stays as it is.
@@ -1706,9 +1644,228 @@ TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
     }
 }
 
+namespace {
+
+// A DSF file of real music: pink noise and a sine (about -20 dBFS) modulated to DSD64. l, r: its bytes, MSB first.
+std::filesystem::path write_music_dsf(const std::string& name, double seconds, std::vector<uint8_t>* l, std::vector<uint8_t>* r) {
+    const int pcm_rate = 352800;
+    const auto sig = pink_and_sine(pcm_rate, seconds, 0.1, 0.1, 441.0);
+    const int frames = static_cast<int>(sig->x.size() / 2);
+    daphne::dsp::DsdModulator mod(pcm_rate, 64, 8);
+    std::vector<uint8_t> out;   // interleaved L R bytes, MSB first
+    mod.process(sig->x.data(), frames, 2, out);
+    l->clear(), r->clear();
+    for (size_t k = 0; k + 1 < out.size(); k += 2) l->push_back(out[k]), r->push_back(out[k + 1]);
+    return write_dsf_bytes(name, *l, *r, 2822400);
+}
+
+// The DSD bytes (MSB first) the DoP frames of a stereo Int32 stream carry, frame by frame; marker_ok: they alternate
+// from the first to the last (before the PCM silence the stream ends on)
+struct DopPayload {
+    std::vector<uint8_t> l, r;
+    size_t frames = 0;   // DoP frames
+    bool markers_alternate = true;
+};
+DopPayload dop_payload(const std::vector<uint8_t>& b) {
+    DopPayload p;
+    int last = -1;
+    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
+        const uint8_t mk = b[i + 3];
+        if (mk != 0x05 && mk != 0xFA) {
+            if (last >= 0) break;   // the end
+            continue;
+        }
+        if (mk == last) p.markers_alternate = false;
+        last = mk;
+        p.l.push_back(b[i + 2]), p.l.push_back(b[i + 1]);
+        p.r.push_back(b[i + 6]), p.r.push_back(b[i + 5]);
+        ++p.frames;
+    }
+    return p;
+}
+
+// Channel 0 of a DSD stream (bytes MSB first, both channels) as PCM at 176.4 kHz: Daphne's DSD -> PCM converter
+std::vector<double> dsd_to_pcm(const std::vector<uint8_t>& l, const std::vector<uint8_t>& r, const std::string& name) {
+    const auto path = write_dsf_bytes(name, l, r, 2822400);
+    auto d = daphne::make_dsd_pcm_decoder(0, 24);
+    std::string e;
+    REQUIRE(d->open(path, &e));
+    std::vector<double> buf(8192 * 2), y;
+    for (int n; (n = d->read(buf.data(), 8192)) > 0;)
+        for (int i = 0; i < n; ++i) y.push_back(buf[2 * static_cast<size_t>(i)]);
+    d.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return y;
+}
+
+// The 10 ms windows' cross-correlation peaks of y against x (first differences), over [from, to) of x, lags +-span
+std::map<int, int> window_lags(const std::vector<double>& x, const std::vector<double>& y, size_t from, size_t to, int win, int span) {
+    std::map<int, int> lags;
+    for (size_t at = std::max<size_t>(from, static_cast<size_t>(span) + 1); at + win + span + 1 < std::min({to, x.size(), y.size()}); at += win) {
+        double best = -1e300;
+        int lag = 0;
+        for (int l = -span; l <= span; ++l) {
+            double c = 0.0;
+            for (int i = 0; i < win; ++i) {
+                const size_t a = at + static_cast<size_t>(i), bb = static_cast<size_t>(static_cast<int64_t>(a) - l);
+                c += (y[a] - y[a - 1]) * (x[bb] - x[bb - 1]);
+            }
+            if (c > best) best = c, lag = l;
+        }
+        ++lags[lag];
+    }
+    return lags;
+}
+
+// The checks of a seamless switch on and back off (DoP): one device open, no break in the DoP marker sequence, no
+// silence, the direct stretches the file's own bytes at one alignment (so nothing lost or repeated anywhere), and the
+// remodulated stretch where the file is (decoded to PCM: the cross-correlation peak at lag 0 in every 10 ms window).
+void check_seamless(Rig& r, const std::vector<uint8_t>& fl, const std::vector<uint8_t>& fr, const std::string& tag) {
+    REQUIRE(r.dev->opens.size() == 1);
+    const auto p = dop_payload(r.dev->take());
+    CHECK(p.markers_alternate);
+    // where the file starts in the stream (after the lead-in silence)
+    size_t off = SIZE_MAX;
+    for (size_t i = 0; i + 64 <= p.l.size() && off == SIZE_MAX; i += 2)
+        if (std::equal(fl.begin(), fl.begin() + 64, p.l.begin() + static_cast<std::ptrdiff_t>(i))) off = i;
+    REQUIRE(off != SIZE_MAX);
+    // the file's bytes at that one alignment: from the start up to the switch on, and from the switch off to the end
+    const size_t n = std::min(fl.size(), p.l.size() - off);
+    size_t head = 0, tail = 0;
+    while (head < n && p.l[off + head] == fl[head] && p.r[off + head] == fr[head]) ++head;
+    while (tail < n && p.l[off + n - 1 - tail] == fl[n - 1 - tail] && p.r[off + n - 1 - tail] == fr[n - 1 - tail]) ++tail;
+    UNSCOPED_INFO(tag << ": sent directly up to byte " << head << ", remodulated to byte " << n - tail << ", directly again to "
+                      << n << " (the file has " << fl.size() << ")");
+    CHECK(n == fl.size());                      // the whole file came out, no more and no less
+    CHECK(head > 2822400 / 8 / 4);              // a direct stretch before
+    CHECK(tail > 2822400 / 8 / 4);              // and after: at the same alignment, so no byte lost or repeated between
+    CHECK(head + tail < n - 2822400 / 8 / 10);  // with a remodulated stretch between them
+    // no silence anywhere in the music (a run of DSD idle bytes)
+    size_t run = 0, longest = 0;
+    for (size_t i = off; i < off + n; ++i) {
+        run = p.l[i] == 0x69 && p.r[i] == 0x69 ? run + 1 : 0;
+        longest = std::max(longest, run);
+    }
+    CHECK(longest < 8);
+    // the content: the stream and the file as PCM, lined up by the same alignment
+    const auto got = dsd_to_pcm(std::vector<uint8_t>(p.l.begin() + static_cast<std::ptrdiff_t>(off), p.l.begin() + static_cast<std::ptrdiff_t>(off + n)),
+                                std::vector<uint8_t>(p.r.begin() + static_cast<std::ptrdiff_t>(off), p.r.begin() + static_cast<std::ptrdiff_t>(off + n)),
+                                "daphne_6b_got_" + tag + ".dsf");
+    const auto ref = dsd_to_pcm(fl, fr, "daphne_6b_ref_" + tag + ".dsf");
+    const size_t from = head / 2 > 4410 ? head / 2 - 4410 : 0, to = std::min(got.size(), (n - tail) / 2 + 4410);   // the remodulated stretch, 25 ms either side
+    const auto lags = window_lags(ref, got, from, to, 1764, 40);
+    std::string seen;
+    for (const auto& [l, k] : lags) seen += std::to_string(l) + " (" + std::to_string(k) + " windows) ";
+    WARN(tag << ": cross-correlation peak, by 10 ms window across the remodulated stretch and both switches: " << seen
+             << "| direct up to byte " << head << ", from byte " << n - tail);
+    CHECK(lags.size() == 1);
+    CHECK(lags.begin()->first == 0);
+}
+
+}  // namespace
+
+// Tube Color switched on and off while a DSD file plays (doc/N28, M1 6b): on the open device, the remodulation prepared
+// while the file plays on directly takes over at a DSD byte, and the file's own bytes take over again at the byte the
+// modulator would have made next.
+TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening the device", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    std::vector<uint8_t> fl, fr;
+    const auto path = write_music_dsf("daphne_color_6b.dsf", 3.0, &fl, &fr);
+    Settings off;
+    off.output.dsd_lead_in_ms = 20;
+    // the switch's alignment is measured at drive 1 % (the response all but flat, doc/N28): a higher drive adds the
+    // amplifier's own phase (its output transformer's low-pass: some 1.5 samples of group delay in the test response)
+    Settings on = off;
+    on.color.enabled = true;
+    on.color.drive = 0.01;
+    SECTION("DoP: aligned to the byte") {
+        Rig r;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.5);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        sleep_s(0.6);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        check_seamless(r, fl, fr, "dop");   // (one device open among its checks)
+        r.player.reset();
+    }
+    SECTION("the preparation late: the switch moves on, the file plays on") {
+        daphne::playback::g_remod_prep_delay_ms = 700;   // more than the 0.4 s lead
+        Rig r;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.3);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        daphne::playback::g_remod_prep_delay_ms = 0;
+        CHECK(r.saw("not ready at its point; it takes over later"));
+        sleep_s(0.5);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        check_seamless(r, fl, fr, "late");
+        r.player.reset();
+    }
+    SECTION("native DSD: the device opened once") {
+        Rig r;
+        r.caps.native_dsd = true;
+        r.dev->speed = 1.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), off));
+        sleep_s(0.5);
+        r.player->apply(on, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        sleep_s(0.5);
+        r.player->apply(off, OutputChoice{});
+        REQUIRE(wait_for([&] { return r.saw("sent directly again from DSD byte"); }, 5.0));
+        r.finish();
+        CHECK(r.ended);
+        CHECK(r.dev->opens.size() == 1);
+        CHECK(r.dev->opens.front().dsd);
+        r.player.reset();
+    }
+    daphne::playback::g_remod_prep_delay_ms = 0;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// A 48 kHz-family DSD file: the modulator runs at 44.1 kHz x osr, so its remodulation changes the rate: the device is
+// reopened as before (doc/N28, a known limitation).
+TEST_CASE("Player: Tube Color on a 48 kHz-family DSD file reopens the device", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_48k.dsf", 3072000 / 8, 3072000);
+    Rig r;
+    r.dev->speed = 1.0;
+    Settings off;
+    off.output.dsd_lead_in_ms = 20;
+    Settings on = off;
+    on.color.enabled = true;
+    REQUIRE(r.start(platform::path_to_utf8(path), off));
+    sleep_s(0.3);
+    r.player->apply(on, OutputChoice{});
+    REQUIRE(wait_for([&] { return starts(r) >= 2; }));
+    r.finish();
+    CHECK(r.ended);
+    CHECK(r.dev->opens.size() == 2);
+    CHECK_FALSE(r.saw("taken over at DSD byte"));
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file", "[player][dsd][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
-    const auto path = write_counting_dsf("daphne_color_switch_fast.dsf", 2822400 / 8);   // 1 s
+    const auto path = write_counting_dsf("daphne_color_switch_fast.dsf", 2822400 / 8 * 2);   // 2 s
+    auto spin = [](double s) {   // (a sleep can overshoot by tens of ms on a busy machine)
+        const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
+        while (std::chrono::steady_clock::now() < until) {
+        }
+    };
     for (bool native : {true, false}) {
         INFO((native ? "native DSD device" : "DoP device"));
         Rig r;
@@ -1720,33 +1877,22 @@ TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file",
         on.color.enabled = true;
         REQUIRE(r.start(platform::path_to_utf8(path), off));
         sleep_s(0.2);
-        // 30 ms apart, timed by the clock: a sleep can overshoot by tens of ms on a busy machine (CI's macOS runners)
-        auto spin = [](double s) {
-            const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
-            while (std::chrono::steady_clock::now() < until) {
-            }
-        };
         const auto t0 = std::chrono::steady_clock::now();
         r.player->apply(on, OutputChoice{});
         spin(0.03);
         r.player->apply(off, OutputChoice{});
         spin(0.03);
         r.player->apply(on, OutputChoice{});
-        const double took_ms = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000.0;
+        const auto took = std::chrono::steady_clock::now() - t0;
+        const double took_ms = std::chrono::duration<double>(took).count() * 1000.0;
         UNSCOPED_INFO("three switches in " << took_ms << " ms");
-        CHECK(took_ms < 100.0);
-        const auto rep = r.finish(10.0);   // stopped after 10 s if it hung
+        CHECK(took < std::chrono::milliseconds(100));
+        // the last setting (on) takes over, once, on the open device; nothing hangs
+        REQUIRE(wait_for([&] { return r.saw("taken over at DSD byte"); }, 5.0));
+        r.finish(10.0);
         CHECK(r.ended);
-        // ends on the last setting (on: remodulated); one open per change of path, never the same one twice
-        const auto& o = r.dev->opens;
-        const int on_count = count_events(r, "DSD remodulated (Tube Color)"), off_count = count_events(r, "sent directly again");
-        UNSCOPED_INFO(o.size() << " opens, " << on_count << " on, " << off_count << " off");
-        REQUIRE(o.size() >= 2);
-        CHECK(o.size() <= 4);
-        CHECK(static_cast<int>(o.size()) == 1 + on_count + off_count);
-        CHECK(on_count == off_count + 1);
-        for (const auto& x : o) CHECK(x.dsd == native);
-        CHECK(rep.source.dsd_rate == 2822400);
+        CHECK(r.dev->opens.size() == 1);
+        CHECK(count_events(r, "taken over at DSD byte") == 1);
         r.player.reset();
     }
     std::error_code ec;

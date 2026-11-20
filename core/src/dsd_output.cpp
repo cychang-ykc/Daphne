@@ -80,6 +80,14 @@ void DsdEncoder::encode(const double* pcm, int frames, std::vector<uint8_t>& out
     pack(out);
 }
 
+void DsdEncoder::modulate(const double* pcm, int frames) { mod_->process(pcm, frames, ch_, bits_); }
+
+void DsdEncoder::drop_front(size_t bytes_per_channel) {
+    const size_t n = std::min(bytes_per_channel * static_cast<size_t>(ch_), bits_.size() - bits_off_);
+    bits_off_ += n;
+    dropped_ += static_cast<int64_t>(n / static_cast<size_t>(ch_));
+}
+
 void DsdEncoder::encode_dsd(const uint8_t* bytes, int frames, std::vector<uint8_t>& out) {
     bits_.insert(bits_.end(), bytes, bytes + static_cast<size_t>(frames) * ch_);
     pack(out);
@@ -141,6 +149,7 @@ void DsdEncoder::pack(std::vector<uint8_t>& out) {
             for (int c = 0; c < ch_; ++c) out.push_back(lsb_first_ ? kBitrev[b[c]] : b[c]);
         }
         bits_off_ += per_frame;
+        packed_ += tr_ == DsdTransport::Dop ? 2 : 1;
     }
     if (bits_off_ > (1u << 16)) {
         bits_.erase(bits_.begin(), bits_.begin() + static_cast<std::ptrdiff_t>(bits_off_));

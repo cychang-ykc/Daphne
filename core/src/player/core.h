@@ -32,6 +32,7 @@
 #include "change_plan.h"
 #include "common.h"
 #include "crossfader.h"
+#include "dsd_switch.h"
 #include "join.h"
 #include "output_session.h"
 #include "report.h"
@@ -108,6 +109,16 @@ struct Player::Impl {
     std::vector<uint8_t> dsd_in;
     int dsd_pcm_rate = 0;              // DSD -> PCM fallback at this rate (0 = 176.4 / 192 kHz)
     bool dsd_chain_for_color = false;  // a DSD file goes through the chain only because Tube Color is active
+    // Tube Color switching a DSD file between sent directly and remodulated on the open device (doc/N28, dsd_switch.h)
+    static constexpr double kSwitchLead = 0.4;                // s of DSD past the write position the switch is put at
+    std::future<std::unique_ptr<RemodPrep>> remod_job;        // the remodulation being prepared
+    std::shared_ptr<std::atomic<bool>> remod_cancel;
+    std::unique_ptr<RemodPrep> remod_ready;                   // prepared, for its file byte p
+    int64_t switch_at = -1;                                   // the file byte the direct stream stops at for it
+    std::optional<std::pair<Settings, OutputChoice>> switch_on, switch_off;   // the settings each switch goes to
+    int64_t mod0 = 0;                                         // the modulator's input sample 0: its content (chain frames)
+    int mod_q = 0;                                            // chain frames per DSD byte; 0: no direct stream can follow on
+    std::filesystem::path mod_path;                           // the file the modulator's stream is of
     int dop_locked = 0;                // the PCM rate the device locked instead of the DoP rate (0: none)
     double start_sec = 0.0;            // Player::start position
     // transport requests (under m) and state
@@ -244,6 +255,14 @@ struct Player::Impl {
     bool dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no);
     bool back_to_dsd_direct(const Settings& ns) const;
     bool pcm_to_dsd_direct(int64_t from);
+    // the switch without reopening the device (6b)
+    bool seamless_on_ok(const Settings& ns, const OutputChoice& no) const;
+    bool seamless_off_ok(const Settings& ns, const OutputChoice& no) const;
+    void begin_remod_switch(const Settings& ns, const OutputChoice& no);
+    void cancel_remod_switch();
+    bool poll_remod_switch();
+    bool take_over_remod();
+    bool take_over_direct();
     bool produce_dsd();
     // DSD direct: only the output can change (no processing applies to DSD sent directly).
     // reset: a driver reset reopens the device as it is (nothing more is queued for it).

@@ -33,6 +33,9 @@ public:
     // Interleaved float64, ±1.0 full scale. Returns frames read; 0 = end of stream.
     virtual int read(double* out, int frames) = 0;
     virtual bool seek(int64_t frame) = 0;
+    // Frames between the source's content and the frame it comes out in (a causal filter in the decoder: the DSD -> PCM
+    // converter's, a fraction of a frame included); 0 for the PCM decoders.
+    virtual double content_delay_frames() const { return 0.0; }
     const AudioInfo& info() const { return info_; }
     int64_t position() const { return pos_; }
     double duration_seconds() const { return info_.rate > 0 && info_.frames > 0 ? double(info_.frames) / info_.rate : 0.0; }

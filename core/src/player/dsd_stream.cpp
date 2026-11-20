@@ -157,6 +157,221 @@ bool Player::Impl::pcm_to_dsd_direct(int64_t from) {
     return true;
 }
 
+bool Player::Impl::seamless_on_ok(const Settings& ns, const OutputChoice& no) const {
+    const auto r = remodulation(ns, no);
+    if (!r || !dsdf || !dsdenc || !(no == out) || !tl.switches.empty() || (io.dev && io.dev->paused())) return false;
+    const int dsd = rep.source.dsd_rate;
+    if (dsd % 44100 != 0) return false;   // 48 kHz family: the modulator runs at 44.1 kHz x osr, the rate changes
+    const OutputCaps c = deps.output_caps(no);
+    const bool native = c.native_dsd && ns.output.dsd != DsdMode::Dop;
+    if (native == dsdenc->dop()) return false;   // the remodulation would take the other transport
+    const int64_t chain_rate = modulator_input_rate(dsd_pcm_rate > 0 ? dsd_pcm_rate : 176400);   // the converter's rate
+    return chain_rate * 8 % dsd == 0 && chain_rate * 8 / dsd >= 1 && chain_rate * 8 / dsd <= 2;   // DSD64, DSD128
+}
+
+bool Player::Impl::seamless_off_ok(const Settings& ns, const OutputChoice& no) const {
+    if (dsdf || !dsdenc || !cur || mod_q == 0 || mod_path != cur_path || !(no == out) || !tl.switches.empty()) return false;
+    if ((io.dev && io.dev->paused()) || xf.fading || cross_join.active()) return false;
+    const OutputCaps c = deps.output_caps(no);
+    const bool native = c.native_dsd && ns.output.dsd != DsdMode::Dop && ns.output.dsd != DsdMode::Pcm;
+    return native != dsdenc->dop() && rep.source.dsd_rate % 44100 == 0;
+}
+
+void Player::Impl::begin_remod_switch(const Settings& ns, const OutputChoice& no) {
+    switch_on = std::make_pair(ns, no);
+    RemodRequest q;
+    q.path = cur_path;
+    q.cs = chain_settings(ns, ns.modulator.osr);
+    q.cs.color.drive = 0.0;   // idle until it has taken over: then it fades in
+    q.dsd_pcm_rate = dsd_pcm_rate;
+    q.dsd_rate = rep.source.dsd_rate;
+    q.device = rep.device;
+    q.dop = dsdenc->dop();
+    // the switch point: the lead past what is written, on 8 bytes (whole input frames and DoP frames, DSD64 / DSD128)
+    const int64_t align = 8;
+    const int64_t lead = static_cast<int64_t>(kSwitchLead * rep.source.dsd_rate / 8);
+    q.at = (tl.abs_out + lead + align - 1) / align * align;
+    if (rep.source.frames > 0 && q.at >= rep.source.frames - lead) {   // too close to the end: as before, reopened
+        switch_on.reset();
+        dsd_direct_to_pcm(ns, no);
+        return;
+    }
+    switch_at = q.at;
+    remod_cancel = std::make_shared<std::atomic<bool>>(false);
+    remod_job = std::async(std::launch::async, [q, flag = remod_cancel]() -> std::unique_ptr<RemodPrep> {
+        PoolThreadScope pool;
+        platform::set_thread_priority(platform::Priority::BelowNormal);
+        std::string e;
+        return prepare_remod(q, flag.get(), &e);
+    });
+    event("Tube Color on: the remodulation is prepared while the DSD file plays on directly (it takes over without "
+          "reopening the device)");
+}
+
+void Player::Impl::cancel_remod_switch() {
+    if (remod_cancel) *remod_cancel = true;
+    if (remod_job.valid()) remod_job.wait();   // (it stops at its next chunk or filter design step)
+    remod_job = {};
+    remod_ready.reset();
+    switch_at = -1;
+    switch_on.reset();
+}
+
+// The direct stream's poll: a prepared remodulation either waits for the direct stream to reach its point, or (the
+// direct stream went past it while it was being prepared) runs on to a later one; it never holds the direct stream up.
+bool Player::Impl::poll_remod_switch() {
+    if (!remod_job.valid() || remod_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return true;
+    auto r = remod_job.get();
+    if (!r) {
+        event("Tube Color on: the remodulation could not be prepared; reopening the device");
+        const auto to = switch_on;
+        cancel_remod_switch();
+        if (to) return dsd_direct_to_pcm(to->first, to->second);
+        return true;
+    }
+    if (r->p >= tl.abs_out && switch_at == r->p) {   // ready in time
+        remod_ready = std::move(r);
+        return true;
+    }
+    // late: a later point, the same preparation running on to it
+    const int64_t lead = static_cast<int64_t>(kSwitchLead * rep.source.dsd_rate / 8), align = 8;
+    const int64_t at = (tl.abs_out + lead + align - 1) / align * align;
+    if (rep.source.frames > 0 && at >= rep.source.frames - lead) {
+        const auto to = switch_on;
+        cancel_remod_switch();
+        event("Tube Color on: the remodulation was not ready before the end of the file; reopening the device");
+        if (to) return dsd_direct_to_pcm(to->first, to->second);
+        return true;
+    }
+    event("Tube Color on: the remodulation was not ready at its point; it takes over later (the DSD file plays on)");
+    switch_at = at;
+    std::shared_ptr<RemodPrep> sp(std::move(r));
+    remod_job = std::async(std::launch::async, [sp, at, flag = remod_cancel]() -> std::unique_ptr<RemodPrep> {
+        PoolThreadScope pool;
+        platform::set_thread_priority(platform::Priority::BelowNormal);
+        if (!sp->advance_to(at, flag.get())) return nullptr;
+        auto out = std::make_unique<RemodPrep>();
+        *out = std::move(*sp);
+        return out;
+    });
+    return true;
+}
+
+// At the switch point: what is queued is the file up to byte p, the remodulation goes on from p.
+bool Player::Impl::take_over_remod() {
+    auto r = std::move(remod_ready);
+    const auto to = *switch_on;
+    remod_job = {};
+    remod_cancel.reset();
+    switch_at = -1;
+    switch_on.reset();
+    const int64_t session_bytes = session_in;
+    r->enc->follow(*dsdenc);   // the DoP marker sequence goes on
+    dsdf.reset();
+    dsdenc = std::move(r->enc);
+    dec = std::move(r->dec);
+    cur = std::move(r->chain);
+    hist = std::move(r->hist);
+    s = to.first;
+    rep.source = dec->info();
+    ch = rep.source.channels;
+    pcm.assign(static_cast<size_t>(kChunk) * static_cast<size_t>(ch), 0.0);
+    chain_fmt = r->devf;
+    crate = chain_fmt.rate;
+    ratio = r->ratio;
+    run_osr = s.modulator.osr;
+    want = requested_rate(s, rep.source.rate);
+    dch = rep.device.channels;
+    in_total = r->in;
+    tl.abs_out = static_cast<int64_t>(r->ratio) * r->f0 + r->out;   // the chain frames made, as if from the session's start
+    tl.h_base = 0;
+    tl.track_origin_in = 0;
+    session_in = session_bytes / r->bytes_per_in;
+    skip_out = 0;
+    flushed = false;
+    tail_zeros = -1;
+    end_queued = false;
+    xf.clear();
+    xf.set_channels(dch);
+    cross_join.clear();
+    throughput.reset();
+    read_frames = kChunk;
+    io.limit = 0;
+    io.chunk = 0;
+    dsp.assign(static_cast<size_t>(cur->max_output_frames()) * static_cast<size_t>(dch), 0.0);
+    tmp_c = dsp;
+    tmp_n = dsp;
+    const size_t need = dsdenc->max_bytes(cur->max_output_frames()) + dsdenc->pending_per_channel() * 4 * static_cast<size_t>(io.block);
+    if (io.bytes.size() < need) io.bytes.resize(need);
+    mod0 = r->mod0();
+    mod_q = r->q;
+    mod_path = cur_path;
+    dsd_chain_for_color = true;
+    stream = pcm_stream;
+    // what the modulator made past p goes out first
+    dsd_bytes.clear();
+    dsdenc->pack_pending(dsd_bytes);
+    std::copy(dsd_bytes.begin(), dsd_bytes.end(), io.bytes.begin());
+    io.pend = dsd_bytes.size();
+    io.pend_off = 0;
+    // Tube Color fades in from its idle stage (the chain was built at drive 0)
+    if (!cur->update(chain_settings(s, run_osr))) launch_build(s, out);
+    rep.chain = cur->stages();
+    rep.filter = report.filter(s, dsdenc.get());
+    report.bit_perfect(tl.heard_chain(cur.get()));
+    event("DSD remodulated (Tube Color): taken over at DSD byte " + std::to_string(r->p) + " without reopening the device");
+    if (cb.on_changed) cb.on_changed(rep);
+    return true;
+}
+
+// The stage is idle: the remodulation carries the file as it is, and the file's own bytes go on where the modulator's
+// next byte would have been.
+bool Player::Impl::take_over_direct() {
+    const auto to = *switch_off;
+    switch_off.reset();
+    const int64_t k = dsdenc->emitted_per_channel();
+    const int64_t e_byte = (mod0 + static_cast<int64_t>(mod_q) * k - 2) / mod_q;
+    std::string e;
+    auto f = std::make_unique<DsdFile>();
+    if (!f->open(cur_path, &e) || !f->seek(e_byte)) {
+        event("Tube Color off: the DSD file could not be opened again here (" + e + "); reopening the device");
+        return false;
+    }
+    auto enc = std::make_unique<DsdEncoder>();
+    if (!enc->init_direct(rep.source.dsd_rate, rep.device, dsdenc->dop() ? DsdTransport::Dop : DsdTransport::Native, &e)) {
+        event("Tube Color off: " + e + "; reopening the device");
+        return false;
+    }
+    enc->follow(*dsdenc);
+    const int bytes_per_in = rep.source.dsd_rate / 8 / std::max(1, rep.source.rate);
+    const int64_t session_frames = session_in;
+    s = to.first;
+    dsdf = std::move(f);
+    dsdenc = std::move(enc);
+    set_dsd_source();
+    crate = rep.source.rate;   // DSD bytes per channel per second
+    ratio = 1;
+    dch = rep.device.channels;
+    tl.abs_out = e_byte;
+    tl.h_base = 0;
+    tl.track_origin_in = 0;
+    session_in = session_frames * bytes_per_in;
+    end_queued = false;
+    dsd_in.assign(static_cast<size_t>(kChunk) * 4 * static_cast<size_t>(rep.source.channels), 0);
+    if (io.bytes.size() < static_cast<size_t>(kChunk) * 4 * static_cast<size_t>(io.block)) io.bytes.resize(static_cast<size_t>(kChunk) * 4 * static_cast<size_t>(io.block));
+    io.limit = io.chunk = 0;
+    dsd_chain_for_color = false;
+    mod_q = 0;
+    stream = dsd_stream;
+    rep.chain.clear();
+    rep.filter = "none (DSD file sent directly) | " + dsdenc->describe();
+    rep.bit_perfect = true;
+    rep.not_bit_perfect_reason.clear();
+    event("Tube Color off: the DSD file is sent directly again from DSD byte " + std::to_string(e_byte) + " without reopening the device");
+    if (cb.on_changed) cb.on_changed(rep);
+    return true;
+}
+
 bool Player::Impl::open_dsd(int64_t from, std::string* error) {
     const DsdInfo& di = dsdf->info();
     struct Attempt {
@@ -264,7 +479,16 @@ bool Player::Impl::open_dsd(int64_t from, std::string* error) {
 
 bool Player::Impl::produce_dsd() {
     if (io.pend_off < io.pend) return true;
-    const int n = dsdf->read(dsd_in.data(), kChunk * 4);
+    int read_max = kChunk * 4;
+    if (switch_at >= 0) {
+        if (tl.abs_out >= switch_at) {
+            if (remod_ready && remod_ready->p == tl.abs_out && take_over_remod()) return produce();   // here it takes over
+            switch_at = -1;   // not ready here: the direct stream plays on (poll_remod_switch puts it later)
+        } else {
+            read_max = static_cast<int>(std::min<int64_t>(read_max, switch_at - tl.abs_out));
+        }
+    }
+    const int n = dsdf->read(dsd_in.data(), read_max);
     if (n <= 0) return false;
     dsd_bytes.clear();
     dsdenc->encode_dsd(dsd_in.data(), n, dsd_bytes);
@@ -278,8 +502,30 @@ bool Player::Impl::produce_dsd() {
 }
 
 bool Player::Impl::handle_dsd(const Settings& ns, const OutputChoice& no, bool reset) {
-    // Tube Color switched on: the file goes on as PCM through the chain, from where it is heard
-    if (!reset && color_active(ns) && !color_active(s)) return dsd_direct_to_pcm(ns, no);
+    // Tube Color switched on: the file goes on remodulated (or as PCM), from where it is heard. On the open device when
+    // the output stays as it is (6b: prepared off this thread, the direct stream plays on until it takes over), else the
+    // device is reopened
+    if (switch_on || remod_job.valid()) {
+        if (!reset && color_active(ns) && no == out) {
+            switch_on = std::make_pair(ns, no);   // the latest, applied when it takes over
+            return true;
+        }
+        cancel_remod_switch();
+        if (!color_active(ns) && !reset) {
+            event("Tube Color off before the remodulation took over: the DSD file is still sent directly");
+            if (!dsd_direct_reopens(playing(), ns, no)) {
+                s = ns;
+                return true;
+            }
+        }
+    }
+    if (!reset && color_active(ns) && !color_active(s)) {
+        if (seamless_on_ok(ns, no)) {
+            begin_remod_switch(ns, no);
+            return true;
+        }
+        return dsd_direct_to_pcm(ns, no);
+    }
     const bool reopen = reset || dsd_direct_reopens(playing(), ns, no);
     s = ns;
     if (!reopen) {
