@@ -157,10 +157,11 @@ def inductance(p, g, gap_cm, f=50.0, b_ac=0.01, cycles=6):
         open(cir, "w").write("\n".join(net))
         subprocess.run([X.XYCE, cir], capture_output=True, text=True, timeout=300, cwd=td)
         d = np.array([[float(x) for x in l.split()] for l in open(cir + ".prn") if l.split() and l.split()[0][0] in "0123456789-." and len(l.split()) == 3])
-    m = d[:, 0] >= t_on + 0.01 + (cycles - 1) / f
+    m = d[:, 0] >= t_on + 0.01 + (cycles - 2.5) / f       # the last two whole cycles (and a margin)
     t, v, b = d[m].T
-    k = np.exp(-2j * np.pi * f * t)
-    vamp = 2 * abs(np.mean(v * k))
+    import pp_core_lf
+    tu, vu = pp_core_lf.uniform(t, v, f)     # Xyce's time steps vary: resample before the Fourier sum
+    vamp = 2 * abs(np.mean(vu * np.exp(-2j * np.pi * f * tu)))
     return vamp / (2 * math.pi * f * i_ac), float(np.mean(b)), float(np.max(b) - np.mean(b))
 
 
@@ -195,7 +196,7 @@ def C_ind(p, g, gap):
 def design_se(name, p):
     """Turns so that the inductance at the optimum gap equals the target; the flux check at 20 Hz rated power."""
     g = GEOM[name]
-    lo, hi = g["N"], 6 * g["N"]
+    lo, hi = g["N"] / 3, 6 * g["N"]
     for _ in range(12):
         N = math.sqrt(lo * hi)
         L, _, _ = best_gap(p, g, N)
