@@ -1,4 +1,4 @@
-# Release build + unit tests on Windows (MSVC), Linux (GCC) and macOS (Apple Silicon, Clang), N25.
+# Release build + unit tests on Windows (MSVC), Linux (GCC) and macOS (Apple Silicon, Clang; macos-15: GitHub retired the macos-14 image), N25.
 # Warnings are errors here (DAPHNE_WARNINGS_AS_ERRORS: /W4 on MSVC, -Wall -Wextra elsewhere). One Linux job
 # builds with the system's FFmpeg (pkg-config), so the FFmpeg decoder is compiled and tested outside
 # Windows too; the others build as on a machine without FFmpeg or the ASIO SDK. The player tests run on a
@@ -22,10 +22,10 @@ jobs:
           - { name: windows, os: windows-latest }
           - { name: linux, os: ubuntu-latest }
           - { name: linux-ffmpeg, os: ubuntu-latest, ffmpeg: true }
-          - { name: macos, os: macos-14 }
+          - { name: macos, os: macos-15 }
           - { name: windows-color, os: windows-latest, color_test: true }
           - { name: linux-color, os: ubuntu-latest, color_test: true }
-          - { name: macos-color, os: macos-14, color_test: true }
+          - { name: macos-color, os: macos-15, color_test: true }
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
