@@ -30,7 +30,7 @@ const EnumTable<EqType> kEqType = {{"PK", EqType::PK},       {"LS", EqType::LS},
                                    {"BP", EqType::BP}};
 const EnumTable<VolumeMode> kVolumeMode = {
     {"digital", VolumeMode::Digital}, {"fixed", VolumeMode::Fixed}};
-const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}, {"circuit", ColorModel::Circuit}};
+const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}};
 const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {"set-300b", ColorPreset::Set300b},
                                              {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul}};
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
@@ -145,16 +145,15 @@ public:
         out = v;
     }
 
-private:
-    static std::string range_msg(double lo, double hi) {
-        auto f = [](double x) {
-            std::string s = std::to_string(x);
-            s.erase(s.find_last_not_of('0') + 1);
-            if (!s.empty() && s.back() == '.') s.pop_back();
-            return s;
-        };
-        return "must be between " + f(lo) + " and " + f(hi);
+    static std::string number_text(double x) {
+        std::string s = std::to_string(x);
+        s.erase(s.find_last_not_of('0') + 1);
+        if (!s.empty() && s.back() == '.') s.pop_back();
+        return s;
     }
+
+private:
+    static std::string range_msg(double lo, double hi) { return "must be between " + number_text(lo) + " and " + number_text(hi); }
     std::vector<Diagnostic>& d_;
 };
 
@@ -230,20 +229,33 @@ void read_color(Reader& r, const json& o, ColorSettings& s) {
     r.enumeration(o, "preset", p, s.preset, kColorPreset);
     r.number(o, "drive", p, s.drive, 0.0, kColorDriveMax);
     r.integer(o, "feedback_db", p, s.feedback_db, 0, 0, {0, 6, 12, 20, 30});
-    // "cool" | "standard" | "hot", or a cathode current in mA (the tube's safe range is checked in M3)
+    // "cool" | "standard" | "hot", or a cathode current in mA. A current no preset allows is an error; one outside the
+    // current preset's range is kept (another preset may use it) with a warning, and the standard bias applies
     if (auto it = o.find("bias"); it != o.end()) {
+        double lo = 1e9, hi = 0.0;
+        for (const auto& [name, e] : kColorPreset) {
+            lo = std::min(lo, color_bias_range(e).lo_ma);
+            hi = std::max(hi, color_bias_range(e).hi_ma);
+        }
         bool ok = false;
         if (it->is_number()) {
             const double ma = it->get<double>();
-            if (ma > 0.0 && ma <= 500.0) s.bias_ma = ma, ok = true;
+            if (ma >= lo && ma <= hi) s.bias_ma = ma, ok = true;
         } else if (it->is_string()) {
             for (const auto& [name, e] : kColorBias)
                 if (it->get<std::string>() == name) s.bias = e, s.bias_ma.reset(), ok = true;
         }
-        if (!ok) r.error("color.bias", "must be \"cool\", \"standard\", \"hot\" or a current in mA (0 .. 500)");
+        if (!ok) {
+            r.error("color.bias", "must be \"cool\", \"standard\", \"hot\" or a cathode current in mA (" + Reader::number_text(lo) +
+                                      " .. " + Reader::number_text(hi) + ", per preset)");
+        } else if (s.bias_ma && color_bias_falls_back(s)) {
+            const auto range = color_bias_range(s.preset);
+            r.warn("color.bias", "outside " + std::string(to_name(kColorPreset, s.preset)) + "'s range (" + Reader::number_text(range.lo_ma) +
+                                     " .. " + Reader::number_text(range.hi_ma) + " mA): the standard bias applies; kept for the other presets");
+        }
     }
     r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
-    r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -24.0, 24.0);
+    r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -kColorMakeupTrimMaxDb, kColorMakeupTrimMaxDb);
 }
 
 json auto_or(const std::optional<double>& v) { return v ? json(*v) : json("auto"); }
@@ -353,6 +365,25 @@ json settings_to_json(const Settings& s) {
           {"makeup_gain", auto_or(s.color.makeup_gain_db)}}},
     };
 }
+
+ColorBiasRange color_bias_range(ColorPreset p) {
+    // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
+    switch (p) {
+        case ColorPreset::Set2a3: return {35.0, 58.9, 59.0};      // RCA: 15 W at 251 V
+        case ColorPreset::Set300b: return {36.0, 59.8, 100.0};    // WE: 100 mA maximum plate current
+        case ColorPreset::Set845: return {44.0, 72.5, 79.0};      // RCA: 100 W at 1253 V
+        case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0};    // Philips: 25 W at 399 V, plus the screen current
+    }
+    return {0.0, 0.0, 0.0};
+}
+
+std::optional<double> color_bias_ma(const ColorSettings& c) {
+    if (!c.bias_ma) return std::nullopt;
+    const auto r = color_bias_range(c.preset);
+    return *c.bias_ma >= r.lo_ma && *c.bias_ma <= r.hi_ma ? c.bias_ma : std::nullopt;
+}
+
+bool color_bias_falls_back(const ColorSettings& c) { return c.bias_ma && !color_bias_ma(c); }
 
 bool color_active(const Settings& s) {
 #if defined(DAPHNE_COLOR)

@@ -22,8 +22,8 @@
 //   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. },
 //   "color":   { "enabled": false, "model": "fixed-point" | "circuit",
 //                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul", "drive": 0 .. kColorDriveMax,
-//                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA>,
-//                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -24 .. 24 }
+//                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA, per preset>,
+//                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -6 .. 6 }
 // }
 
 #include <optional>
@@ -54,9 +54,9 @@ enum class EqType { PK, LS, HS, HP, HP24, LP, LP24, NOTCH, AP, BP };
 // digital: the gain stage applies volume.db; fixed: no volume in the core (a host that controls the
 // device endpoint volume itself sends fixed).
 enum class VolumeMode { Digital, Fixed };
-// Tube Color (doc/N28). fixed-point: the static curve of a preset's amplifier at its operating point (M2);
-// circuit: the circuit model with dynamic effects (optional, later).
-enum class ColorModel { FixedPoint, Circuit };
+// Tube Color (doc/N28). fixed-point: the static curve of a preset's amplifier at its operating point (M2). v1 has
+// only this model (the circuit model with dynamic effects is optional, later).
+enum class ColorModel { FixedPoint };
 enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul };
 enum class ColorBias { Cool, Standard, Hot };
 
@@ -160,10 +160,26 @@ struct ColorSettings {
     double drive = 1.0;                  // 0 .. kColorDriveMax; 0 = the stage passes samples through unchanged
     int feedback_db = 6;                 // pp-el34-ul's feedback step: 0 | 6 | 12 | 20 | 30 (30 = the Mullard 5-20)
     ColorBias bias = ColorBias::Standard;
-    std::optional<double> bias_ma;       // a cathode current in mA instead of the named bias (checked per tube in M3)
+    // A cathode current per output tube in mA instead of the named bias. Kept as set; it applies only while it lies
+    // in the current preset's range (color_bias_range), else the standard bias does (color_bias_ma).
+    std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
-    std::optional<double> makeup_gain_db;  // nullopt = "auto" (loudness kept within 0.5 dB); else dB
+    // nullopt = "auto" (loudness kept within 0.5 dB); else a trim of -6 .. 6 dB on top of auto
+    std::optional<double> makeup_gain_db;
 };
+
+// The cathode current per output tube a preset allows (doc/N28): lo = 0.6 x the reference circuit's quiescent current
+// (still class A), hi = the datasheet's plate dissipation (or maximum current) at the preset's plate voltage.
+struct ColorBiasRange {
+    double lo_ma, standard_ma, hi_ma;
+};
+ColorBiasRange color_bias_range(ColorPreset p);
+// The cathode current that applies: bias_ma when it lies in the preset's range, else nullopt (the named bias; a
+// stored current outside the range falls back to standard).
+std::optional<double> color_bias_ma(const ColorSettings& c);
+// True when a stored current lies outside the current preset's range (the playback path reports it once).
+bool color_bias_falls_back(const ColorSettings& c);
+inline constexpr double kColorMakeupTrimMaxDb = 6.0;
 
 struct Settings {
     int version = 1;
