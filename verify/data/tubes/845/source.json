@@ -1,0 +1,52 @@
+{
+  "tube": "845",
+  "model": "triode",
+  "used_in": "set-845 output",
+  "datasheet": {
+    "maker": "RCA",
+    "document": "RCA tube handbook HB-3, 845 (data 1962, curves 1933)",
+    "url": "https://frank.pocnet.net/sheets/049/8/845.pdf",
+    "page": 2,
+    "figure": "page 2: average plate characteristics 92C-5310, Ef = 10 V DC, Ec = 0 .. -400 V (rotated 90 deg); typical operation on page 1",
+    "alternate_url": null
+  },
+  "plot": {
+    "ep_max_V": 2800,
+    "ip_max_mA": 160
+  },
+  "operating_points": [
+    {
+      "name": "datasheet class A1, 750 V",
+      "source": "page 1, A-F power amplifier class A1",
+      "ep_V": 750,
+      "eg_V": -98,
+      "ip_mA": 95,
+      "mu": 5.3,
+      "rp_ohm": 1700,
+      "gm_umho": 3100
+    },
+    {
+      "name": "datasheet class A1, 1000 V",
+      "source": "page 1, A-F power amplifier class A1",
+      "ep_V": 1000,
+      "eg_V": -145,
+      "ip_mA": 90,
+      "mu": 5.3,
+      "rp_ohm": 1700,
+      "gm_umho": 3100
+    },
+    {
+      "name": "datasheet class A1, 1250 V",
+      "source": "page 1, A-F power amplifier class A1",
+      "ep_V": 1250,
+      "eg_V": -195,
+      "ip_mA": 80,
+      "mu": 5.3,
+      "rp_ohm": 1700,
+      "gm_umho": 3100
+    }
+  ],
+  "fit": {
+    "model": "koren-triode"
+  }
+}

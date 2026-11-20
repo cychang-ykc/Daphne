@@ -1,0 +1,63 @@
+{
+  "tube": "6SN7",
+  "model": "triode",
+  "used_in": "driver of set-2a3, set-300b, set-845",
+  "datasheet": {
+    "maker": "RCA",
+    "document": "RCA tube handbook HB-3, 6SN7-GTA (1954)",
+    "url": "https://frank.pocnet.net/sheets/049/6/6SN7GTA.pdf",
+    "page": 4,
+    "figure": "page 4: average plate characteristics for each unit 92CM-6322, Ef = 6.3 V, Ec = 0 .. -28 V (rotated 90 deg; -30 .. -34 V crowd into their labels and are left out; below 1.2 mA the curves merge and are masked); characteristics on page 1",
+    "alternate_url": "https://frank.pocnet.net/sheets/191/6/6SN7GTB.pdf"
+  },
+  "plot": {
+    "ep_max_V": 700,
+    "ip_max_mA": 40
+  },
+  "operating_points": [
+    {
+      "name": "datasheet class A1, 90 V",
+      "source": "page 1, characteristics class A1 amplifier (each unit)",
+      "ep_V": 90,
+      "eg_V": 0,
+      "ip_mA": 10,
+      "mu": 20,
+      "rp_ohm": 6700,
+      "gm_umho": 3000
+    },
+    {
+      "name": "datasheet class A1, 250 V",
+      "source": "page 1, characteristics class A1 amplifier (each unit)",
+      "ep_V": 250,
+      "eg_V": -8,
+      "ip_mA": 9,
+      "mu": 20,
+      "rp_ohm": 7700,
+      "gm_umho": 2600
+    },
+    {
+      "name": "datasheet low current, 250 V / -12.5 V",
+      "source": "page 1, characteristics class A1 amplifier (each unit)",
+      "ep_V": 250,
+      "eg_V": -12.5,
+      "ip_mA": 1.3
+    },
+    {
+      "name": "datasheet cutoff 10 uA, 90 V",
+      "source": "page 1, characteristics class A1 amplifier (each unit)",
+      "ep_V": 90,
+      "eg_V": -7,
+      "ip_mA": 0.01
+    },
+    {
+      "name": "datasheet cutoff 10 uA, 250 V",
+      "source": "page 1, characteristics class A1 amplifier (each unit)",
+      "ep_V": 250,
+      "eg_V": -18,
+      "ip_mA": 0.01
+    }
+  ],
+  "fit": {
+    "model": "koren-triode"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "tube": "EF86",
+  "model": "derk",
+  "params": {
+    "MU": 43.759623408580474,
+    "X": 1.021307931678519,
+    "KP": 203.81267773559765,
+    "KVB": 0.0769354037426895,
+    "K": 0.0022753143815743616,
+    "BETA": 0.24811431474622386,
+    "D": 3.167395673242965e-07
+  },
+  "fit": {
+    "model": "derk",
+    "why": "rp +143 % (Koren) -> -34 % against the table, -9 % against the curves"
+  },
+  "equations": "D. Reefman, Spice models for vacuum tubes using the uTracer (2019), sec. 4.4, eq. 15, 16, 25 - 27 (anode current; implemented from the equations, parameters fitted to verify/data/tubes)",
+  "plate_rms_mA": 0.06569761715787265,
+  "plate_rms_pct": 0.8477658837069829,
+  "plate_max_mA": 0.3966364746670562,
+  "operating_points": {
+    "datasheet typical, 250 V": {
+      "rp_ohm": -33.82428134048694,
+      "gm_umho": 1.3831471758101999,
+      "ip_mA": 1.8028390170686877
+    }
+  }
+}

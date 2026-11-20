@@ -11,3 +11,7 @@ icon/
 third_party/ffmpeg-src/
 build-mac-*/
 .tools/
+
+# Tube Color verification: overlays and review images contain datasheet scans (doc/N28); generated locally by
+# verify/digitize_curves.py and verify/plot_points.py, never committed
+verify/data/tubes/**/*.png

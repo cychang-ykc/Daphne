@@ -1,0 +1,31 @@
+{
+  "tube": "2A3",
+  "model": "koren-m",
+  "params": {
+    "MU": 4.172774742295547,
+    "EX": 1.5815865252227004,
+    "KG1": 2850.763957254495,
+    "KP": 1.0560000483269463,
+    "KVB": 2.84584157354115e-09,
+    "M": 0.35
+  },
+  "fit": {
+    "model": "koren-m",
+    "m": 0.35,
+    "why": "Koren with the knee-width exponent m (triode_models.py). Fitted freely, m = 0.91: the datasheet curves prefer Koren's shape. m = 0.35 was chosen against measurement (Stereophile, Triode Lab 2A3 EVO, 50 Hz / 1 W spectrum, H3 about -55.5 dB), because the datasheet curves cannot decide H3 (refits and bootstrap: H3 within 0.6 dB; a different formula moves it 3 - 5 dB). Plate RMS 0.65 -> 0.96 % (+0.31 points); typical operating point mu / rp / gm -2 / +4 / -5 %.",
+    "limits": "The 2A3 EVO uses KR 2A3 tubes, which may differ from the RCA 1933 curves. H3 in the full circuit (12AX7 -> 6SN7 -> 2A3) is still about 6.5 dB above the EVO: known limitation, to be reviewed after the core model and listening.",
+    "decided": "2026-11-20"
+  },
+  "equations": "N. Koren, Improved vacuum tube models for SPICE simulations (1996 / 2003), triode equations, with the softplus knee width scaled as Va^M / KP (triode_models.py; M = 1 is Koren)",
+  "plate_rms_mA": 2.268542886310958,
+  "plate_rms_pct": 0.9566824752709353,
+  "plate_max_mA": 5.763525460254465,
+  "operating_points": {
+    "datasheet class A1, 250 V": {
+      "mu": -1.9244498419548444,
+      "rp_ohm": 3.6986981362744165,
+      "gm_umho": -5.4225830018035985,
+      "ip_mA": -10.31811783227262
+    }
+  }
+}

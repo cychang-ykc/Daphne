@@ -97,6 +97,12 @@
 - 錯誤訊息裡仍寫著 ASIO / WASAPI（「output.dsd = native needs an ASIO driver with a DSD mode」、dsd 核心的「needs WASAPI exclusive or ASIO」），在 Windows 上正確；原本預定加入 Core Audio 時改成不提 API 名稱的寫法，7a 之後還沒改，macOS 的使用者會看到 Windows 的 API 名稱（`pcm_stream.cpp`、`dsd_stream.cpp`）。
 - worker 優先權沒有在建立時決定：每個重新取樣器有自己的 `WorkerPool`，背景預熱（N4）時替普通執行緒工作，換上之後替處理執行緒工作。改成 `run()` 記下呼叫者是否在 `RealtimeScope` 內（新的 `platform::in_realtime_scope()`，thread_local），worker 只在這個狀態改變時進入 / 離開 `RealtimeHelperScope`。這是三個平台共用的程式：Linux 的 worker 因此也會跟著拿 `SCHED_FIFO`（沒有權限時維持原狀），兩核心機器的實測仍待步驟 6；macOS 的 worker 拿 time-constraint，與 `RealtimeScope` 一起在步驟 7 重新檢查。
 
+## Tube Color（N28，效果器；規格見規格書）
+
+M0–M4 照規格書的 milestone 進行（分支 `tube-color-m0` 起）。之後要做、第一版不做的功能：
+
+- [ ] **可調負回授量**（第二版候選）：把整體負回授量開放成進階參數（無／6 dB／12 dB／原始設計值，概念類似 iFi 的 Tube／Tube+）。負回授降低失真、改變諧波組成（少量回授可能產生額外的高次諧波）、降低輸出阻抗、拉寬頻寬。參數改變時在背景以數值方法求解閉迴路靜態曲線（y = f(x − βy)）與閉迴路頻響，不影響即時運算。限制：回授迴路包住輸出變壓器，不是純 Wiener–Hammerstein，失真不隨頻率變化（同 `pp-el34-ul`）；只有標稱 8 Ω 純電阻負載，零回授機的輸出阻抗與喇叭阻抗的互動模擬不出來。M2 固定版本完成、四個預設檔的原始設計聲音確認後，再決定放在 M3 的延伸或第二版。
+
 ## 已知問題（暫不處理）
 
 - **Vorbis 的搜尋偶爾不精確**：Linux 上 20 秒的 Vorbis 檔隨機 seek 300 次後讀 4096 frames，與整檔解碼比對有 3 次不同（main 與預讀相同，其他格式 0 次）。原因未查（FFmpeg 解碼器提前 4096 frames 起解，見 N2）。

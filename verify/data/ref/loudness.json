@@ -1,0 +1,38 @@
+{
+ "pp-el34-ul_fb0": {
+  "loudness_change_dB": -0.8955413222489383,
+  "makeup_dB": 0.8955413222489383
+ },
+ "pp-el34-ul_fb12": {
+  "loudness_change_dB": -0.04971316571876372,
+  "makeup_dB": 0.04971316571876372
+ },
+ "pp-el34-ul_fb20": {
+  "loudness_change_dB": -0.00973132304297053,
+  "makeup_dB": 0.00973132304297053
+ },
+ "pp-el34-ul_fb30": {
+  "loudness_change_dB": -0.030417494982007298,
+  "makeup_dB": 0.030417494982007298
+ },
+ "pp-el34-ul_fb6": {
+  "loudness_change_dB": -0.2738614373612158,
+  "makeup_dB": 0.2738614373612158
+ },
+ "pp-el34-ul": {
+  "loudness_change_dB": -0.030417494982007298,
+  "makeup_dB": 0.030417494982007298
+ },
+ "set-2a3": {
+  "loudness_change_dB": -0.20594921842315372,
+  "makeup_dB": 0.20594921842315372
+ },
+ "set-300b": {
+  "loudness_change_dB": -0.10541415556084033,
+  "makeup_dB": 0.10541415556084033
+ },
+ "set-845": {
+  "loudness_change_dB": -0.05199209223087209,
+  "makeup_dB": 0.05199209223087209
+ }
+}

@@ -173,6 +173,17 @@ dc_destroy(p);
 | [ASIO SDK](https://www.steinberg.net/developers/) 2.3.4 | Steinberg licence or GPLv3 (dual licensed; used under GPLv3) | downloaded by `fetch_asiosdk.ps1` (checked against its SHA-256), not redistributed |
 | [GFS Didot](https://fonts.google.com/specimen/GFS+Didot) | SIL OFL 1.1 | in `src/Daphne.Extension/web/fonts/` (the wordmark) |
 
+Used only by the Tube Color verification scripts in `verify/` (doc/N28), not part of any Daphne build:
+
+| Component | License | Distribution |
+|---|---|---|
+| [ngspice](https://ngspice.sourceforge.io) 47 | BSD-3-Clause (and others, see its source) | downloaded into `.tools/` by hand (checked against the SourceForge SHA-1), not redistributed |
+| [Xyce](https://xyce.sandia.gov) 7.10 (Windows build "XyceNF") | Sandia binary licence (non-free; contains models not released as source) | offline verification only, in `.tools/`, not redistributed; to rerun the simulations, obtain it from xyce.sandia.gov |
+| Python: NumPy, SciPy, pypdf, Pillow | BSD-3-Clause / BSD-3-Clause / BSD-3-Clause / MIT-CMU | installed by the user, not redistributed |
+| Tube model equations: N. Koren (1996 / 2003), D. Reefman (2019, "Derk"), K. Dempwolf and U. Zölzer (DAFx-11) | published papers | equations implemented in `verify/` from the papers; every parameter fitted by us (no third-party parameter sets) |
+| Tube datasheets (Western Electric, RCA, Philips, Mullard) via [Frank's Electron Tube Data Sheets](https://frank.pocnet.net); Mullard, *Circuits for Audio Amplifiers* (1959) via [World Radio History](https://www.worldradiohistory.com); Nippon Steel catalogue D003jec (2024) | the publishers' | cited sources, not included: no datasheet PDF, scan or image is in the repository. Only our digitised data points (CSV) and the citation of each (maker, year, page, in `source.json`) are in `verify/data/tubes/`; the scripts download the scans into a git-ignored cache and draw the review overlays locally |
+| Stereophile measurements (Western Electric 91E, Triode Lab 2A3 EVO, Line Magnetic LM-845IA, Cayin A-300B) | the publisher's | cited sources, not included: doc/N28 quotes the figures' numbers and links the articles; no screenshot or image is in the repository |
+
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 
 ## License
