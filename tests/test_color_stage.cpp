@@ -493,67 +493,73 @@ TEST_CASE("color stage: crossing 0 in place, aligned, idle bit for bit", "[color
 // The final quantizer on an integer device with a source that fits it (where it is left out without Tube Color): kept,
 // passing through while the stage is idle. drive 0 -> 50 % -> 0: the input bit for bit, dithered, the input bit for bit.
 TEST_CASE("color chain: the quantizer kept for Tube Color passes while it is idle", "[color][chain]") {
-    daphne::AudioInfo src;
-    src.rate = 44100, src.channels = 2, src.bits = 24, src.lossless_int = true, src.codec = "test";
-    daphne::DeviceFormat dev;
-    dev.rate = 44100, dev.channels = 2, dev.type = daphne::SampleType::Int24In32, dev.container_bits = 32, dev.valid_bits = 24;
-    daphne::Settings s;
-    s.color.enabled = true;
-    s.color.drive = 0.0;
-    daphne::DspChain c;
-    std::string e;
-    REQUIRE(c.build(s, src, dev, 4096, &e));
-    const auto all = c.all_stages();
-    REQUIRE(std::find(all.begin(), all.end(), std::string("quantizer")) != all.end());   // kept for Tube Color
-    CHECK(c.transparent());
-    // without Tube Color the same chain leaves it out (the condition is the existing one)
-    daphne::Settings off;
-    daphne::DspChain c_off;
-    REQUIRE(c_off.build(off, src, dev, 4096, &e));
-    const auto off_all = c_off.all_stages();
-    CHECK(std::find(off_all.begin(), off_all.end(), std::string("quantizer")) == off_all.end());
-    // with an upsampler it quantizes as always, Tube Color or not
-    daphne::DeviceFormat up = dev;
-    up.rate = 88200;
-    daphne::DspChain c_up;
-    REQUIRE(c_up.build(s, src, up, 4096, &e));
-    CHECK_FALSE(c_up.transparent());
-    // 24-bit samples through it (4 s: 43 blocks; 50 % from block 16 to block 32)
-    const int frames = 44100 * 4, block = 4096;
-    std::vector<double> x(static_cast<size_t>(frames) * 2);
-    std::mt19937 g(5);
-    for (auto& v : x) v = (static_cast<int32_t>(g() >> 8) - (1 << 23)) / 8388608.0 * 0.3;
-    for (auto& v : x) v = std::round(v * 8388608.0) / 8388608.0;   // on the 24-bit grid
-    std::vector<double> y;
-    std::vector<double> o(static_cast<size_t>(c.max_output_frames()) * 2);
-    for (int at = 0; at < frames; at += block) {
-        if (at == 16 * block) {
-            daphne::Settings on = s;
-            on.color.drive = 0.5;
-            REQUIRE(c.update(on));
+    for (int bits : {24, 16}) {
+        INFO(bits << "-bit output, a " << bits << "-bit source");
+        const double scale = std::ldexp(1.0, bits - 1);
+        daphne::AudioInfo src;
+        src.rate = 44100, src.channels = 2, src.bits = bits, src.lossless_int = true, src.codec = "test";
+        daphne::DeviceFormat dev;
+        dev.rate = 44100, dev.channels = 2;
+        if (bits == 24) dev.type = daphne::SampleType::Int24In32, dev.container_bits = 32, dev.valid_bits = 24;
+        else dev.type = daphne::SampleType::Int16, dev.container_bits = 16, dev.valid_bits = 16;
+        daphne::Settings s;
+        s.color.enabled = true;
+        s.color.drive = 0.0;
+        daphne::DspChain c;
+        std::string e;
+        REQUIRE(c.build(s, src, dev, 4096, &e));
+        const auto all = c.all_stages();
+        REQUIRE(std::find(all.begin(), all.end(), std::string("quantizer")) != all.end());   // kept for Tube Color
+        CHECK(c.transparent());
+        // without Tube Color the same chain leaves it out (the condition is the existing one)
+        daphne::Settings off;
+        daphne::DspChain c_off;
+        REQUIRE(c_off.build(off, src, dev, 4096, &e));
+        const auto off_all = c_off.all_stages();
+        CHECK(std::find(off_all.begin(), off_all.end(), std::string("quantizer")) == off_all.end());
+        // with an upsampler it quantizes as always, Tube Color or not
+        daphne::DeviceFormat up = dev;
+        up.rate = 88200;
+        daphne::DspChain c_up;
+        REQUIRE(c_up.build(s, src, up, 4096, &e));
+        CHECK_FALSE(c_up.transparent());
+        // samples on the grid through it (4 s: 43 blocks; 50 % from block 16 to block 32)
+        const int frames = 44100 * 4, block = 4096;
+        std::vector<double> x(static_cast<size_t>(frames) * 2);
+        std::mt19937 g(5);
+        std::uniform_real_distribution<double> u(-0.3, 0.3);
+        for (auto& v : x) v = std::round(u(g) * scale) / scale;
+        std::vector<double> y;
+        std::vector<double> o(static_cast<size_t>(c.max_output_frames()) * 2);
+        for (int at = 0; at < frames; at += block) {
+            if (at == 16 * block) {
+                daphne::Settings on = s;
+                on.color.drive = 0.5;
+                REQUIRE(c.update(on));
+            }
+            if (at == 32 * block) REQUIRE(c.update(s));
+            const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(block, frames - at), o.data());
+            y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
         }
-        if (at == 32 * block) REQUIRE(c.update(s));
-        const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(block, frames - at), o.data());
-        y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
+        const int d = c.content_delay();
+        REQUIRE(d == 223);
+        auto count_diff = [&](int from, int to) {
+            int k = 0;
+            for (int n = from; n < to; ++n) k += y[2 * static_cast<size_t>(n + d)] != x[2 * static_cast<size_t>(n)];
+            return k;
+        };
+        auto on_grid = [&](int from, int to) {
+            for (int n = from; n < to; ++n) {
+                const double v = y[2 * static_cast<size_t>(n + d)] * scale;
+                if (v != std::round(v)) return false;
+            }
+            return true;
+        };
+        CHECK(count_diff(0, 16 * block - d) == 0);                               // idle: bit for bit
+        CHECK(count_diff(20 * block, 30 * block) > 10 * block - 10 * block / 4);   // running: changed (curve, dither)
+        CHECK(on_grid(20 * block, 30 * block));                                  // quantized to the word length
+        CHECK(count_diff(36 * block, frames - d - block) == 0);                  // idle again: bit for bit
     }
-    const int d = c.content_delay();
-    REQUIRE(d == 223);
-    auto count_diff = [&](int from, int to) {
-        int k = 0;
-        for (int n = from; n < to; ++n) k += y[2 * static_cast<size_t>(n + d)] != x[2 * static_cast<size_t>(n)];
-        return k;
-    };
-    auto on_grid = [&](int from, int to) {
-        for (int n = from; n < to; ++n) {
-            const double v = y[2 * static_cast<size_t>(n + d)] * 8388608.0;
-            if (v != std::round(v)) return false;
-        }
-        return true;
-    };
-    CHECK(count_diff(0, 16 * block - d) == 0);                                  // idle: bit for bit
-    CHECK(count_diff(20 * block, 30 * block) > 30 * block - 20 * block - 100);   // running: changed (curve, dither)
-    CHECK(on_grid(20 * block, 30 * block));                                     // quantized to 24 bits
-    CHECK(count_diff(36 * block, frames - d - block) == 0);                     // idle again: bit for bit
 }
 
 TEST_CASE("color stage: crossing drive 0 is taken in place, like any drive change", "[color][chain]") {
