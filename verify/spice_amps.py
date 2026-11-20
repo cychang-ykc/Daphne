@@ -3,9 +3,9 @@ global feedback (pp-el34-ul). Tube models and conventions as in spice_ref.py (mo
 reltol 1e-5, gear, 1000 points per cycle, FFT over the last 10 whole cycles after settling).
 
   set-2a3   6SN7 (B+ 300 V, Ra 47 k, Rk 1.5 k) -> 0.22 uF / 220 k -> 2A3 (Rk 750, B+ 301 V) -> 2.5 k : 8
-  set-300b  6SN7 (B+ 350 V) -> 0.22 uF / 220 k -> 300B (Rk 1.2 k, B+ 433 V) -> 4 k : 8
+  set-300b  6SN7 (B+ 350 V) -> 0.22 uF / 220 k -> 300B (350 V / -74 V / 60 mA: Rk 1.23 k, B+ 431 V) -> 3 k : 8
   set-845   6SN7 (B+ 350 V) -> 0.22 uF / 220 k -> 300B (40 H choke, DCR 250, Rk 1 k, B+ 300 V) -> 0.47 uF / 100 k
-            -> 845 (fixed bias -145 V, B+ 1020 V) -> 6 k : 8
+            -> 845 (1250 V / -195 V / 80 mA: fixed bias, B+ 1286 V) -> 11 k : 8
   pp-el34-ul  Mullard 5-20 (Circuits for Audio Amplifiers, 1959, ch. 5, Fig. 1): EF86 -> ECC83 cathode-coupled
             phase splitter -> 2 x EL34 ultralinear (20 % taps, 7 k a-a, 470 ohm / valve, 1 k screen resistors),
             30 dB feedback from the secondary (R13 5.6 k // C9 330 pF) into R5 (100 ohm)
@@ -118,8 +118,8 @@ def set_2a3():
 def set_300b():
     net = ["* set-300b"] + set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
-            *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1200", "Ck2 k2 0 2.2e-4",
-            "Vb2 b2 0 DC 433"] + opt_se("T", "a2", "b2", 4000.0, 15.0, 0.012, 400e-12, 150.0)
+            *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1233", "Ck2 k2 0 2.2e-4",
+            "Vb2 b2 0 DC 431"] + opt_se("T", "a2", "b2", 3000.0, 15.0, 0.012, 400e-12, 120.0)
     return net
 
 
@@ -128,8 +128,8 @@ def set_845():
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
             *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1000", "Ck2 k2 0 2.2e-4",
             "Vb2 b2 0 DC 300", "Rch b2 chx 250", "Lch chx a2 40",
-            "Cc2 a2 g3 0.47e-6", "Rg3 g3 nb 100k", "Vnb nb 0 DC -145", "Rgs3 g3 g3s 1k",
-            R.triode("V3", "845", "a3", "g3s", "0"), *tube_caps("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1020"] + opt_se("T", "a3", "b3", 6000.0, 30.0, 0.020, 300e-12, 250.0)
+            "Cc2 a2 g3 0.47e-6", "Rg3 g3 nb 100k", "Vnb nb 0 DC -195", "Rgs3 g3 g3s 1k",
+            R.triode("V3", "845", "a3", "g3s", "0"), *tube_caps("V3", "845", "a3", "g3s", "0"), "Vb3 b3 0 DC 1286"] + opt_se("T", "a3", "b3", 11000.0, 30.0, 0.020, 300e-12, 450.0)
     return net
 
 
