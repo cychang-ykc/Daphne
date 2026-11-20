@@ -336,26 +336,30 @@ public:
         info_.frames = d.frames / step_;
         info_.codec = d.codec + " (DSD" + std::to_string(d.dsd_rate / base) + " -> PCM)";
         buf_.resize(static_cast<size_t>(kChunk) * step_ * ch_);
-        pos_ = 0;
-        return true;
+        // the filters' delay, the whole frames of it taken out (doc/N28): output frame f is the file's frame f
+        lat_ = static_cast<int>(std::floor(filter_delay()));
+        return seek(0);
     }
 
     void close() override {}
 
-    // Output frame f is made once the bytes of frame f are in: stage 1 (linear phase, 8 k bits) is centred (8 k - 1) / 2
-    // bits before the last of them, stage 2 (n2 taps) (n2 - 1) / 2 frames before f. Frame f stands for the bits from
-    // 8 f step on.
-    double content_delay_frames() const override {
+    // The filters' delay: the frame the converter makes once the bytes of frame g are in stands for content before g.
+    // Stage 1 (linear phase, 8 k bits) is centred (8 k - 1) / 2 bits before the last of them, stage 2 (n2 taps)
+    // (n2 - 1) / 2 frames before g; frame g stands for the bits from 8 g step on.
+    double filter_delay() const {
         const double bits = 1.0 - 8.0 * step_ + (8.0 * k_ - 1.0) / 2.0 + (n2_ > 0 ? 4.0 * step_ * (n2_ - 1) : 0.0);
         return bits / (8.0 * step_);
     }
+    // What is left of it: the whole frames are taken out (lat_), the fraction is not (doc/N28)
+    double content_delay_frames() const override { return filter_delay() - lat_; }
 
+    // Output frame f is the converter's frame f + lat_: its first lat_ frames after a seek are made and dropped, and
+    // after the last byte of the file DSD silence feeds the last lat_ frames out, so nothing of the music is cut.
     int read(double* out, int frames) override {
         int done = 0;
         while (done < frames) {
             const int want = std::min(frames - done, kChunk);
-            const int got = file_.read(buf_.data(), want * step_);
-            const int samples = got / step_;
+            int samples = fetch(buf_.data(), want);
             for (int s = 0; s < samples; ++s)
                 produce(buf_.data() + static_cast<size_t>(s) * step_ * ch_, out + static_cast<size_t>(done + s) * ch_);
             done += samples;
@@ -367,18 +371,25 @@ public:
 
     bool seek(int64_t frame) override {
         reset_state();
-        // prime both stages: stage 2 needs the n2 outputs before the target, stage 1 the k bytes before those
-        const int64_t first = std::max<int64_t>(0, frame - n2_);
+        eof_ = false;
+        tail_left_ = lat_;
+        // the converter's frame for output frame `frame`; prime both stages: stage 2 needs the n2 outputs before it,
+        // stage 1 the k bytes before those
+        const int64_t target = frame + lat_;
+        const int64_t first = std::max<int64_t>(0, target - n2_);
         const int64_t start = std::max<int64_t>(0, first * step_ - k_);
         if (!file_.seek(start)) return false;
         std::vector<uint8_t> tmp(static_cast<size_t>(step_) * ch_);
         for (int64_t f = start; f < first * step_; ++f) {
-            if (file_.read(tmp.data(), 1) != 1) break;
+            if (file_.read(tmp.data(), 1) != 1) {
+                eof_ = true;
+                break;
+            }
             push_byte(tmp.data());
         }
         std::vector<double> dummy(static_cast<size_t>(ch_));
-        for (int64_t f = first; f < frame; ++f) {
-            if (file_.read(tmp.data(), step_) != step_) break;
+        for (int64_t f = first; f < target && !eof_; ++f) {
+            if (fetch(tmp.data(), 1) != 1) break;
             produce(tmp.data(), dummy.data());
         }
         pos_ = frame;
@@ -414,6 +425,23 @@ private:
         }
         for (auto& v : h) v /= sum;
         return h;
+    }
+
+    // The bytes of up to n frames (step_ bytes per channel each) into b; past the file's end DSD silence, lat_ frames of
+    // it at most (the tail the delay held back). Returns the frames.
+    int fetch(uint8_t* b, int n) {
+        int got = 0;
+        if (!eof_) {
+            got = file_.read(b, n * step_) / step_;
+            if (got < n) eof_ = true;
+        }
+        if (got < n && eof_) {
+            const int t = std::min(n - got, tail_left_);
+            std::fill(b + static_cast<size_t>(got) * step_ * ch_, b + static_cast<size_t>(got + t) * step_ * ch_, uint8_t{0x69});
+            tail_left_ -= t;
+            got += t;
+        }
+        return got;
     }
 
     void reset_state() {
@@ -463,6 +491,8 @@ private:
 
     DsdFile file_;
     int want_rate_ = 0, lowpass_khz_ = 24, out_rate_ = 0, step_ = 1, ch_ = 2, k_ = 1, head_ = 0, n2_ = 0, w2_ = 0;
+    int lat_ = 0, tail_left_ = 0;   // the delay's whole frames taken out; the silence frames left for the tail
+    bool eof_ = false;
     std::vector<double> table_, h2_, x2_;
     std::vector<uint8_t> hist_, buf_;
 };

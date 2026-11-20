@@ -1819,6 +1819,109 @@ TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening
     std::filesystem::remove(path, ec);
 }
 
+// The DSD -> PCM converter is a causal filter: its output frame f once stood for the file's content 119 frames earlier
+// (DSD64, 0.68 ms), so a converted file's last 0.68 ms never came out and a gapless join lost it (doc/N28). It now
+// takes the whole frames of its delay out: frame f is the file's frame f, a fraction of a frame left (reported).
+TEST_CASE("DSD to PCM: frame f is the file's frame f, and the end comes out", "[dsd]") {
+    const int64_t bytes = 40000;
+    std::vector<uint8_t> l(static_cast<size_t>(bytes));
+    for (int64_t k = 0; k < bytes; ++k) l[static_cast<size_t>(k)] = k < 20000 || k >= bytes - 100 ? 0x00 : 0xFF;   // -, +, - (last 50 frames)
+    const auto path = write_dsf_bytes("daphne_dsd_pcm_align.dsf", l, l, 2822400);
+    auto d = daphne::make_dsd_pcm_decoder(0, 24);
+    std::string e;
+    REQUIRE(d->open(path, &e));
+    CHECK(d->content_delay_frames() >= 0.0);
+    CHECK(d->content_delay_frames() < 1.0);
+    std::vector<double> buf(static_cast<size_t>(bytes)), y;
+    for (int n; (n = d->read(buf.data(), 4096)) > 0;)
+        for (int i = 0; i < n; ++i) y.push_back(buf[2 * static_cast<size_t>(i)]);
+    CHECK(static_cast<int64_t>(y.size()) == d->info().frames);   // as long as the file
+    // the step up at byte 20000 = frame 10000: its zero crossing there
+    double up = -1;
+    for (size_t i = 5000; i < y.size(); ++i)
+        if (y[i - 1] < 0.0 && y[i] >= 0.0) {
+            up = static_cast<double>(i - 1) + y[i - 1] / (y[i - 1] - y[i]);
+            break;
+        }
+    UNSCOPED_INFO("the step up comes out at frame " << up << " (frame 10000 in the file); left over " << d->content_delay_frames());
+    CHECK(std::abs(up - 10000.0) < 1.0);
+    // the step down in the last 50 frames is there (it used to be cut with the filter's delay)
+    CHECK(y[y.size() - 20] < -1.0);
+    d.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// A converted DSD track followed gaplessly by a PCM track: the DSD track's last frames are heard before the next one.
+TEST_CASE("Player: a converted DSD track's end comes out before a gapless next track", "[player][dsd]") {
+    const int64_t bytes = 2822400 / 8 * 3 / 2;   // 1.5 s: the next track's chain is built ahead meanwhile
+    std::vector<uint8_t> l(static_cast<size_t>(bytes));
+    for (int64_t k = 0; k < bytes; ++k) l[static_cast<size_t>(k)] = k < bytes - 100 ? 0xFF : 0x00;   // +, then - (last 50 frames)
+    const auto path = write_dsf_bytes("daphne_dsd_gapless_end.dsf", l, l, 2822400);
+    Rig r;
+    use_float_device(*r.dev);
+    r.dev->speed = 1.0;   // (the next track is set while this one plays)
+    r.sources["next"] = sine(176400, 1000.0, 0.3, 0.0);   // silence at the converted rate
+    Settings s;
+    s.output.dsd = daphne::DsdMode::Pcm;
+    s.output.dsd_pcm_limiter = false;
+    s.output.rate = "176400";
+    REQUIRE(r.start(platform::path_to_utf8(path), s));
+    r.player->set_next("next");
+    r.finish();
+    CHECK(r.ended);
+    CHECK(r.saw("gapless"));
+    const auto b = r.dev->take();
+    std::vector<float> y(b.size() / 4);
+    std::memcpy(y.data(), b.data(), y.size() * 4);
+    // the last frame of the positive stretch, then the negative end, then the next track's silence
+    size_t last_pos = 0;
+    for (size_t i = 0; i < y.size(); i += 2)
+        if (y[i] > 1.0f) last_pos = i / 2;
+    size_t neg = 0;
+    for (size_t i = last_pos + 1; i < y.size() / 2 && i < last_pos + 200; ++i) neg += y[2 * i] < -1.0f;
+    UNSCOPED_INFO("frames below -1 after the positive stretch: " << neg);
+    CHECK(neg >= 30);
+    r.player.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// Daphne's own DSD -> PCM -> DSD path (Tube Color off: the dsd core, the DSD file converted, output.dsd = pcm) and the
+// remodulation Tube Color uses are the same chain: the converter's DSD limiter included in both (doc/N28: Tube Color
+// leaves the limiters as they are).
+TEST_CASE("Player: the remodulation is Daphne's own DSD -> PCM -> DSD path, limiters included", "[player][dsd][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const auto path = write_counting_dsf("daphne_color_paths.dsf", 2822400 / 8 / 2);   // 0.5 s
+    auto play = [&](const Settings& s) {
+        Rig r;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK(r.dev->opens.front().rate == 176400);   // DoP, DSD64
+        r.player.reset();
+        return rep.chain;
+    };
+    Settings own;   // Tube Color off: the file converted and modulated again by the dsd core
+    own.core = daphne::CoreMode::Dsd;
+    own.modulator.osr = 64;
+    own.output.dsd = daphne::DsdMode::Pcm;
+    own.output.dsd_lead_in_ms = 20;
+    Settings remod;   // Tube Color on: remodulated at the file's multiple
+    remod.output.dsd_lead_in_ms = 20;
+    remod.color.enabled = true;
+    const auto a = play(own), b = play(remod);
+    INFO(nlohmann::json(a).dump() << " / " << nlohmann::json(b).dump());
+    CHECK(std::find(a.begin(), a.end(), std::string("dsd limiter")) != a.end());
+    CHECK(std::find(a.begin(), a.end(), std::string("modulator limiter")) != a.end());
+    auto without = b;
+    without.erase(std::remove(without.begin(), without.end(), std::string("tube color")), without.end());
+    CHECK(without == a);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 // A 48 kHz-family DSD file: the modulator runs at 44.1 kHz x osr, so its remodulation changes the rate: the device is
 // reopened as before (doc/N28, a known limitation).
 TEST_CASE("Player: Tube Color on a 48 kHz-family DSD file reopens the device", "[player][dsd][color]") {
