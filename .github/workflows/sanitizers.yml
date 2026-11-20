@@ -8,7 +8,7 @@ name: sanitizers
 
 on:
   push:
-    branches: [main]
+    branches: [main, tube-color]
   pull_request:
   workflow_dispatch:
 
@@ -24,6 +24,9 @@ jobs:
         include:
           - { name: asan, flags: "address,undefined", tests: "" }
           - { name: tsan, flags: "thread", tests: "[player],[capi],[live],[modulator]" }
+          # Tube Color's stage (curve, oversampling, the DSD switch's threads, 6b) runs only in the test builds (doc/N28)
+          - { name: asan-color, flags: "address,undefined", tests: "", color_test: true }
+          - { name: tsan-color, flags: "thread", tests: "[player],[capi],[live],[modulator],[color]", color_test: true }
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     env:
@@ -36,11 +39,12 @@ jobs:
       - name: Address-space layout for the sanitizers
         run: sudo sysctl vm.mmap_rnd_bits=28
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDAPHNE_SANITIZE=${{ matrix.flags }} -DDAPHNE_WARNINGS_AS_ERRORS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDAPHNE_SANITIZE=${{ matrix.flags }} -DDAPHNE_WARNINGS_AS_ERRORS=ON -DDAPHNE_COLOR_TEST_CURVE=${{ matrix.color_test && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --parallel --target daphne_tests
       - name: Test
-        run: build/bin/daphne_tests ${{ matrix.tests }}
+        # --durations: every test case by name, so the log shows which ran (doc/N28: the 6b tests in the color jobs)
+        run: build/bin/daphne_tests ${{ matrix.tests }} --durations yes
 
   fuzz:
     name: fuzz
@@ -52,10 +56,10 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDAPHNE_BUILD_TESTS=OFF -DDAPHNE_BUILD_FUZZ=ON -DDAPHNE_SANITIZE=address,undefined
       - name: Build
-        run: cmake --build build --parallel --target fuzz_dsd fuzz_decoder
+        run: cmake --build build --parallel --target fuzz_dsd fuzz_decoder fuzz_settings
       - name: Fuzz
         run: |
-          for t in dsd decoder; do
+          for t in dsd decoder settings; do
             mkdir -p work/$t
             # new inputs go to work/ (the seeds in the repository stay as they are); a crash leaves crash-* here
             build/bin/fuzz_$t -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=65536 -print_final_stats=1 work/$t fuzz/corpus/$t

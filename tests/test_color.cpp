@@ -2,7 +2,11 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -386,4 +390,113 @@ TEST_CASE("color settings: the filter cache keys do not depend on Tube Color", "
         test::set_env("DAPHNE_FILTER_CACHE", nullptr);
     }
     std::filesystem::remove_all(dir, ec);
+}
+
+// Random color objects (doc/N28): every field is left out, valid, of the wrong type, out of range or extreme, at random.
+// Each valid field must come through as given, each invalid one must be an error at its own path and keep its default,
+// and nothing else in the settings may change. A fixed seed (the same rounds on every platform: the generator's own
+// arithmetic only, no std::uniform_*_distribution); DAPHNE_COLOR_PROPERTY_SEED and DAPHNE_COLOR_PROPERTY_ROUNDS run
+// other or more rounds locally. A failure prints the seed, the round and the object.
+TEST_CASE("color settings: random objects, every invalid field falls back alone", "[color]") {
+    const auto seed_env = daphne::platform::get_env("DAPHNE_COLOR_PROPERTY_SEED");
+    const auto rounds_env = daphne::platform::get_env("DAPHNE_COLOR_PROPERTY_ROUNDS");
+    const uint64_t seed = seed_env ? std::strtoull(seed_env->c_str(), nullptr, 0) : 20261121u;
+    const int rounds = rounds_env ? std::atoi(rounds_env->c_str()) : 3000;
+    using nlohmann::json;
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    // values of every type that no field accepts (each field adds its own wrong ones)
+    const std::vector<json> foreign = {nullptr, json::array(), json::object(), json::array({1, 2}), json::object({{"x", 1}}),
+                                       "", std::string(5000, 'x'), "\xc3\xa9", nan, inf, -inf, 1e308, -1e308,
+                                       std::numeric_limits<int64_t>::min(), std::numeric_limits<uint64_t>::max()};
+    struct Field {
+        const char* key;
+        std::vector<json> valid, invalid;
+    };
+    std::vector<Field> fields = {
+        {"enabled", {true, false}, {0, 1, "true", "false", 5e-324}},
+        {"model", {"fixed-point"}, {"circuit", "Fixed-Point", "fixed-point ", 0, true, 5e-324}},
+        {"preset", {"set-2a3", "set-300b", "set-845", "pp-el34-ul"}, {"set-300B", "300b", "pp-el34", 1, false, 5e-324}},
+        {"drive", {0, 0.0, 1, 0.01, 1.35, daphne::kColorDriveMax, 5e-324},
+         {-0.01, -1, daphne::kColorDriveMax + 1e-9, 3, 400, "1.0", true}},
+        {"feedback_db", {0, 6, 12, 20, 30}, {6.0, 7, -6, 31, 2147483654LL, "6", false, 5e-324}},
+        {"bias", {"cool", "standard", "hot", 35.0, 59.8, 72.5, 100, 36}, {34.99, 100.01, 0, -60, "Hot", "warm", true, 5e-324}},
+        {"load_ohms", {4, 8, 16}, {8.0, 0, 2, 32, -8, "8", true, 5e-324}},
+        {"makeup_gain", {"auto", 0, -6, 6, 1.5, -0.001, 5e-324}, {6.0001, -7, 12, "AUTO", "3", false}},
+    };
+    for (auto& f : fields) f.invalid.insert(f.invalid.end(), foreign.begin(), foreign.end());
+    const auto defaults = daphne::Settings{};
+    const auto default_json = daphne::settings_to_json(defaults);
+
+    for (int round = 0; round < rounds; ++round) {
+        // splitmix64 per round: a failing round is reproduced from the seed alone
+        uint64_t st = seed + 0x9E3779B97F4A7C15ull * static_cast<uint64_t>(round + 1);
+        auto next = [&st]() {
+            uint64_t z = (st += 0x9E3779B97F4A7C15ull);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+            return z ^ (z >> 31);
+        };
+        auto pick = [&next](size_t n) { return static_cast<size_t>(next() % n); };
+        json obj = json::object();
+        std::vector<std::string> bad;
+        for (const auto& f : fields) {
+            switch (pick(3)) {
+                case 0: break;   // left out
+                case 1: obj[f.key] = f.valid[pick(f.valid.size())]; break;
+                default:
+                    obj[f.key] = f.invalid[pick(f.invalid.size())];
+                    bad.push_back(std::string("color.") + f.key);
+            }
+        }
+        if (pick(4) == 0) obj["warmth"] = 3;   // an unknown field: a warning only
+        // what must come out: the defaults, with every valid field as given
+        daphne::ColorSettings want;
+        for (const auto& [k, v] : obj.items()) {
+            if (std::find(bad.begin(), bad.end(), "color." + k) != bad.end()) continue;
+            if (k == "enabled") want.enabled = v.get<bool>();
+            if (k == "preset")
+                want.preset = v == "set-2a3" ? ColorPreset::Set2a3 : v == "set-845" ? ColorPreset::Set845
+                              : v == "pp-el34-ul" ? ColorPreset::PpEl34Ul : ColorPreset::Set300b;
+            if (k == "drive") want.drive = v.get<double>();
+            if (k == "feedback_db") want.feedback_db = v.get<int>();
+            if (k == "bias") {
+                if (v.is_string()) want.bias = v == "cool" ? ColorBias::Cool : v == "hot" ? ColorBias::Hot : ColorBias::Standard;
+                else want.bias_ma = v.get<double>();
+            }
+            if (k == "load_ohms") want.load_ohms = v.get<int>();
+            if (k == "makeup_gain" && v.is_number()) want.makeup_gain_db = v.get<double>();
+        }
+        // the object as given (NaN and infinity included), and as text (where they become null: invalid as well)
+        for (int as_text = 0; as_text < 2; ++as_text) {
+            const json whole = {{"color", obj}};
+            const auto r = as_text ? daphne::settings_from_string(whole.dump(-1, ' ', false, json::error_handler_t::replace))
+                                   : daphne::settings_from_json(whole);
+            const auto& c = r.settings.color;
+            std::vector<std::string> errors;
+            for (const auto& d : r.diagnostics)
+                if (d.level == daphne::Diagnostic::Level::Error) errors.push_back(d.path);
+            std::sort(errors.begin(), errors.end());
+            auto expected = bad;
+            std::sort(expected.begin(), expected.end());
+            auto same = [](const std::optional<double>& a, const std::optional<double>& b) {
+                return a.has_value() == b.has_value() && (!a || *a == *b);
+            };
+            auto rest = daphne::settings_to_json(r.settings);
+            rest.erase("color");
+            auto rest_default = default_json;
+            rest_default.erase("color");
+            const bool ok = errors == expected && c.enabled == want.enabled && c.model == want.model &&
+                            c.preset == want.preset && c.drive == want.drive && c.feedback_db == want.feedback_db &&
+                            c.bias == want.bias && same(c.bias_ma, want.bias_ma) && c.load_ohms == want.load_ohms &&
+                            same(c.makeup_gain_db, want.makeup_gain_db) && rest == rest_default;
+            if (!ok) {
+                std::string got_errors;
+                for (const auto& e : errors) got_errors += " " + e;
+                FAIL("seed " << seed << " round " << round << (as_text ? " (as text)" : " (as json)") << "\n  color (NaN and infinity print as null): "
+                             << obj.dump(-1, ' ', false, json::error_handler_t::replace) << "\n  errors:" << got_errors
+                             << "\n  read back: " << daphne::settings_to_json(r.settings)["color"].dump());
+            }
+        }
+    }
+    SUCCEED("seed " << seed << ", " << rounds << " rounds");
 }

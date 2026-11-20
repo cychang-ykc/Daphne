@@ -1,0 +1,7 @@
+{
+  "output": { "api": "asio", "device": "My DAC", "rate": "2x", "dsd": "auto", "max_dsd": 128 },
+  "core": "pcm",
+  "filter": { "taps": 32768, "phase": "minimum", "apodize": true, "double_double": false },
+  "dsd_modulator": { "order": 8, "osr": 128 },
+  "volume": { "mode": "digital", "db": -12.0 }
+}

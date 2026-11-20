@@ -77,7 +77,7 @@ public:
         if (it == o.end()) return;
         if (!it->is_number()) return error(join(path, key), "must be a number");
         const double v = it->get<double>();
-        if (v < lo || v > hi) return error(join(path, key), range_msg(lo, hi));
+        if (!(v >= lo && v <= hi)) return error(join(path, key), range_msg(lo, hi));   // NaN too
         out = v;
     }
 
@@ -141,7 +141,7 @@ public:
         }
         if (!it->is_number()) return error(join(path, key), "must be \"auto\" or a number");
         const double v = it->get<double>();
-        if (v < lo || v > hi) return error(join(path, key), range_msg(lo, hi));
+        if (!(v >= lo && v <= hi)) return error(join(path, key), range_msg(lo, hi));   // NaN too
         out = v;
     }
 

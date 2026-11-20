@@ -6,6 +6,8 @@
 #include <limits>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "daphne/dsp/filter_design.h"
 #include "daphne/dsp/progress.h"
 #include "daphne/dsp/resampler.h"
@@ -120,6 +122,35 @@ TEST_CASE("Resampler: double-double convolution, any thread count gives the same
     for (size_t i = 0; i < y1.size(); ++i) diff = std::max(diff, std::abs(y1[i] - yp[i]));
     CHECK(diff > 0.0);     // a different (more exact) computation
     CHECK(diff < 1e-13);   // double rounding of the plain path only
+}
+
+// NaN and infinity (possible through settings_from_json, never in JSON text) are out of every range: an error at the
+// field, which keeps its default (a range check written as v < lo || v > hi let NaN through; found by the color
+// property test, doc/N28)
+TEST_CASE("Settings: NaN and infinity are out of range", "[settings]") {
+    using nlohmann::json;
+    for (const double bad : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                             -std::numeric_limits<double>::infinity()}) {
+        const json j = {{"headroom_db", bad},
+                        {"volume", {{"mode", "digital"}, {"db", bad}}},
+                        {"filter", {{"phase", "custom"}, {"phase_custom", bad}}},
+                        {"crossfeed", {{"fc", bad}, {"amount", bad}}},
+                        {"eq", {{"preamp_db", bad}, {"bands", json::array({{{"type", "PK"}, {"f", bad}, {"q", bad}, {"gain_db", bad}}})}}}};
+        const auto r = daphne::settings_from_json(j);
+        CHECK_FALSE(r.ok());
+        int errors = 0;
+        for (const auto& d : r.diagnostics) errors += d.level == daphne::Diagnostic::Level::Error;
+        CHECK(errors == 9);
+        const daphne::Settings def;
+        CHECK(r.settings.headroom_db == def.headroom_db);
+        CHECK(r.settings.volume.db == def.volume.db);
+        CHECK(r.settings.filter.phase_custom == def.filter.phase_custom);
+        CHECK(r.settings.crossfeed.fc == def.crossfeed.fc);
+        CHECK(r.settings.crossfeed.amount == def.crossfeed.amount);
+        CHECK(r.settings.eq.preamp_db == def.eq.preamp_db);
+        // written back: no NaN or infinity anywhere (the text would carry null)
+        CHECK(daphne::settings_from_string(daphne::settings_to_json(r.settings).dump()).ok());
+    }
 }
 
 TEST_CASE("Output rate for a source rate", "[settings]") {

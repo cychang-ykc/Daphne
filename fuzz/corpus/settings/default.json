@@ -1,0 +1,55 @@
+{
+  "color": {
+    "bias": "standard",
+    "drive": 1.0,
+    "enabled": false,
+    "feedback_db": 6,
+    "load_ohms": 8,
+    "makeup_gain": "auto",
+    "model": "fixed-point",
+    "preset": "set-300b"
+  },
+  "core": "pcm",
+  "crossfeed": {
+    "amount": 0.22,
+    "enabled": false,
+    "fc": 700.0
+  },
+  "design": {
+    "cache_limit_mb": 1024,
+    "threads": 0
+  },
+  "dsd_modulator": {
+    "order": 8,
+    "osr": 128
+  },
+  "eq": {
+    "bands": [],
+    "enabled": false,
+    "preamp_db": "auto"
+  },
+  "filter": {
+    "apodize": false,
+    "double_double": false,
+    "phase": "intermediate",
+    "phase_custom": 0.5,
+    "taps": 2048
+  },
+  "headroom_db": 0.0,
+  "output": {
+    "api": "wasapi_exclusive",
+    "buffer_ms": 0,
+    "device": "",
+    "dsd": "auto",
+    "dsd_lead_in_ms": 100,
+    "dsd_pcm_limiter": true,
+    "dsd_pcm_lowpass": 24,
+    "max_dsd": 0,
+    "rate": "native"
+  },
+  "version": 1,
+  "volume": {
+    "db": 0.0,
+    "mode": "fixed"
+  }
+}
