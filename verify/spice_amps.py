@@ -133,12 +133,13 @@ def set_845():
     return net
 
 
-def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12, drive=None):
+def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12, drive=None, el34_cutoff_c=0.0):
     """Mullard 5-20, Fig. 1 values. Feedback R13 5.6 k // C9 330 pF from the secondary to R5 (open loop: the
     feedback resistor goes to ground instead, keeping R5's loading).
     drive (open loop, diagnostics): "splitter" = ideal antiphase sources in place of the ECC83 anodes (DC 307.8 V,
     the coupling capacitors, 470 k grid resistors and 2.2 k stoppers kept); "grid" = ideal sources straight on the
-    EL34 grids. {amp} is then the amplitude at each anode / grid."""
+    EL34 grids. {amp} is then the amplitude at each anode / grid.
+    el34_cutoff_c: the EL34 sensitivity test only (spice_ref.pentode cutoff_c), never in a preset."""
     lp, dcr, tap = 100.0, 170.0, 0.20
     lh = lp / 4
     l1, l2 = lh * tap ** 2, lh * (1 - tap) ** 2
@@ -165,8 +166,8 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-1
            "C11 a2b g4 0.5e-6", "R15 g4 0 470k", "R19 g4 g4s 2.2k",
            "R20 k3 0 470", "C13 k3 0 50e-6", "R21 k4 0 470", "C14 k4 0 50e-6",
            "R24 t3 s3 1k", "R25 t4 s4 1k",
-           *R.pentode("V3", "EL34", "a3", "s3", "g3s", "k3", screen="fit"),
-           *R.pentode("V4", "EL34", "a4", "s4", "g4s", "k4", screen="fit"),
+           *R.pentode("V3", "EL34", "a3", "s3", "g3s", "k3", screen="fit", cutoff_c=el34_cutoff_c),
+           *R.pentode("V4", "EL34", "a4", "s4", "g4s", "k4", screen="fit", cutoff_c=el34_cutoff_c),
            *tube_caps("V3", "EL34", "a3", "g3s", "k3"), *tube_caps("V4", "EL34", "a4", "g4s", "k4"),
            # output transformer: centre tap c12 via DCR, taps t3 / t4, anodes a3 / a4
            # the DCR is distributed along each half primary: tap x DCR between the centre tap and the screen tap,
