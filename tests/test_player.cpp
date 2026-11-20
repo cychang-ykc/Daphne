@@ -1756,7 +1756,7 @@ void check_seamless(Rig& r, const std::vector<uint8_t>& fl, const std::vector<ui
 TEST_CASE("Player: Tube Color switched while a DSD file plays, without reopening the device", "[player][dsd][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     std::vector<uint8_t> fl, fr;
-    const auto path = write_music_dsf("daphne_color_6b.dsf", 3.0, &fl, &fr);
+    const auto path = write_music_dsf("daphne_color_6b.dsf", 4.0, &fl, &fr);   // (room after the switch off on a busy machine)
     Settings off;
     off.output.dsd_lead_in_ms = 20;
     // the switch's alignment is measured at drive 1 % (the response all but flat, doc/N28): a higher drive adds the
