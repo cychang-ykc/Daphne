@@ -31,9 +31,13 @@ void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
 }
 
 bool Player::Impl::restart(const Settings& ns, const OutputChoice& no, bool drain) {
+    const bool to_dsd = back_to_dsd_direct(ns);
     check_switch();
     if (tl.cross_pending()) drain = false;   // the queue holds the next track at another rate: not played out
     int64_t from = dsdf ? heard_position() : std::max<int64_t>(0, heard_input());   // PCM: stream timeline
+    // paused: what is queued is dropped and nothing plays out (draining would skip it and play a faded chunk while
+    // paused): it goes on from where it is heard
+    if (io.dev && io.dev->paused()) drain = false;
     io.drop_if_paused();
     queue.drop();   // built for the old settings / device
     if (io.dev && !io.eof && !io.dev->failed() && drain) {
@@ -78,6 +82,7 @@ bool Player::Impl::restart(const Settings& ns, const OutputChoice& no, bool drai
     io.dev.reset();
     s = ns;
     out = no;
+    if (to_dsd) return pcm_to_dsd_direct(from);
     if (reopen_dec) {
         std::string e;
         auto d = open_source(cur_path, s, &e);
@@ -104,7 +109,8 @@ bool Player::Impl::handle(const Settings& ns, const OutputChoice& no) {
         return true;
     }
     dsp::set_design_threads(ns.design.threads);
-    if (needs_restart(playing(), ns, no)) return restart(ns, no);
+    // Tube Color switched off while a DSD file plays as PCM only for it: sent directly again (restart -> pcm_to_dsd_direct)
+    if (needs_restart(playing(), ns, no) || back_to_dsd_direct(ns)) return restart(ns, no);
     if (cur->update(chain_settings(ns, run_osr))) {
         s = ns;
         event("applied in place (EQ / crossfeed / volume)");

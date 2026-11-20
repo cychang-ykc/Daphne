@@ -37,6 +37,110 @@ void Player::Impl::queue_end() {
     io.pend_off = 0;
 }
 
+void Player::Impl::set_dsd_source() {
+    const DsdInfo& di = dsdf->info();
+    rep.source = AudioInfo{};
+    rep.source.rate = di.dsd_rate / 8;
+    rep.source.channels = di.channels;
+    rep.source.bits = 1;
+    rep.source.lossless_int = true;
+    rep.source.frames = di.frames;
+    rep.source.channel_mask = di.channel_mask;
+    rep.source.codec = di.codec;
+    rep.source.dsd_rate = di.dsd_rate;
+}
+
+// The device's two kinds of stream do not mix: the DSD one ends on silence and the device is opened again for PCM
+// (fading in), as for a new output (handle_dsd). The position is carried over in seconds (DSD bytes -> PCM frames).
+bool Player::Impl::dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no) {
+    check_switch();
+    // where the PCM goes on: paused, or with the next file already queued, from what is heard (what is queued is
+    // dropped); otherwise what is queued plays out first and it goes on after it (as restart() does for PCM)
+    int64_t from = heard_position();
+    if (!tl.switches.empty()) {   // the next file was read ahead but is not heard yet: it is the next track again
+        queue.restore(tl.switches.front().path);
+        tl.switches.clear();
+        if (io.ring) io.ring->clear();
+        io.pend = io.pend_off = 0;
+    } else if (io.dev && !io.dev->paused()) {
+        while (!io.push()) std::this_thread::sleep_for(std::chrono::milliseconds(2));   // the chunk made is queued too
+        from = std::max<int64_t>(0, tl.abs_out - tl.track_origin_in);
+    }
+    const double sec = rep.source.rate > 0 ? static_cast<double>(from) / rep.source.rate : 0.0;
+    io.drop_if_paused();
+    push_dsd_idle(50);
+    push_pcm_silence(200);
+    io.eof = true;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (io.dev && !io.dev->drained() && !io.dev->failed() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if (io.dev) io.dev->stop();
+    io.dev.reset();
+    dsdf.reset();
+    dsdenc.reset();
+    s = ns;
+    out = no;
+    tl.track_origin_in = 0;
+    tl.h_base = 0;
+    end_queued = false;
+    want_fade_in = true;
+    event("DSD converted to PCM (Tube Color)");
+    std::string e;
+    dec = open_source(cur_path, s, &e);
+    if (!dec) {
+        err = e;
+        return false;
+    }
+    rep.source = dec->info();
+    ch = rep.source.channels;
+    pcm.assign(static_cast<size_t>(kChunk) * ch, 0.0);
+    hist.reset(ch);
+    dsd_pcm_for_color = !caps().shared_mix && s.output.dsd != DsdMode::Pcm;
+    stream = pcm_stream;
+    if (!open_and_start(static_cast<int64_t>(std::llround(sec * rep.source.rate)), &e)) {   // (it reports the start)
+        err = e;
+        return false;
+    }
+    return true;
+}
+
+bool Player::Impl::back_to_dsd_direct(const Settings& ns) const {
+    return dsd_pcm_for_color && !dsdf && color_active(s) && !color_active(ns) && ns.output.dsd != DsdMode::Pcm && is_dsd_path(cur_path);
+}
+
+// restart() has faded the PCM out and stopped the device; `from` is in the converted track's PCM frames
+bool Player::Impl::pcm_to_dsd_direct(int64_t from) {
+    const double sec = rep.source.rate > 0 ? static_cast<double>(from) / rep.source.rate : 0.0;
+    std::string e;
+    auto f = std::make_unique<DsdFile>();
+    if (!f->open(cur_path, &e)) {
+        err = e;
+        return false;
+    }
+    dsdf = std::move(f);
+    set_dsd_source();
+    dsd_pcm_for_color = false;
+    end_queued = false;
+    event("Tube Color off: the DSD file is sent directly again");
+    if (open_dsd(static_cast<int64_t>(std::llround(sec * rep.source.rate)), &e)) {
+        dec.reset();
+        stream = dsd_stream;
+        if (cb.on_start) cb.on_start(rep);
+        return true;
+    }
+    // no DSD path after all (the device refused it now): converted as before
+    event("DSD cannot be sent directly (" + e + "): converting the DSD file to PCM");
+    dsdf.reset();
+    dsdenc.reset();
+    rep.source = dec->info();
+    stream = pcm_stream;
+    if (!open_and_start(from, &e)) {
+        err = e;
+        return false;
+    }
+    return true;
+}
+
 bool Player::Impl::open_dsd(int64_t from, std::string* error) {
     const DsdInfo& di = dsdf->info();
     struct Attempt {
@@ -156,9 +260,9 @@ bool Player::Impl::produce_dsd() {
 }
 
 bool Player::Impl::handle_dsd(const Settings& ns, const OutputChoice& no, bool reset) {
+    // Tube Color switched on: the file goes on as PCM through the chain, from where it is heard
+    if (!reset && color_active(ns) && !color_active(s)) return dsd_direct_to_pcm(ns, no);
     const bool reopen = reset || dsd_direct_reopens(playing(), ns, no);
-    // the DSD path is chosen when the file is loaded (as for output.dsd: the host loads it again)
-    if (color_active(ns) && !color_active(s)) event("Tube Color applies from the next load of this DSD file (sent directly now)");
     s = ns;
     if (!reopen) {
         event("DSD file played directly: DSP settings do not apply");

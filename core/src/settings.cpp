@@ -248,10 +248,13 @@ void read_color(Reader& r, const json& o, ColorSettings& s) {
         if (!ok) {
             r.error("color.bias", "must be \"cool\", \"standard\", \"hot\" or a cathode current in mA (" + Reader::number_text(lo) +
                                       " .. " + Reader::number_text(hi) + ", per preset)");
-        } else if (s.bias_ma && color_bias_falls_back(s)) {
+        } else if (color_bias_falls_back(s)) {
+            const std::string preset = to_name(kColorPreset, s.preset);
             const auto range = color_bias_range(s.preset);
-            r.warn("color.bias", "outside " + std::string(to_name(kColorPreset, s.preset)) + "'s range (" + Reader::number_text(range.lo_ma) +
-                                     " .. " + Reader::number_text(range.hi_ma) + " mA): the standard bias applies; kept for the other presets");
+            r.warn("color.bias", (s.bias_ma ? "outside " + preset + "'s range (" + Reader::number_text(range.lo_ma) + " .. " +
+                                                  Reader::number_text(range.hi_ma) + " mA)"
+                                            : "hot does not apply to " + preset + " (no room above its standard bias)") +
+                                     ": the standard bias applies; kept for the other presets");
         }
     }
     r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
@@ -368,22 +371,41 @@ json settings_to_json(const Settings& s) {
 
 ColorBiasRange color_bias_range(ColorPreset p) {
     // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
+    // lo = 0.6 x standard; hi = the rating; hot_cap = 90 % of the rated plate dissipation (plus the screen current)
     switch (p) {
-        case ColorPreset::Set2a3: return {35.0, 58.9, 59.0};      // RCA: 15 W at 251 V
-        case ColorPreset::Set300b: return {36.0, 59.8, 100.0};    // WE: 100 mA maximum plate current
-        case ColorPreset::Set845: return {44.0, 72.5, 79.0};      // RCA: 100 W at 1253 V
-        case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0};    // Philips: 25 W at 399 V, plus the screen current
+        case ColorPreset::Set2a3: return {35.0, 58.9, 59.0, 53.8};     // RCA: 15 W at 251 V
+        case ColorPreset::Set300b: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V
+        case ColorPreset::Set845: return {44.0, 72.5, 79.0, 71.8};     // RCA: 100 W at 1253 V
+        case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0, 63.0};   // Philips: 25 W at 399 V, plus 6.7 mA screen current
     }
-    return {0.0, 0.0, 0.0};
+    return {0.0, 0.0, 0.0, 0.0};
 }
 
-std::optional<double> color_bias_ma(const ColorSettings& c) {
-    if (!c.bias_ma) return std::nullopt;
+double color_cool_ma(ColorPreset p) { return kColorCoolFactor * color_bias_range(p).standard_ma; }
+
+std::optional<double> color_hot_ma(ColorPreset p) {
+    const auto r = color_bias_range(p);
+    const double hot = std::min(kColorHotFactor * r.standard_ma, r.hot_cap_ma);
+    if (hot < (1.0 + kColorHotMinStep) * r.standard_ma) return std::nullopt;
+    return hot;
+}
+
+double color_bias_current_ma(const ColorSettings& c) {
     const auto r = color_bias_range(c.preset);
-    return *c.bias_ma >= r.lo_ma && *c.bias_ma <= r.hi_ma ? c.bias_ma : std::nullopt;
+    if (c.bias_ma) return *c.bias_ma >= r.lo_ma && *c.bias_ma <= r.hi_ma ? *c.bias_ma : r.standard_ma;
+    switch (c.bias) {
+        case ColorBias::Cool: return color_cool_ma(c.preset);
+        case ColorBias::Hot: return color_hot_ma(c.preset).value_or(r.standard_ma);
+        case ColorBias::Standard: break;
+    }
+    return r.standard_ma;
 }
 
-bool color_bias_falls_back(const ColorSettings& c) { return c.bias_ma && !color_bias_ma(c); }
+bool color_bias_falls_back(const ColorSettings& c) {
+    const auto r = color_bias_range(c.preset);
+    if (c.bias_ma) return *c.bias_ma < r.lo_ma || *c.bias_ma > r.hi_ma;
+    return c.bias == ColorBias::Hot && !color_hot_ma(c.preset);
+}
 
 bool color_active(const Settings& s) {
 #if defined(DAPHNE_COLOR)

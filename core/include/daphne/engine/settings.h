@@ -161,7 +161,7 @@ struct ColorSettings {
     int feedback_db = 6;                 // pp-el34-ul's feedback step: 0 | 6 | 12 | 20 | 30 (30 = the Mullard 5-20)
     ColorBias bias = ColorBias::Standard;
     // A cathode current per output tube in mA instead of the named bias. Kept as set; it applies only while it lies
-    // in the current preset's range (color_bias_range), else the standard bias does (color_bias_ma).
+    // in the current preset's range (color_bias_range), else the standard bias does (color_bias_current_ma).
     std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
     // nullopt = "auto" (loudness kept within 0.5 dB); else a trim of -6 .. 6 dB on top of auto
@@ -170,14 +170,21 @@ struct ColorSettings {
 
 // The cathode current per output tube a preset allows (doc/N28): lo = 0.6 x the reference circuit's quiescent current
 // (still class A), hi = the datasheet's plate dissipation (or maximum current) at the preset's plate voltage.
+// hot_cap_ma: the current at 90 % of the rated plate dissipation, the ceiling of the hot bias.
 struct ColorBiasRange {
-    double lo_ma, standard_ma, hi_ma;
+    double lo_ma, standard_ma, hi_ma, hot_cap_ma;
 };
 ColorBiasRange color_bias_range(ColorPreset p);
-// The cathode current that applies: bias_ma when it lies in the preset's range, else nullopt (the named bias; a
-// stored current outside the range falls back to standard).
-std::optional<double> color_bias_ma(const ColorSettings& c);
-// True when a stored current lies outside the current preset's range (the playback path reports it once).
+// The named biases (doc/N28): cool = 0.8 x standard; hot = min(1.1 x standard, hot_cap_ma), offered only where it is
+// at least 5 % above standard (nullopt otherwise: of the four presets only set-300b has it).
+inline constexpr double kColorCoolFactor = 0.8, kColorHotFactor = 1.1, kColorHotMinStep = 0.05;
+double color_cool_ma(ColorPreset p);
+std::optional<double> color_hot_ma(ColorPreset p);
+// The cathode current that applies: bias_ma when it lies in the preset's range, else the named bias; standard where
+// the setting does not apply to the preset (a current outside its range, hot where it has none).
+double color_bias_current_ma(const ColorSettings& c);
+// True when the setting does not apply to the current preset and the standard bias is used instead (the setting is
+// kept; the playback path reports it once).
 bool color_bias_falls_back(const ColorSettings& c);
 inline constexpr double kColorMakeupTrimMaxDb = 6.0;
 

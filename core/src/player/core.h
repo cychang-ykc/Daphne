@@ -82,7 +82,9 @@ struct Player::Impl {
     std::atomic<bool> cancel{false}, done{false};
     std::atomic<int64_t> pos{0};
     bool ok = false;
-    Stream* stream = nullptr;          // what is playing (play)
+    Stream* stream = nullptr;          // what is playing (play); switches between the two below (Tube Color, doc/N28)
+    Stream* pcm_stream = nullptr;      // run_playback's two streams
+    Stream* dsd_stream = nullptr;
     std::string err;
 
     // playback (processing thread only)
@@ -105,6 +107,7 @@ struct Player::Impl {
     std::unique_ptr<DsdFile> dsdf;     // DSD file played directly (no chain)
     std::vector<uint8_t> dsd_in;
     int dsd_pcm_rate = 0;              // DSD -> PCM fallback at this rate (0 = 176.4 / 192 kHz)
+    bool dsd_pcm_for_color = false;    // a DSD file converted to PCM only because Tube Color is active
     int dop_locked = 0;                // the PCM rate the device locked instead of the DoP rate (0: none)
     double start_sec = 0.0;            // Player::start position
     // transport requests (under m) and state
@@ -174,7 +177,7 @@ struct Player::Impl {
     void abort_run(const std::string& what);
     // The playback loop until the end, a stop or a fatal error, then finish_playback.
     void play(Stream& st);
-    void loop(Stream& st);
+    void loop();
     class PcmStream;
     class DsdDirectStream;
     // One pass of the transport requests (processing thread). False: the playback cannot go on (err says why).
@@ -223,6 +226,12 @@ struct Player::Impl {
     // DSD files: straight to the device, every processing stage bypassed.
     // ASIO with output.dsd none / native: native DSD; otherwise DoP at the DSD rate / 16.
     bool open_dsd(int64_t from, std::string* error);
+    void set_dsd_source();             // rep.source from the DSD file (dsdf)
+    // Tube Color switched on / off while a DSD file plays (doc/N28): the file goes on at the heard position, as PCM
+    // through the chain or sent directly again
+    bool dsd_direct_to_pcm(const Settings& ns, const OutputChoice& no);
+    bool back_to_dsd_direct(const Settings& ns) const;
+    bool pcm_to_dsd_direct(int64_t from);
     bool produce_dsd();
     // DSD direct: only the output can change (no processing applies to DSD sent directly).
     // reset: a driver reset reopens the device as it is (nothing more is queued for it).

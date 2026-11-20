@@ -129,18 +129,15 @@ TEST_CASE("color settings: a bias current applies per preset and comes back", "[
     REQUIRE(r.ok());
     CHECK(r.diagnostics.empty());
     daphne::ColorSettings c = r.settings.color;
-    REQUIRE(daphne::color_bias_ma(c).has_value());
-    CHECK(*daphne::color_bias_ma(c) == 80.0);   // 300B: 80 mA
+    CHECK(daphne::color_bias_current_ma(c) == 80.0);   // 300B: 80 mA
     CHECK_FALSE(daphne::color_bias_falls_back(c));
-    c.preset = ColorPreset::Set845;              // switched: outside the range, the standard bias, reported
-    CHECK_FALSE(daphne::color_bias_ma(c).has_value());
-    CHECK(c.bias == ColorBias::Standard);
+    c.preset = ColorPreset::Set845;                     // switched: outside the range, the standard bias, reported
+    CHECK(daphne::color_bias_current_ma(c) == 72.5);
     CHECK(daphne::color_bias_falls_back(c));
     REQUIRE(c.bias_ma.has_value());
-    CHECK(*c.bias_ma == 80.0);                   // the setting itself is kept
-    c.preset = ColorPreset::Set300b;             // switched back: 80 mA again
-    REQUIRE(daphne::color_bias_ma(c).has_value());
-    CHECK(*daphne::color_bias_ma(c) == 80.0);
+    CHECK(*c.bias_ma == 80.0);                          // the setting itself is kept
+    c.preset = ColorPreset::Set300b;                    // switched back: 80 mA again
+    CHECK(daphne::color_bias_current_ma(c) == 80.0);
     CHECK_FALSE(daphne::color_bias_falls_back(c));
     // read with a preset that does not allow it: a warning, not an error; kept, standard applies
     r = load(R"({"preset": "set-845", "bias": 80})");
@@ -150,6 +147,45 @@ TEST_CASE("color settings: a bias current applies per preset and comes back", "[
     CHECK(r.diagnostics[0].path == "color.bias");
     CHECK(daphne::color_bias_falls_back(r.settings.color));
     CHECK(daphne::settings_to_json(r.settings)["color"]["bias"] == 80.0);   // written back as set
+}
+
+TEST_CASE("color settings: cool and hot per preset", "[color]") {
+    using daphne::color_hot_ma;
+    // cool = 0.8 x standard everywhere
+    CHECK(daphne::color_cool_ma(ColorPreset::Set300b) == Catch::Approx(0.8 * 59.8));
+    CHECK(daphne::color_cool_ma(ColorPreset::Set2a3) == Catch::Approx(0.8 * 58.9));
+    // hot only where there is room for it: 300B (1.1 x 59.8 = 65.8 mA, below its 92.5 mA cap)
+    REQUIRE(color_hot_ma(ColorPreset::Set300b).has_value());
+    CHECK(*color_hot_ma(ColorPreset::Set300b) == Catch::Approx(1.1 * 59.8));
+    CHECK_FALSE(color_hot_ma(ColorPreset::Set2a3).has_value());
+    CHECK_FALSE(color_hot_ma(ColorPreset::Set845).has_value());
+    CHECK_FALSE(color_hot_ma(ColorPreset::PpEl34Ul).has_value());
+    // hot on 2A3: a warning, standard applies, "hot" is kept (300B uses it again)
+    const auto r = load(R"({"preset": "set-2a3", "bias": "hot"})");
+    CHECK(r.ok());
+    REQUIRE(r.diagnostics.size() == 1);
+    CHECK(r.diagnostics[0].level == daphne::Diagnostic::Level::Warning);
+    CHECK(r.diagnostics[0].path == "color.bias");
+    daphne::ColorSettings c = r.settings.color;
+    CHECK(c.bias == ColorBias::Hot);
+    CHECK(daphne::color_bias_falls_back(c));
+    CHECK(daphne::color_bias_current_ma(c) == 58.9);
+    CHECK(daphne::settings_to_json(r.settings)["color"]["bias"] == "hot");
+    c.preset = ColorPreset::Set300b;
+    CHECK_FALSE(daphne::color_bias_falls_back(c));
+    CHECK(daphne::color_bias_current_ma(c) == Catch::Approx(65.78));
+    c.preset = ColorPreset::Set845;
+    CHECK(daphne::color_bias_falls_back(c));
+    CHECK(daphne::color_bias_current_ma(c) == 72.5);
+    // cool and standard apply to every preset
+    for (auto p : {ColorPreset::Set2a3, ColorPreset::Set300b, ColorPreset::Set845, ColorPreset::PpEl34Ul}) {
+        c.preset = p;
+        c.bias = ColorBias::Cool;
+        CHECK_FALSE(daphne::color_bias_falls_back(c));
+        CHECK(daphne::color_bias_current_ma(c) >= daphne::color_bias_range(p).lo_ma);
+        c.bias = ColorBias::Standard;
+        CHECK(daphne::color_bias_current_ma(c) == daphne::color_bias_range(p).standard_ma);
+    }
 }
 
 // Where Tube Color cannot run (every build but the test builds, before M2), enabled true must change nothing:

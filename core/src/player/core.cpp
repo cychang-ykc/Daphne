@@ -273,6 +273,10 @@ void Player::Impl::abort_run(const std::string& what) {
 
 void Player::Impl::run_playback() {
     platform::RealtimeScope rt;
+    PcmStream pcm_st(*this);
+    DsdDirectStream dsd_st(*this);
+    pcm_stream = &pcm_st;
+    dsd_stream = &dsd_st;
     dsp::set_design_threads(s.design.threads);
     std::string e;
     bool started_dsd = false;
@@ -289,16 +293,7 @@ void Player::Impl::run_playback() {
             return;
         }
         dsdf = std::move(f);
-        const DsdInfo& di = dsdf->info();
-        rep.source = AudioInfo{};
-        rep.source.rate = di.dsd_rate / 8;
-        rep.source.channels = di.channels;
-        rep.source.bits = 1;
-        rep.source.lossless_int = true;
-        rep.source.frames = di.frames;
-        rep.source.channel_mask = di.channel_mask;
-        rep.source.codec = di.codec;
-        rep.source.dsd_rate = di.dsd_rate;
+        set_dsd_source();
         std::string de = "output.dsd = pcm";
         // Tube Color (doc/N28) works on PCM: while it is active a DSD file is converted (only then: where it cannot
         // run, color.enabled true leaves DSD as it was)
@@ -320,6 +315,8 @@ void Player::Impl::run_playback() {
             return;
         } else {
             // no DSD path to the device: the DSD file is converted to PCM
+            // sent directly again when Tube Color goes off, unless something else needs PCM too
+            dsd_pcm_for_color = color && s.output.dsd != DsdMode::Pcm && !caps().shared_mix;
             event(color ? "DSD converted to PCM (Tube Color)"
                   : s.output.dsd == DsdMode::Pcm ? "converting the DSD file to PCM (output.dsd = pcm)"
                                                  : "DSD cannot be sent directly (" + de + "): converting the DSD file to PCM");
@@ -350,8 +347,7 @@ void Player::Impl::run_playback() {
             start_ok = true;
         }
         cv.notify_all();
-        DsdDirectStream st(*this);
-        play(st);
+        play(dsd_st);
         return;
     }
     dec = open_source(path, s, &e);
@@ -375,15 +371,14 @@ void Player::Impl::run_playback() {
         done = true;
         return;
     }
-    PcmStream st(*this);
-    play(st);
+    play(pcm_st);
 }
 
 void Player::Impl::play(Stream& st) {
     stream = &st;
     ok = true;
     try {
-        loop(st);
+        loop();
     } catch (const std::exception& ex) {   // the device is stopped and the host told, as for any other failure
         ok = false;
         err = std::string("internal error: ") + ex.what();
@@ -395,7 +390,7 @@ void Player::Impl::play(Stream& st) {
     stream = nullptr;
 }
 
-void Player::Impl::loop(Stream& st) {
+void Player::Impl::loop() {
     // A pass that took long is logged with where the time went: the ring holds 0.5 s without a filter, so a longer
     // stall in the decoder (a disk that stops answering) is a gap the device plays. The time of a settings change
     // or a seek is shown but does not count: those pause or refill on purpose. The intended sleeps are left out.
@@ -416,12 +411,13 @@ void Player::Impl::loop(Stream& st) {
             std::lock_guard<std::mutex> l(m);
             p.swap(pending);
         }
-        if (p && !st.apply(p->first, p->second)) {
+        // `stream`, not a reference taken once: a settings change may switch it (a DSD file and Tube Color)
+        if (p && !stream->apply(p->first, p->second)) {
             ok = false;
             break;
         }
         const int64_t t_apply = lap();
-        if (!st.poll()) {
+        if (!stream->poll()) {
             ok = false;
             break;
         }
@@ -432,7 +428,7 @@ void Player::Impl::loop(Stream& st) {
             break;
         }
         const int64_t t_transport = lap();
-        if (!io.eof && !st.produce()) queue_end();
+        if (!io.eof && !stream->produce()) queue_end();
         const int64_t t_decode = lap();
         const bool pushed = io.push();
         const int64_t t_push = lap();
