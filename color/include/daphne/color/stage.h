@@ -11,12 +11,16 @@
 //
 // Drive 0 is the identity, by skipping everything (not by arithmetic): a stage built at drive 0 stays the identity, and
 // crossing 0 rebuilds the chain (structure_key). Other drive changes glide (kGlideMs, linear) in place (set_drive).
+//
+// Below 8x the rate family the stage runs oversampled (oversampler.h): everything above at L times its input rate, the
+// round trip's delay reported as the content delay (a whole number of frames, 0 at drive 0).
 
 #include <atomic>
 #include <complex>
 #include <vector>
 
 #include "daphne/color/linear.h"
+#include "daphne/color/oversampler.h"
 #include "daphne/dsp/block.h"
 
 namespace daphne::color {
@@ -37,18 +41,26 @@ public:
     dsp::Format output_format() const override { return fmt_; }
     int process(const double* in, int frames, double* out) override;
     int latency_frames() const override { return 0; }
+    int content_delay_frames() const override { return identity_ ? 0 : os_.delay(); }
+    int oversampling() const { return os_.factor(); }
     void reset() override;
     bool is_identity() const override { return identity_; }
 
     // A new drive, gliding there from the current one (any thread; from the next process()). Ignored by a stage built
     // at drive 0, and a target of 0 is not taken (crossing 0 is a rebuild).
     void set_drive(double d);
+    // A chain rebuilt because the drive left 0 (doc/N28): the stage waits at kRiseFrom (next to nothing) through the
+    // warm-up, and rises from there with the glide once set_drive gives it the target (when the crossfade begins);
+    // the chain it replaces is the identity, so the two are the same signal while they cross.
+    static constexpr double kRiseFrom = 1e-4;
+    void hold_at_rise();
     double drive() const { return d_; }   // the current (gliding) drive, on the processing thread
     // The linear response at hz now (pre and post; 1 at drive 0), for tests and the M2 tools
     std::complex<double> linear_response(double hz) const { return identity_ ? 1.0 : pre_.response(hz) * post_.response(hz); }
 
 private:
     void update_mix();
+    void run_frame(const double* x, double* y);   // one frame at the processing rate
 
     StageParams p_;
     bool identity_;
@@ -57,6 +69,8 @@ private:
     double last_target_ = 0.0, d_ = 0.0, step_ = 0.0, mix_d_ = -1.0;
     int left_ = 0, glide_frames_ = 1;
     SectionChain pre_, post_;
+    Oversampler os_;
+    std::vector<double> hi_;                 // L frames at the high rate
     double dc_r_ = 0.0;                    // the DC blocker's pole
     std::vector<double> dc_x1_, dc_y1_;    // its state per channel (last input, last output)
 };

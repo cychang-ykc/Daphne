@@ -48,6 +48,9 @@ std::string Report::filter(const Settings& s, const DsdEncoder* enc) const {
         d += ", " + std::to_string(rep.source.rate) + " -> " + std::to_string(rep.device.rate) + " Hz";
     else if (enc)
         d += " | " + enc->describe();
+    // Tube Color (doc/N28): said when it is set but does nothing, so it is not taken for working
+    if (s.color.enabled && !color_active(s)) d += " | Tube Color unavailable (before M2)";
+    else if (color_active(s) && s.color.drive <= 0.0) d += " | Tube Color idle (drive 0)";
     return pre + d;
 }
 

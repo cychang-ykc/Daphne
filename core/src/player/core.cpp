@@ -172,6 +172,7 @@ bool Player::Impl::do_seek(double sec) {
         auto warmed = take_warm();
         if (xf.fading || warmed) {   // a crossfade was running or warming up: the new chain takes over
             cur = warmed ? std::move(warmed) : std::move(xf.next);
+            arm_rise(cur.get());
             xf.fading = false;
             rep.chain = cur->stages();
             rep.filter = report.filter(s, dsdenc.get());

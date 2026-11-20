@@ -100,6 +100,11 @@ struct Player::Impl {
     // latest settings are kept; a change back across 0 drops it)
     static constexpr auto kZeroCrossHold = std::chrono::milliseconds(300);
     std::optional<std::pair<Settings, OutputChoice>> held;
+    std::optional<Settings> rise_to;   // the chain settings a chain rebuilt off drive 0 rises to when it crossfades in
+    void arm_rise(DspChain* c) {
+        if (rise_to && c) c->update(*rise_to);
+        rise_to.reset();
+    }
     std::chrono::steady_clock::time_point held_until{};
     std::vector<double> pcm, dsp, tmp_c, tmp_n;
     int64_t in_total = 0;              // source frames read since the start of the track

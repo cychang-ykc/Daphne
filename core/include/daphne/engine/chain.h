@@ -63,6 +63,11 @@ public:
     bool transparent() const;
     // Names of the stages that change the signal, in order, for reports.
     std::vector<std::string> stages() const;
+    // Tube Color's drive crossing 0 (doc/N28): a chain built for a drive above 0 that replaces one at 0 waits next to 0
+    // until update() gives it the drive (when the crossfade begins), then glides up; the chain being replaced by one at
+    // 0 glides down to next to 0 while that one is built. No-ops without the stage.
+    void color_hold_at_zero();
+    void color_glide_to_zero();
     // Names of every stage, in order, including those that currently pass samples through (tests, diagnostics).
     std::vector<std::string> all_stages() const;
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).

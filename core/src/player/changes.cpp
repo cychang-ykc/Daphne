@@ -6,11 +6,18 @@ namespace daphne {
 void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
     build_target = std::make_pair(ns, no);
     const Settings cs = chain_settings(ns, run_osr);
+    // Tube Color's drive crossing 0 (doc/N28): off 0, the new chain rises from next to 0 once it crossfades in; to 0,
+    // the playing chain glides down while the new one is built
+    const bool zero_cross = zero_cross_only(ns);
+    const bool rise = zero_cross && cs.color.drive > 0.0;
+    rise_to.reset();
+    if (rise) rise_to = cs;
+    if (zero_cross && !rise && cur) cur->color_glide_to_zero();
     const AudioInfo src = rep.source;
     report.design_prog = 0.0;
     build_designs = (chain_fmt.rate != src.rate || cs.filter.apodize) && !filter_cached(cs.filter, src.rate, chain_fmt.rate);
     build_cancel = std::make_shared<std::atomic<bool>>(false);
-    building = std::async(std::launch::async, [cs, src, devf = chain_fmt, this, flag = build_cancel]() -> std::unique_ptr<DspChain> {
+    building = std::async(std::launch::async, [cs, src, devf = chain_fmt, this, flag = build_cancel, rise]() -> std::unique_ptr<DspChain> {
         PoolThreadScope pool;   // the priority below is undone when the task ends (common.h)
         // playback is running: stay below it (the design workers take this priority)
         platform::set_thread_priority(platform::Priority::BelowNormal);
@@ -20,6 +27,7 @@ void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
         std::string e;
         try {
             if (!c->build(cs, src, devf, kChunk, &e)) return nullptr;
+            if (rise) c->color_hold_at_zero();
         } catch (const dsp::DesignCancelled&) {
             return nullptr;
         } catch (const std::exception&) {   // e.g. memory for a long filter: the current chain stays

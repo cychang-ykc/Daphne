@@ -240,6 +240,18 @@ bool DspChain::transparent() const {
     return std::all_of(st_.begin(), st_.end(), [](const Stage& s) { return s.block->is_identity(); });
 }
 
+void DspChain::color_hold_at_zero() {
+#if defined(DAPHNE_COLOR)
+    if (color_) color_->hold_at_rise();
+#endif
+}
+
+void DspChain::color_glide_to_zero() {
+#if defined(DAPHNE_COLOR)
+    if (color_) color_->set_drive(color::TubeColorStage::kRiseFrom);
+#endif
+}
+
 std::vector<std::string> DspChain::all_stages() const {
     std::vector<std::string> v;
     for (const auto& s : st_) v.push_back(s.name);

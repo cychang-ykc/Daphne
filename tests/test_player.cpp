@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -20,6 +21,11 @@
 
 #include <nlohmann/json.hpp>
 
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+#include "daphne/color/oversampler.h"
+#include "daphne/color/stage.h"
+#include "daphne/color/test_curve.h"
+#endif
 #include "daphne/dsp/modulator.h"
 #include "daphne/engine/file_bytes.h"
 #include "daphne/engine/live_source.h"
@@ -1395,6 +1401,259 @@ TEST_CASE("Player: Tube Color's drive crossing 0 rebuilds once it settles", "[pl
     CHECK(std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) == rep.chain.end());   // passing through
     CHECK(r.dev->opens.size() == 1);
     r.player.reset();
+}
+
+namespace {
+
+// pink noise (Paul Kellet's filter on uniform white noise) at about `rms`, plus a sine; stereo, the same on both sides
+std::shared_ptr<Signal> pink_and_sine(int rate, double seconds, double rms, double sine_amp, double hz) {
+    auto s = std::make_shared<Signal>();
+    const int64_t frames = static_cast<int64_t>(seconds * rate);
+    s->info.rate = rate, s->info.channels = 2, s->info.frames = frames, s->info.codec = "TEST";
+    s->x.resize(static_cast<size_t>(frames) * 2);
+    std::mt19937 g(7);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    std::vector<double> p(static_cast<size_t>(frames));
+    double acc = 0.0;
+    for (int64_t i = 0; i < frames; ++i) {
+        const double w = u(g);
+        b0 = 0.99886 * b0 + w * 0.0555179, b1 = 0.99332 * b1 + w * 0.0750759, b2 = 0.96900 * b2 + w * 0.1538520;
+        b3 = 0.86650 * b3 + w * 0.3104856, b4 = 0.55000 * b4 + w * 0.5329522, b5 = -0.7616 * b5 - w * 0.0168980;
+        p[static_cast<size_t>(i)] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+        b6 = w * 0.115926;
+        acc += p[static_cast<size_t>(i)] * p[static_cast<size_t>(i)];
+    }
+    const double k = rms / std::sqrt(acc / static_cast<double>(frames));
+    for (int64_t i = 0; i < frames; ++i)
+        s->x[2 * static_cast<size_t>(i)] = s->x[2 * static_cast<size_t>(i) + 1] =
+            k * p[static_cast<size_t>(i)] + sine_amp * std::sin(2 * kPi * hz * static_cast<double>(i) / rate);
+    return s;
+}
+
+// channel 0 of an Int32 stereo device stream
+std::vector<double> ch0_int32(const std::vector<uint8_t>& b) {
+    std::vector<double> y;
+    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
+        int32_t v;
+        std::memcpy(&v, &b[i], 4);
+        y.push_back(v / 2147483648.0);
+    }
+    return y;
+}
+
+}  // namespace
+
+// Tube Color's drive crossing 0 where the stage runs oversampled (44.1 kHz: 8x, 223 frames of content delay): the
+// chain with the stage and the one without it are crossfaded aligned by their content delays (Crossfader, N4), so the
+// output stays where the input is (the cross-correlation peak does not move) and the crossfades show no comb notch.
+TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage is oversampled", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    const int rate = 44100;
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["pink"] = pink_and_sine(rate, 3.5, 0.003, 0.003, 997.0);   // about -50 dBFS: the curve stays linear
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.5;
+    Settings z = s;
+    z.color.drive = 0.0;
+    REQUIRE(r.start("pink", s));
+    sleep_s(0.6);
+    r.player->apply(z, OutputChoice{});
+    REQUIRE(wait_for([&] { return count_events(r, "now playing with filter") >= 1; }, 5.0));
+    sleep_s(0.4);
+    r.player->apply(s, OutputChoice{});
+    REQUIRE(wait_for([&] { return count_events(r, "now playing with filter") >= 2; }, 5.0));
+    const auto rep = r.finish();
+    CHECK(r.ended);
+    const auto y = ch0_int32(r.dev->take());
+    const auto& src = r.sources["pink"]->x;
+    std::vector<double> x(src.size() / 2);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = src[2 * i];
+    REQUIRE(y.size() >= x.size() - 4096);
+    // the lag of the cross-correlation peak, window by window (20 ms), on the first differences (pink noise whitened: its
+    // low end, where the test response turns the phase, does not blur the peak)
+    std::vector<double> dx(x.size(), 0.0), dy(y.size(), 0.0);
+    for (size_t i = 1; i < x.size(); ++i) dx[i] = x[i] - x[i - 1];
+    for (size_t i = 1; i < y.size(); ++i) dy[i] = y[i] - y[i - 1];
+    std::map<int, int> lags;
+    const int win = rate / 50, span = 400;
+    for (size_t at = static_cast<size_t>(rate / 10); at + win + span < std::min(x.size(), y.size()); at += win) {
+        double best = -1e300;
+        int lag = 0;
+        for (int l = -span; l <= span; ++l) {
+            double c = 0.0;
+            for (int i = 0; i < win; ++i) c += dy[at + static_cast<size_t>(i)] * dx[static_cast<size_t>(static_cast<int64_t>(at) + i - l)];
+            if (c > best) best = c, lag = l;
+        }
+        ++lags[lag];
+    }
+    std::string seen;
+    for (const auto& [l, n] : lags) seen += std::to_string(l) + " (" + std::to_string(n) + " windows) ";
+    WARN("cross-correlation peak, by 20 ms window: " << seen);
+    CHECK(lags.size() == 1);
+    CHECK(lags.begin()->first == 0);
+    // the power ratio |Y / X|^2 in third-octave bands from 200 Hz to 15 kHz, 46 ms windows every 12 ms (each 50 ms
+    // crossfade falls in several): between the two chains' responses (0 dB without the stage, down to -0.3 dB with it
+    // here), never the comb of a misaligned mix (223 frames apart, half and half: -1 to -3.7 dB in these bands)
+    const int n = 2048;
+    double lowest = 0.0, highest = -1e9;
+    std::vector<double> cen;
+    for (double c = 200.0; c <= 15000.0; c *= std::pow(2.0, 1.0 / 3.0)) cen.push_back(c);
+    std::vector<std::complex<double>> X(static_cast<size_t>(n / 2 + 1)), Y(X.size());
+    for (size_t at = static_cast<size_t>(rate / 10); at + n < std::min(x.size(), y.size()); at += n / 4) {
+        for (int k = 0; k <= n / 2; ++k) {   // (a plain DFT of the window: the bins the bands need)
+            if (k * static_cast<double>(rate) / n < 170.0 || k * static_cast<double>(rate) / n > 17000.0) continue;
+            std::complex<double> xs = 0.0, ys = 0.0;
+            for (int i = 0; i < n; ++i) {
+                const double w = 0.5 - 0.5 * std::cos(2 * kPi * i / n);
+                const auto e = std::polar(w, -2 * kPi * k * i / n);
+                xs += x[at + static_cast<size_t>(i)] * e;
+                ys += y[at + static_cast<size_t>(i)] * e;
+            }
+            X[static_cast<size_t>(k)] = xs, Y[static_cast<size_t>(k)] = ys;
+        }
+        for (double c : cen) {
+            double px = 0.0, py = 0.0;
+            for (int k = 0; k <= n / 2; ++k) {
+                const double f = k * static_cast<double>(rate) / n;
+                if (f < c / std::pow(2.0, 1.0 / 6.0) || f >= c * std::pow(2.0, 1.0 / 6.0)) continue;
+                px += std::norm(X[static_cast<size_t>(k)]), py += std::norm(Y[static_cast<size_t>(k)]);
+            }
+            const double db = 10 * std::log10(py / px);
+            lowest = std::min(lowest, db), highest = std::max(highest, db);
+        }
+    }
+    WARN("third-octave |Y / X|, 200 Hz .. 15 kHz, over every window: " << lowest << " .. " << highest << " dB");
+    CHECK(lowest > -0.8);
+    CHECK(highest < 0.5);
+    CHECK(count_events(r, "in the background") == 2);
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+}
+
+// Benchmarks (not run by default): Tube Color's reaction off drive 0 with a 1M-tap filter, and the oversampling's cost.
+// DAPHNE_FILTER_CACHE should point at a scratch directory (the first run designs the filter).
+TEST_CASE("Bench: a 1M-tap chain build and speed with Tube Color", "[.bench][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.bits = 0, src.lossless_int = false, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 88200, dev.channels = 2, dev.type = daphne::SampleType::Int32, dev.container_bits = dev.valid_bits = 32;
+    for (double drive : {0.0, 0.5}) {
+        Settings s;
+        s.output.rate = "88200";
+        s.filter.taps = 1048576;
+        s.color.enabled = true;
+        s.color.drive = drive;
+        const auto t0 = std::chrono::steady_clock::now();
+        daphne::DspChain c;
+        std::string e;
+        REQUIRE(c.build(s, src, dev, 4096, &e));
+        const double build = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::vector<double> x(4096 * 2), y(static_cast<size_t>(c.max_output_frames()) * 2);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = 0.1 * std::sin(0.01 * static_cast<double>(i));
+        const auto t1 = std::chrono::steady_clock::now();
+        const int blocks = 3 * 44100 / 4096;   // 3 s: what a warm-up runs through at most
+        for (int b = 0; b < blocks; ++b) c.process(x.data(), 4096, y.data());
+        const double run = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+        WARN("1M taps, drive " << drive << ": build " << build << " s, 3 s of input through it " << run << " s (" << 3.0 / run << " x real time)");
+    }
+}
+
+TEST_CASE("Bench: Tube Color off drive 0 with 1M taps", "[.bench][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["pink"] = pink_and_sine(44100, 30.0, 0.05, 0.05, 997.0);
+    Settings z;
+    z.output.rate = "88200";   // 2x: the stage at 88.2 kHz, oversampled 4x
+    z.filter.taps = 1048576;
+    z.color.enabled = true;
+    z.color.drive = 0.0;
+    Settings s = z;
+    s.color.drive = 0.5;
+    REQUIRE(r.start("pink", z, 0.0));
+    sleep_s(3.0);
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    r.player->apply(s, OutputChoice{});
+    auto at = [&](const std::string& what) {
+        REQUIRE(wait_for([&] { return r.saw(what); }, 60.0));
+        return std::chrono::duration<double>(clock::now() - t0).count();
+    };
+    const double t_build = at("in the background");
+    const double t_cross = at("now playing with filter");
+    const std::string d = r.player->debug_json();
+    const auto ring = std::stod(d.substr(d.find("\"ring\":") + 7));
+    const double ring_s = ring / (8.0 * 88200.0);   // Int32 stereo
+    WARN("off drive 0 at 1M taps: the build starts after " << t_build << " s (the 300 ms hold), the crossfade ends after " << t_cross
+                                                           << " s; the ring then holds " << ring_s << " s: heard after about "
+                                                           << t_cross + ring_s << " s");
+    r.player->stop();
+    r.finish();
+}
+
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+TEST_CASE("Bench: Tube Color cost with and without the oversampling", "[.bench][color]") {
+    for (int rate : {44100, 88200, 176400, 352800}) {
+        const int frames = rate * 10, block = 4096;
+        std::vector<double> x(static_cast<size_t>(frames) * 2), y(x.size());
+        for (size_t i = 0; i < x.size(); ++i) x[i] = 0.3 * std::sin(0.001 * static_cast<double>(i));
+        auto time = [&](auto&& run) {
+            const auto t0 = std::chrono::steady_clock::now();
+            run();
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() / 10.0;   // per second of audio
+        };
+        daphne::color::TubeColorStage st(daphne::color::StageParams{.drive = 0.5, .linear = daphne::color::test_linear_model()});
+        st.prepare({rate, 2, block});
+        const double full = time([&] {
+            for (int a = 0; a < frames; a += block)
+                st.process(x.data() + 2 * static_cast<size_t>(a), std::min(block, frames - a), y.data() + 2 * static_cast<size_t>(a));
+        });
+        double os_only = 0.0;
+        const int l = daphne::color::Oversampler::factor(rate);
+        if (l > 1) {
+            daphne::color::Oversampler os;
+            os.prepare(rate, l, 2, block);
+            std::vector<double> hi(static_cast<size_t>(l) * 2);
+            os_only = time([&] {
+                for (int i = 0; i < frames; ++i) {
+                    os.up(x.data() + 2 * static_cast<size_t>(i), hi.data());
+                    os.down(hi.data(), y.data() + 2 * static_cast<size_t>(i));
+                }
+            });
+        }
+        WARN(rate << " Hz stereo, L " << l << ": the stage " << 100 * full << " % of one core, the oversampling alone " << 100 * os_only << " %");
+    }
+}
+#endif
+
+// The playback path says when Tube Color is set but does nothing (doc/N28).
+TEST_CASE("Player: the path report says when Tube Color does nothing", "[player][color]") {
+    Rig r;
+    r.sources["sine"] = int24_noise(44100, 2, 44100 / 5, 1);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 0.0;
+    REQUIRE(r.start("sine", s));
+    const auto rep = r.finish();
+    INFO(rep.filter << " | " << rep.not_bit_perfect_reason);
+    if (color_runs()) {
+        CHECK(rep.filter.find("Tube Color idle (drive 0)") != std::string::npos);
+        CHECK(rep.bit_perfect);   // a 24-bit source: nothing changes its samples
+    } else {
+        CHECK(rep.filter.find("Tube Color unavailable (before M2)") != std::string::npos);
+    }
+    Rig r2;
+    r2.sources["sine"] = sine(44100, 1000.0, 0.3);
+    s.color.drive = 0.5;
+    REQUIRE(r2.start("sine", s));
+    const auto rep2 = r2.finish();
+    INFO(rep2.filter);
+    CHECK(rep2.filter.find("idle") == std::string::npos);
+    CHECK((rep2.filter.find("unavailable") == std::string::npos) == color_runs());
 }
 
 TEST_CASE("Player: Tube Color switched three times within 100 ms on a DSD file", "[player][dsd][color]") {

@@ -276,6 +276,7 @@ void Player::Impl::poll_warm() {
     if (!copy_history(hist, w.in_done, in_total, &in)) {
         // the history no longer holds it (a slow round at a high source rate): from the start, here
         w.chain->reset();
+        arm_rise(w.chain.get());
         xf.begin(std::move(w.chain), hist, in_total, tl.abs_out, cur->content_delay(), ratio, fade);
     } else if (left > kChunk && left < warm_last && warm_rounds < kRounds) {
         // another round while they get shorter (the background runs faster than the input comes)
@@ -284,6 +285,7 @@ void Player::Impl::poll_warm() {
     } else {
         // the rest here: at most a chunk, or (a chain slower than the input) at most what the last round had
         w.feed(in.data(), left, ch);
+        arm_rise(w.chain.get());   // a chain off drive 0 rises from here, as it crossfades in
         xf.begin(std::move(w), tl.abs_out, cur->content_delay(), fade);
     }
     tmp_n.assign(static_cast<size_t>(xf.next->max_output_frames()) * dch, 0.0);

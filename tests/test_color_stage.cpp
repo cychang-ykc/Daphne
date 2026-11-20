@@ -11,6 +11,96 @@
 #include "daphne/color/tube_color.h"
 #include "daphne/engine/chain.h"
 
+#include "daphne/color/oversampler.h"
+
+// ---- M1 step 8: the local oversampling (every build with Tube Color) ----
+
+namespace {
+
+// |H| in dB of a kernel (DC gain 1) at f, its rate fs
+double kernel_db(const std::vector<double>& h, double f, double fs) {
+    double c = 0.0, s = 0.0;
+    for (size_t i = 0; i < h.size(); ++i) {
+        const double w = 2 * 3.14159265358979323846 * f * static_cast<double>(i) / fs;
+        c += h[i] * std::cos(w);
+        s += h[i] * std::sin(w);
+    }
+    return 20 * std::log10(std::max(std::hypot(c, s), 1e-30));
+}
+
+}  // namespace
+
+TEST_CASE("color oversampler: factor, pass band, stop band, a whole-frame delay", "[color][oversampling]") {
+    using daphne::color::Oversampler;
+    CHECK(Oversampler::factor(44100) == 8);
+    CHECK(Oversampler::factor(88200) == 4);
+    CHECK(Oversampler::factor(176400) == 2);
+    CHECK(Oversampler::factor(352800) == 1);
+    CHECK(Oversampler::factor(705600) == 1);
+    CHECK(Oversampler::factor(48000) == 8);
+    CHECK(Oversampler::factor(96000) == 4);
+    CHECK(Oversampler::factor(384000) == 1);
+    for (int rate : {44100, 48000, 88200, 96000, 176400, 192000}) {
+        INFO(rate << " Hz");
+        Oversampler os;
+        const int l = Oversampler::factor(rate);
+        os.prepare(rate, l, 1, 4096);
+        const auto& h = os.kernel();
+        const double fs = static_cast<double>(rate) * l;
+        // the round trip is h twice: the pass band to 20 kHz within +-0.01 dB, the stop band (from half the input rate,
+        // where images and aliases begin) at least 140 dB down
+        double pass_lo = 0.0, pass_hi = -1e9, stop = -1e9;
+        for (double f = 10.0; f <= 20000.0; f *= 1.01) {
+            const double v = 2 * kernel_db(h, f, fs);
+            pass_lo = std::min(pass_lo, v);
+            pass_hi = std::max(pass_hi, v);
+        }
+        for (double f = 0.5 * rate; f <= 0.5 * fs; f += rate / 400.0) stop = std::max(stop, kernel_db(h, f, fs));
+        WARN(rate << " Hz, L " << l << ", " << h.size() << " taps: pass band " << pass_lo << " .. " << pass_hi << " dB (round trip), stop band "
+                  << stop << " dB");
+        CHECK(pass_lo >= -0.01);
+        CHECK(pass_hi <= 0.01);
+        CHECK(stop <= -140.0);
+        // an impulse comes back after exactly delay() frames, symmetric around it (linear phase)
+        std::vector<double> hi(static_cast<size_t>(l)), y(400, 0.0);
+        for (int n = 0; n < 400; ++n) {
+            const double x = n == 0 ? 1.0 : 0.0;
+            os.up(&x, hi.data());
+            os.down(hi.data(), &y[static_cast<size_t>(n)]);
+        }
+        const auto peak = static_cast<int>(std::max_element(y.begin(), y.end()) - y.begin());
+        CHECK(peak == os.delay());
+        CHECK(os.delay() == Oversampler::kTapsPerPhase - 1);
+        for (int k = 1; k < 100; ++k) CHECK(y[static_cast<size_t>(peak - k)] == Catch::Approx(y[static_cast<size_t>(peak + k)]).margin(1e-12));
+    }
+}
+
+
+// What the curve makes above the input's band must not come back into it: a tone at the high rate between half the input
+// rate and the high rate's Nyquist is decimated to less than -120 dB (M1: a synthetic check; 4x vs 8x is M2's).
+TEST_CASE("color oversampler: what lies above the input band does not fold back", "[color][oversampling]") {
+    using daphne::color::Oversampler;
+    const int rate = 44100, l = Oversampler::factor(rate);
+    double worst = -1e9, worst_f = 0.0;
+    for (double f : {22100.0, 23000.0, 24100.0, 30000.0, 44100.0 - 997.0, 66150.0, 88200.0 + 1000.0, 150000.0, 176000.0}) {
+        Oversampler os;
+        os.prepare(rate, l, 1, 4096);
+        const int frames = rate / 2;
+        std::vector<double> hi(static_cast<size_t>(l)), y(static_cast<size_t>(frames));
+        const double fs = static_cast<double>(rate) * l;
+        for (int n = 0; n < frames; ++n) {
+            for (int p = 0; p < l; ++p) hi[static_cast<size_t>(p)] = std::sin(2 * 3.14159265358979323846 * f * (n * l + p) / fs);
+            os.down(hi.data(), &y[static_cast<size_t>(n)]);
+        }
+        double rms = 0.0;
+        for (int n = frames / 2; n < frames; ++n) rms += y[static_cast<size_t>(n)] * y[static_cast<size_t>(n)];
+        const double db = 10 * std::log10(rms / (frames / 2) * 2 + 1e-300);   // re a full-scale sine
+        if (db > worst) worst = db, worst_f = f;
+    }
+    WARN("decimation: the largest fold-back " << worst << " dB (a full-scale tone at " << worst_f << " Hz)");
+    CHECK(worst < -120.0);
+}
+
 #if defined(DAPHNE_COLOR_TEST_CURVE)
 
 #include "daphne/color/linear.h"
@@ -134,7 +224,13 @@ TEST_CASE("color stage: polarity, with an asymmetric curve", "[color]") {
         const int rate = 48000;
         const auto x = sine(rate, 1000.0, 0.6, rate * 2);
         TubeColorStage st;
-        check(x, run(st, x, rate), rate, 1000.0, rate, 2 * rate);
+        auto y = run(st, x, rate);   // (oversampled at 48 kHz: aligned by its content delay)
+        const auto d = static_cast<std::ptrdiff_t>(2 * st.content_delay_frames());
+        CHECK(st.oversampling() == 8);
+        CHECK(st.content_delay_frames() == daphne::color::Oversampler::kTapsPerPhase - 1);
+        y.erase(y.begin(), y.begin() + d);
+        y.resize(x.size(), 0.0);
+        check(x, y, rate, 1000.0, rate / 2, rate / 2 + rate);
     }
     SECTION("the chain: after the upsampler, before the final quantizer") {
         daphne::Settings s;
