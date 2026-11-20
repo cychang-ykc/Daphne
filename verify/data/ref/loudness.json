@@ -1,27 +1,27 @@
 {
  "pp-el34-ul_fb0": {
-  "loudness_change_dB": -0.8982630439510757,
-  "makeup_dB": 0.8982630439510757
+  "loudness_change_dB": -0.8955413222489383,
+  "makeup_dB": 0.8955413222489383
  },
  "pp-el34-ul_fb12": {
-  "loudness_change_dB": -0.050798684282653994,
-  "makeup_dB": 0.050798684282653994
+  "loudness_change_dB": -0.04971316571876372,
+  "makeup_dB": 0.04971316571876372
  },
  "pp-el34-ul_fb20": {
-  "loudness_change_dB": -0.010131171585815224,
-  "makeup_dB": 0.010131171585815224
+  "loudness_change_dB": -0.00973132304297053,
+  "makeup_dB": 0.00973132304297053
  },
  "pp-el34-ul_fb30": {
-  "loudness_change_dB": -0.03042149282441997,
-  "makeup_dB": 0.03042149282441997
+  "loudness_change_dB": -0.030417494982007298,
+  "makeup_dB": 0.030417494982007298
  },
  "pp-el34-ul_fb6": {
-  "loudness_change_dB": -0.27587565726112473,
-  "makeup_dB": 0.27587565726112473
+  "loudness_change_dB": -0.2738614373612158,
+  "makeup_dB": 0.2738614373612158
  },
  "pp-el34-ul": {
-  "loudness_change_dB": -0.03042149282441997,
-  "makeup_dB": 0.03042149282441997
+  "loudness_change_dB": -0.030417494982007298,
+  "makeup_dB": 0.030417494982007298
  },
  "set-2a3": {
   "loudness_change_dB": -0.20594921842315372,

@@ -164,15 +164,22 @@ def set_845():
     return net
 
 
+R12_BOOK = 180e3
+R12_BALANCED = 186.94e3      # splitter outputs equal in amplitude (bisected on the open-loop netlist, N28)
+
+
 def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12, drive=None, el34_cutoff_c=0.0,
-           r13=5.6e3, c9=330e-12):
+           r13=5.6e3, c9=330e-12, r12=R12_BALANCED):
     """Mullard 5-20, Fig. 1 values. Feedback R13 5.6 k // C9 330 pF from the secondary to R5 (open loop: the
     feedback resistor goes to ground instead, keeping R5's loading).
     drive (open loop, diagnostics): "splitter" = ideal antiphase sources in place of the ECC83 anodes (DC 307.8 V,
     the coupling capacitors, 470 k grid resistors and 2.2 k stoppers kept); "grid" = ideal sources straight on the
     EL34 grids. {amp} is then the amplitude at each anode / grid.
     el34_cutoff_c: the EL34 sensitivity test only (spice_ref.pentode cutoff_c), never in a preset.
-    r13, c9: the feedback network (the book: 5.6 k // 330 pF for 7.5 ohm); the feedback steps of N28 scale them."""
+    r13, c9: the feedback network (the book: 5.6 k // 330 pF for 7.5 ohm); the feedback steps of N28 scale them.
+    r12: V2B's anode load. The book has R11 = R12 = 180 k (matched within 5 %), which leaves the long-tailed pair
+    2.7 % (0.23 dB) out of balance and makes the output stage produce H2 (N28); the preset uses the balanced value,
+    R12_BOOK keeps the book's for comparison."""
     lp, dcr, tap = 100.0, 170.0, 0.20
     lh = lp / 4
     l1, l2 = lh * tap ** 2, lh * (1 - tap) ** 2
@@ -191,7 +198,7 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-1
            *R.pentode("V1", "EF86", "a1", "s1", "g1", "k1", screen="derk", screen_pt=ef86_pt),
            *tube_caps("V1", "EF86", "a1", "g1", "k1"),
            # ECC83 cathode-coupled phase splitter, grid of V2A direct from the EF86 anode
-           "R11 c5 a2a 180k", "R12 c5 a2b 180k", "R8 kk 0 82k", "R10 a1 g2b 1Meg", "C6 g2b 0 0.25e-6",
+           "R11 c5 a2a 180k", f"R12 c5 a2b {f(r12)}", "R8 kk 0 82k", "R10 a1 g2b 1Meg", "C6 g2b 0 0.25e-6",
            R.triode("V2A", "ECC83", "a2a", "a1", "kk"), R.triode("V2B", "ECC83", "a2b", "g2b", "kk"),
            *tube_caps("V2A", "ECC83", "a2a", "a1", "kk"), *tube_caps("V2B", "ECC83", "a2b", "g2b", "kk"),
            # EL34s
