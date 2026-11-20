@@ -10,7 +10,13 @@
 
 namespace daphne::color {
 
+double auto_makeup_db(double drive) {
+    (void)drive;   // M2: the preset's table
+    return 0.0;
+}
+
 TubeColorStage::TubeColorStage(StageParams p) : p_(std::move(p)), target_(std::max(0.0, p_.drive)) {
+    trim_ = trim_target_ = std::pow(10.0, p_.trim_db / 20.0);
     // built at a drive above 0: running from the start; at 0: idle
     d_ = last_target_ = target_.load();
     w_ = d_ > 0.0 ? 1.0 : 0.0;
@@ -79,6 +85,13 @@ void TubeColorStage::reset() {
 }
 
 void TubeColorStage::set_drive(double d) { target_.store(std::max(0.0, d)); }
+
+void TubeColorStage::set_trim(double db) {
+    const double t = std::pow(10.0, db / 20.0);
+    if (t == trim_target_) return;
+    trim_target_ = t;
+    trim_step_ = (t - trim_) / glide_frames_;
+}
 
 void TubeColorStage::update_mix() {
     if (d_ == mix_d_ || d_ <= 0.0) return;
@@ -191,7 +204,13 @@ int TubeColorStage::process(const double* in, int frames, double* out) {
         // the volume cancelled around the processing path: in by the input's, out by the output content's
         const double v_in = volume_at(in_count_), v_out = volume_at(in_count_ - delay_);
         skip_curve_ = v_in < kSkipBelow;
-        const double g_in = skip_curve_ ? 1.0 : 1.0 / (v_in * p_.level), g_out = skip_curve_ ? 1.0 : v_out * p_.level;
+        if (trim_ != trim_target_) {   // the trim glides (linear in amplitude, ending on the target)
+            trim_ += trim_step_;
+            if ((trim_step_ > 0 && trim_ >= trim_target_) || (trim_step_ < 0 && trim_ <= trim_target_)) trim_ = trim_target_;
+        }
+        // the makeup gain: the drive's automatic one and the trim, on what the processing path makes
+        const double makeup = std::pow(10.0, auto_makeup_db(d_) / 20.0) * trim_;
+        const double g_in = skip_curve_ ? 1.0 : 1.0 / (v_in * p_.level), g_out = (skip_curve_ ? 1.0 : v_out * p_.level) * makeup;
         if (w_ <= 0.0) {   // idle: the delay path alone
             primed_ = false;
             if (!active) d_ = last_target_ = 0.0;

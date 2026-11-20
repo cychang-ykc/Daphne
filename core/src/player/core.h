@@ -109,6 +109,18 @@ struct Player::Impl {
     std::vector<uint8_t> dsd_in;
     int dsd_pcm_rate = 0;              // DSD -> PCM fallback at this rate (0 = 176.4 / 192 kHz)
     bool dsd_chain_for_color = false;  // a DSD file goes through the chain only because Tube Color is active
+    bool bias_noted = false;           // the bias falling back to standard (outside the preset's range) is in the log
+    // Tube Color's bias current outside the preset's range (doc/N28): said once in the log each time it starts to apply
+    void note_bias() {
+        const bool falls = color_active(s) && color_bias_falls_back(s.color);
+        if (falls && !bias_noted) {
+            const auto r = color_bias_range(s.color.preset);
+            event("Tube Color: the bias set (" + std::to_string(static_cast<int>(std::lround(s.color.bias_ma.value_or(0.0)))) +
+                  " mA) is outside this preset's range (" + std::to_string(static_cast<int>(r.lo_ma)) + " .. " +
+                  std::to_string(static_cast<int>(r.hi_ma)) + " mA, or hot where it has none): the standard bias applies");
+        }
+        bias_noted = falls;
+    }
     // Tube Color switching a DSD file between sent directly and remodulated on the open device (doc/N28, dsd_switch.h)
     static constexpr double kSwitchLead = 0.4;                // s of DSD past the write position the switch is put at
     std::future<std::unique_ptr<RemodPrep>> remod_job;        // the remodulation being prepared

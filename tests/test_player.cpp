@@ -1357,6 +1357,59 @@ std::vector<double> ch0_int32(const std::vector<uint8_t>& b) {
 
 }  // namespace
 
+// The reports (doc/N28): Tube Color as the reason the path is not bit-perfect; a bias current outside the preset's
+// range said once, when it starts to apply.
+TEST_CASE("Player: Tube Color in the path report and the log", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["a"] = int24_noise(44100, 2, 44100 * 2, 3);
+    Settings s;
+    s.color.enabled = true;
+    s.color.bias_ma = 80.0;   // in set-300b's range
+    REQUIRE(r.start("a", s));
+    sleep_s(0.2);
+    Settings p = s;
+    p.color.preset = daphne::ColorPreset::Set845;   // 80 mA: outside 845's range
+    r.player->apply(p, OutputChoice{});
+    sleep_s(0.2);
+    Settings q = p;
+    q.color.drive = 1.3;   // still outside: not said again
+    r.player->apply(q, OutputChoice{});
+    sleep_s(0.2);
+    const auto rep = r.finish();
+    CHECK(rep.not_bit_perfect_reason == "DSP active (Tube Color)");
+    CHECK(count_events(r, "is outside this preset's range") == 1);
+    r.player.reset();
+}
+
+// What Tube Color's curve and response are made from (the preset here) changes by a new chain built in the background
+// and crossfaded in; the drive and the makeup gain change in place (doc/N28).
+TEST_CASE("Player: a Tube Color preset change is rebuilt and crossfaded, the drive applied in place", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["sine"] = sine(44100, 1000.0, 2.0);
+    Settings s;
+    s.color.enabled = true;
+    REQUIRE(r.start("sine", s));
+    sleep_s(0.3);
+    Settings d = s;
+    d.color.drive = 1.6;
+    d.color.makeup_gain_db = 1.0;
+    r.player->apply(d, OutputChoice{});
+    REQUIRE(wait_for([&] { return r.saw("applied in place"); }, 5.0));
+    Settings p = d;
+    p.color.preset = daphne::ColorPreset::Set845;
+    r.player->apply(p, OutputChoice{});
+    REQUIRE(wait_for([&] { return r.saw("now playing with filter"); }, 5.0));
+    r.finish();
+    CHECK(r.ended);
+    CHECK(count_events(r, "in the background") == 1);   // the preset: one rebuild
+    CHECK(r.dev->opens.size() == 1);
+    r.player.reset();
+}
+
 // Tube Color's drive crossing 0 where the stage runs oversampled (44.1 kHz: 8x, 223 frames of content delay): the
 // stage crossfades its delay path and its processing path aligned (doc/N28), so the output stays where the input is (the
 // cross-correlation peak does not move) and the switches show no comb notch.

@@ -210,10 +210,32 @@ TEST_CASE("color settings: the chain keys ignore Tube Color unless it is active"
     on_edited.color.drive = 0.3;
     on_edited.color.preset = ColorPreset::Set2a3;
     if (daphne::color::available()) {
-        // a test build: enabled is part of the structure, the other fields are not
+        // a test build: in place, the drive and the makeup gain; a new chain (rebuilt and crossfaded), what the curve
+        // and the response are made from
         CHECK(daphne::color_active(on));
         CHECK(daphne::DspChain::structure_key(on) != daphne::DspChain::structure_key(off));
-        CHECK(daphne::DspChain::structure_key(on_edited) == daphne::DspChain::structure_key(on));
+        auto key = [](const Settings& x) { return daphne::DspChain::structure_key(x); };
+        Settings v = on;
+        v.color.drive = 1.7;
+        v.color.makeup_gain_db = -2.0;
+        CHECK(key(v) == key(on));
+        CHECK(key(on_edited) != key(on));   // another preset
+        v = on;
+        v.color.feedback_db = 20;   // feedback: only the push-pull preset has it
+        CHECK(key(v) == key(on));
+        v.color.preset = ColorPreset::PpEl34Ul;
+        Settings w = v;
+        w.color.feedback_db = 0;
+        CHECK(key(w) != key(v));
+        v = on;
+        v.color.bias = ColorBias::Cool;
+        CHECK(key(v) != key(on));
+        v = on;
+        v.color.bias_ma = 500.0;   // outside set-300b's range: the standard bias applies, as with none
+        CHECK(key(v) == key(on));
+        v = on;
+        v.color.load_ohms = 4;
+        CHECK(key(v) != key(on));
     } else {
         // a release build: enabled true is the same as off
         CHECK_FALSE(daphne::color_active(on));

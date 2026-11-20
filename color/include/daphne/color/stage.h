@@ -43,7 +43,12 @@ struct StageParams {
     LinearModel linear;   // the preset's pre / post sections (empty: none)
     double level = 1.0;   // a fixed gain before the stage, cancelled with the volume (2: a DSD file converted, +6 dB)
     double volume = 1.0;  // the digital volume at the start (linear)
+    double trim_db = 0.0; // the makeup gain's manual trim on top of the automatic one (color.makeup_gain: -6 .. 6 dB)
 };
+
+// The automatic makeup gain (dB) for a drive: keeps the loudness within 0.5 dB as the drive changes (doc/N28). M2 fills it
+// from each preset's loudness measurements (verify/loudness.py); the M1 test curve needs none (0 dB).
+double auto_makeup_db(double drive);
 
 class TubeColorStage final : public dsp::Block {
 public:
@@ -70,6 +75,8 @@ public:
 
     // A new drive, gliding there from the current one (any thread; from the next process()); 0 takes the stage idle.
     void set_drive(double d);
+    // The makeup gain's manual trim (dB), gliding there (kGlideMs). On the processing thread.
+    void set_trim(double db);
     // The digital volume (linear) from the stage's input frame `at` (counted from prepare / reset) on, reached by a
     // linear ramp of `ramp` frames from where it is there, as the chain's gain stage does. On the processing thread.
     void set_volume(double v, int64_t at, int ramp);
@@ -93,6 +100,7 @@ private:
     std::vector<VolumeRamp> vol_;                   // the schedule (the newest last); pruned behind the output
     int64_t in_count_ = 0;                          // input frames since prepare / reset
     bool skip_curve_ = false;                       // this frame: the volume below kSkipBelow
+    double trim_ = 1.0, trim_target_ = 1.0, trim_step_ = 0.0;   // the trim (linear), gliding
     void process_path(const double* x, double* y);   // one input frame through the processing path
 
     StageParams p_;

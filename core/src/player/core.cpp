@@ -396,6 +396,7 @@ void Player::Impl::run_playback() {
 
 void Player::Impl::play(Stream& st) {
     stream = &st;
+    note_bias();
     ok = true;
     try {
         loop();
@@ -437,6 +438,7 @@ void Player::Impl::loop() {
             ok = false;
             break;
         }
+        if (p) note_bias();
         const int64_t t_apply = lap();
         if (!stream->poll()) {
             ok = false;

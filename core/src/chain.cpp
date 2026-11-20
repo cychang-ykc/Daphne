@@ -44,13 +44,21 @@ DspChain::DspChain() = default;
 DspChain::~DspChain() = default;
 
 std::string DspChain::structure_key(const Settings& s) {
-    // Tube Color: only whether it is in the chain changes the structure (an inactive one is cleared by
-    // without_inactive_color); the drive, 0 included, is taken in place by the stage and its other fields are applied
-    // there (doc/N28)
+    // Tube Color (doc/N28): whether it is in the chain, and what its curve and response are made from (model, preset,
+    // the feedback of the push-pull preset, the bias current that applies, the load) change the structure: a new chain
+    // built in the background and crossfaded in. The drive (0 included) and the makeup gain are taken in place. An
+    // inactive one is cleared by without_inactive_color.
     Settings k = without_inactive_color(s);
-    const bool color_on = k.color.enabled;
+    const ColorSettings c = k.color;
     k.color = ColorSettings{};
-    k.color.enabled = color_on;
+    k.color.enabled = c.enabled;
+    if (c.enabled) {
+        k.color.model = c.model;
+        k.color.preset = c.preset;
+        k.color.feedback_db = c.preset == ColorPreset::PpEl34Ul ? c.feedback_db : 6;
+        k.color.bias_ma = color_bias_current_ma(c);
+        k.color.load_ohms = c.load_ohms;
+    }
     k.eq = {};
     k.crossfeed = {};
     k.volume = {};
@@ -147,6 +155,7 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
         cp.drive = s.color.drive;
         cp.level = src.dsd_pcm ? 2.0 : 1.0;   // the DSD -> PCM conversion's +6 dB, cancelled like the volume
         cp.volume = color_volume_ = color_volume(s);
+        cp.trim_db = s.color.makeup_gain_db.value_or(0.0);
         // where the gain stage's changes reach the stage: its rate over the source's, and the content delay of what
         // lies between (the upsampler), in the stage's frames
         color_ratio_ = std::max(1, rate / std::max(1, src.rate));
@@ -218,6 +227,7 @@ bool DspChain::update(const Settings& s) {
 #if defined(DAPHNE_COLOR)
     if (color_) {
         color_->set_drive(s.color.drive);   // glides; 0 takes it idle, in place
+        color_->set_trim(s.color.makeup_gain_db.value_or(0.0));
         // the volume, cancelled around it: from where the gain stage's ramp (starting with the next input frame) reaches it
         if (const double v = color_volume(s); v != color_volume_) {
             color_volume_ = v;

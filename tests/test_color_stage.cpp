@@ -12,6 +12,7 @@
 
 #include "daphne/color/tube_color.h"
 #include "daphne/engine/chain.h"
+#include "daphne/dsp/progress.h"
 
 #include "daphne/color/oversampler.h"
 
@@ -735,6 +736,66 @@ TEST_CASE("color volume: a converted DSD file's +6 dB is cancelled", "[color][vo
     }
     UNSCOPED_INFO("the DSD file's output over 2 against the PCM file's: " << err / peak << " of the peak");
     CHECK(err < 1e-12 * peak);
+}
+
+
+// ---- the makeup gain; the result whatever the thread count ----
+
+TEST_CASE("color stage: the makeup gain's trim", "[color][makeup]") {
+    const int rate = 352800;
+    const auto x = sine(rate, 997.0, 0.5, rate / 2);
+    TubeColorStage a(StageParams{.drive = 1.0, .linear = {}, .level = 1.0, .volume = 1.0, .trim_db = 0.0});
+    TubeColorStage b(StageParams{.drive = 1.0, .linear = {}, .level = 1.0, .volume = 1.0, .trim_db = 3.0});
+    const auto ya = run(a, x, rate), yb = run(b, x, rate);
+    const double g = std::pow(10.0, 3.0 / 20.0);
+    double err = 0.0;
+    for (size_t i = 0; i < ya.size(); ++i) err = std::max(err, std::abs(yb[i] - g * ya[i]));
+    CHECK(err < 1e-12);
+    // changed in place: it glides (no step beyond the sine's own)
+    TubeColorStage c(StageParams{.drive = 1.0, .linear = {}, .level = 1.0, .volume = 1.0, .trim_db = 0.0});
+    c.prepare({rate, 2, 4096});
+    std::vector<double> y(x.size());
+    c.process(x.data(), 4096, y.data());
+    c.set_trim(6.0);
+    c.process(x.data() + 2 * 4096, rate / 4, y.data() + 2 * 4096);
+    double steady = 0.0, during = 0.0;
+    for (int i = 1; i < 4096; ++i) steady = std::max(steady, std::abs(y[2 * static_cast<size_t>(i)] - y[2 * static_cast<size_t>(i - 1)]));
+    for (int i = 4096; i < 4096 + rate / 50; ++i) during = std::max(during, std::abs(y[2 * static_cast<size_t>(i)] - y[2 * static_cast<size_t>(i - 1)]));
+    CHECK(during < 2.05 * steady);   // (at most the doubled sine's own: +6 dB)
+    // idle (drive 0): no makeup, the input as it is
+    TubeColorStage z(StageParams{.drive = 0.0, .linear = {}, .level = 1.0, .volume = 1.0, .trim_db = 3.0});
+    CHECK(run(z, x, rate) == x);
+}
+
+// The chain's output with Tube Color does not depend on how many threads design the filter (doc/N28): the same bits.
+TEST_CASE("color chain: the same output whatever the thread count", "[color][chain]") {
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.bits = 24, src.lossless_int = true, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 176400, dev.channels = 2, dev.type = daphne::SampleType::Int32, dev.container_bits = dev.valid_bits = 32;
+    const auto x = sine(44100, 997.0, 0.7, 44100);
+    std::vector<std::vector<double>> outs;
+    for (int threads : {1, 4}) {
+        daphne::Settings s;
+        s.filter.taps = 65536;
+        s.output.rate = "176400";
+        s.design.threads = threads;
+        s.color.enabled = true;
+        s.color.drive = 1.2;
+        daphne::dsp::set_design_threads(threads);
+        daphne::DspChain c;
+        std::string e;
+        REQUIRE(c.build(s, src, dev, 4096, &e));
+        std::vector<double> o(static_cast<size_t>(c.max_output_frames()) * 2), y;
+        for (int at = 0; at < 44100; at += 4096) {
+            const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(4096, 44100 - at), o.data());
+            y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
+        }
+        outs.push_back(std::move(y));
+    }
+    daphne::dsp::set_design_threads(0);
+    REQUIRE(outs[0].size() > 100000);
+    CHECK(outs[0] == outs[1]);
 }
 
 #endif
