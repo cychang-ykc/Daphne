@@ -31,6 +31,10 @@ add_library(daphne_engine STATIC
 )
 target_include_directories(daphne_engine PUBLIC include)
 target_link_libraries(daphne_engine PUBLIC daphne_dsp daphne_platform daphne_vendor)
+if(DAPHNE_COLOR)
+    target_link_libraries(daphne_engine PUBLIC daphne_color)
+    target_compile_definitions(daphne_engine PUBLIC DAPHNE_COLOR=1)
+endif()
 # the device outputs (N24, N25): WASAPI and ASIO on Windows, Core Audio on macOS; none yet on Linux
 if(WIN32)
     target_sources(daphne_engine PRIVATE

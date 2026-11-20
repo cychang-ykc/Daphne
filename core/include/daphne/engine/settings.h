@@ -19,7 +19,11 @@
 //   "volume":  { "mode": "digital" | "fixed", "db": -120 .. 0 },
 //   "headroom_db": -24 .. 24,
 //   "dsd_modulator": { "order": 5 | 8, "osr": 64 | 128 | 256 | 512 | 1024 },
-//   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. }
+//   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. },
+//   "color":   { "enabled": false, "model": "fixed-point" | "circuit",
+//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul", "drive": 0 .. kColorDriveMax,
+//                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA>,
+//                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -24 .. 24 }
 // }
 
 #include <optional>
@@ -50,6 +54,11 @@ enum class EqType { PK, LS, HS, HP, HP24, LP, LP24, NOTCH, AP, BP };
 // digital: the gain stage applies volume.db; fixed: no volume in the core (a host that controls the
 // device endpoint volume itself sends fixed).
 enum class VolumeMode { Digital, Fixed };
+// Tube Color (doc/N28). fixed-point: the static curve of a preset's amplifier at its operating point (M2);
+// circuit: the circuit model with dynamic effects (optional, later).
+enum class ColorModel { FixedPoint, Circuit };
+enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul };
+enum class ColorBias { Cool, Standard, Hot };
 
 struct OutputSettings {
     OutputApi api = kDefaultOutputApi;
@@ -138,6 +147,24 @@ struct DesignSettings {
     int cache_limit_mb = 1024;   // filter cache size limit (filter_cache.h); 0 = no limit
 };
 
+// The upper limit of the strength slider (drive 1.0 = 100 %, the preset's calibration). One constant: the
+// listening in M2 may raise it to 4.0.
+inline constexpr double kColorDriveMax = 2.0;
+
+// Tube Color (doc/N28). enabled false (the default): not in the chain, playback exactly as without it. Before M2,
+// only test builds can run it (daphne::color::available()); elsewhere enabled true changes nothing either.
+struct ColorSettings {
+    bool enabled = false;
+    ColorModel model = ColorModel::FixedPoint;
+    ColorPreset preset = ColorPreset::Set300b;
+    double drive = 1.0;                  // 0 .. kColorDriveMax; 0 = the stage passes samples through unchanged
+    int feedback_db = 6;                 // pp-el34-ul's feedback step: 0 | 6 | 12 | 20 | 30 (30 = the Mullard 5-20)
+    ColorBias bias = ColorBias::Standard;
+    std::optional<double> bias_ma;       // a cathode current in mA instead of the named bias (checked per tube in M3)
+    int load_ohms = 8;                   // the output tap: 4 | 8 | 16
+    std::optional<double> makeup_gain_db;  // nullopt = "auto" (loudness kept within 0.5 dB); else dB
+};
+
 struct Settings {
     int version = 1;
     OutputSettings output;
@@ -149,7 +176,14 @@ struct Settings {
     double headroom_db = 0.0;    // per-track gain (ReplayGain) before the processing chain
     ModulatorSettings modulator;
     DesignSettings design;
+    ColorSettings color;
 };
+
+// True when Tube Color is in the chain: enabled, and this build can run it (before M2: test builds only).
+bool color_active(const Settings& s);
+// The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is
+// not active, so that editing them (while disabled, or in a build that cannot run it) rebuilds nothing.
+Settings without_inactive_color(Settings s);
 
 struct Diagnostic {
     enum class Level { Warning, Error } level;

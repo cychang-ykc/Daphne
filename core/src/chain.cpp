@@ -39,7 +39,10 @@ DspChain::DspChain() = default;
 DspChain::~DspChain() = default;
 
 std::string DspChain::structure_key(const Settings& s) {
-    Settings k = s;
+    // Tube Color: only whether it is in the chain changes the structure (an inactive one is cleared by
+    // without_inactive_color); its other fields are applied inside the stage (doc/N28)
+    Settings k = without_inactive_color(s);
+    k.color = {.enabled = k.color.enabled};
     k.eq = {};
     k.crossfeed = {};
     k.volume = {};

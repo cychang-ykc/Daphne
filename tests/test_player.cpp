@@ -867,6 +867,61 @@ TEST_CASE("Player: the output's caps decide the DSD path, not its API", "[player
     }
 }
 
+// Tube Color (doc/N28): where it cannot run (every build but the test builds, before M2), color.enabled true must
+// change nothing: a DSD file still goes out as DSD (not converted to PCM), and every byte is the same as with it off.
+TEST_CASE("Player: color.enabled true changes nothing where Tube Color cannot run", "[player][dsd][color]") {
+    Settings probe;
+    probe.color.enabled = true;
+    if (daphne::color_active(probe)) SKIP("a test build: Tube Color runs here (the M1 stage tests cover it)");
+    auto play = [](bool native, bool color, const std::filesystem::path& path) {
+        Rig r;
+        r.caps.native_dsd = native;
+        Settings s;
+        s.output.dsd_lead_in_ms = 20;
+        s.color.enabled = color;
+        s.color.drive = 2.0;
+        REQUIRE(r.start(platform::path_to_utf8(path), s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        struct Out {
+            bool dsd;
+            int rate;
+            bool bit_perfect;
+            std::vector<std::string> chain;
+            std::vector<uint8_t> bytes;
+        } o{r.dev->opens.front().dsd, r.dev->opens.front().rate, rep.bit_perfect, rep.chain, r.dev->take()};
+        r.player.reset();
+        return o;
+    };
+    const auto path = write_dsf("daphne_player_color.dsf", 2822400 / 8 / 2 / 5);   // 0.1 s per channel
+    for (bool native : {true, false}) {
+        INFO((native ? "native DSD device" : "DoP device"));
+        const auto off = play(native, false, path);
+        const auto on = play(native, true, path);
+        CHECK(on.dsd == native);                 // native: DSD; DoP: DSD packed in PCM frames, never converted
+        CHECK(on.rate == off.rate);
+        CHECK(on.bit_perfect);
+        CHECK(on.chain == off.chain);
+        CHECK(on.bytes.size() > 0);
+        CHECK(on.bytes == off.bytes);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    // a PCM source the same way
+    auto play_pcm = [](bool color) {
+        Rig r;
+        r.sources["a"] = int24_noise(44100, 2, 44100 / 5, 1);
+        Settings s;
+        s.color.enabled = color;
+        REQUIRE(r.start("a", s));
+        const auto rep = r.finish();
+        CHECK(rep.bit_perfect);
+        return r.dev->take();
+    };
+    CHECK(play_pcm(true) == play_pcm(false));
+}
+
 TEST_CASE("Crossfader: a warm-up in rounds starts the same crossfade as one warm-up", "[player][crossfade]") {
     // 44.1 -> 88.2 kHz on a 16-bit device: a resampler and a TPDF quantizer (the dither depends on every
     // frame the chain has made)

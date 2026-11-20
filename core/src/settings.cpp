@@ -1,5 +1,9 @@
 #include "daphne/engine/settings.h"
 
+#if defined(DAPHNE_COLOR)
+#include "daphne/color/tube_color.h"
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
@@ -26,6 +30,10 @@ const EnumTable<EqType> kEqType = {{"PK", EqType::PK},       {"LS", EqType::LS},
                                    {"BP", EqType::BP}};
 const EnumTable<VolumeMode> kVolumeMode = {
     {"digital", VolumeMode::Digital}, {"fixed", VolumeMode::Fixed}};
+const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}, {"circuit", ColorModel::Circuit}};
+const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {"set-300b", ColorPreset::Set300b},
+                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul}};
+const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
 
 template <class E>
 const char* to_name(const EnumTable<E>& t, E v) {
@@ -214,6 +222,30 @@ void read_eq(Reader& r, const json& o, EqSettings& s) {
     }
 }
 
+void read_color(Reader& r, const json& o, ColorSettings& s) {
+    const std::string p = "color";
+    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "makeup_gain"});
+    r.boolean(o, "enabled", p, s.enabled);
+    r.enumeration(o, "model", p, s.model, kColorModel);
+    r.enumeration(o, "preset", p, s.preset, kColorPreset);
+    r.number(o, "drive", p, s.drive, 0.0, kColorDriveMax);
+    r.integer(o, "feedback_db", p, s.feedback_db, 0, 0, {0, 6, 12, 20, 30});
+    // "cool" | "standard" | "hot", or a cathode current in mA (the tube's safe range is checked in M3)
+    if (auto it = o.find("bias"); it != o.end()) {
+        bool ok = false;
+        if (it->is_number()) {
+            const double ma = it->get<double>();
+            if (ma > 0.0 && ma <= 500.0) s.bias_ma = ma, ok = true;
+        } else if (it->is_string()) {
+            for (const auto& [name, e] : kColorBias)
+                if (it->get<std::string>() == name) s.bias = e, s.bias_ma.reset(), ok = true;
+        }
+        if (!ok) r.error("color.bias", "must be \"cool\", \"standard\", \"hot\" or a current in mA (0 .. 500)");
+    }
+    r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
+    r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -24.0, 24.0);
+}
+
 json auto_or(const std::optional<double>& v) { return v ? json(*v) : json("auto"); }
 
 }  // namespace
@@ -232,7 +264,7 @@ LoadResult settings_from_json(const json& j) {
     }
     Settings& s = res.settings;
     r.check_keys(j, "", {"version", "output", "core", "filter", "eq", "crossfeed", "volume", "headroom_db", "dsd_modulator",
-                         "design"});
+                         "design", "color"});
     int version = kSettingsVersion;
     r.integer(j, "version", "", version, 1, 1000);
     if (version > kSettingsVersion)
@@ -265,6 +297,7 @@ LoadResult settings_from_json(const json& j) {
         r.integer(*o, "threads", "design", s.design.threads, 0, 256);
         r.integer(*o, "cache_limit_mb", "design", s.design.cache_limit_mb, 0, 1 << 20);
     }
+    if (auto* o = r.object(j, "color", "")) read_color(r, *o, s.color);
     return res;
 }
 
@@ -309,7 +342,30 @@ json settings_to_json(const Settings& s) {
         {"headroom_db", s.headroom_db},
         {"dsd_modulator", {{"order", s.modulator.order}, {"osr", s.modulator.osr}}},
         {"design", {{"threads", s.design.threads}, {"cache_limit_mb", s.design.cache_limit_mb}}},
+        {"color",
+         {{"enabled", s.color.enabled},
+          {"model", to_name(kColorModel, s.color.model)},
+          {"preset", to_name(kColorPreset, s.color.preset)},
+          {"drive", s.color.drive},
+          {"feedback_db", s.color.feedback_db},
+          {"bias", s.color.bias_ma ? json(*s.color.bias_ma) : json(to_name(kColorBias, s.color.bias))},
+          {"load_ohms", s.color.load_ohms},
+          {"makeup_gain", auto_or(s.color.makeup_gain_db)}}},
     };
+}
+
+bool color_active(const Settings& s) {
+#if defined(DAPHNE_COLOR)
+    return s.color.enabled && color::available();
+#else
+    (void)s;
+    return false;
+#endif
+}
+
+Settings without_inactive_color(Settings s) {
+    if (!color_active(s)) s.color = {};
+    return s;
 }
 
 int pcm_output_rate(int fs_in, const std::string& rate) {

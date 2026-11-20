@@ -3,6 +3,8 @@
 # builds with the system's FFmpeg (pkg-config), so the FFmpeg decoder is compiled and tested outside
 # Windows too; the others build as on a machine without FFmpeg or the ASIO SDK. The player tests run on a
 # fake device (tests/fake_output.h); real WASAPI / ASIO output is checked with verify/live.py.
+# Tube Color (doc/N28): the *-color jobs build with DAPHNE_COLOR_TEST_CURVE (the M1 test curve, so the stage's logic
+# is tested on all three platforms); the other jobs are release builds, where color.enabled true must change nothing.
 name: build
 
 on:
@@ -21,6 +23,9 @@ jobs:
           - { name: linux, os: ubuntu-latest }
           - { name: linux-ffmpeg, os: ubuntu-latest, ffmpeg: true }
           - { name: macos, os: macos-14 }
+          - { name: windows-color, os: windows-latest, color_test: true }
+          - { name: linux-color, os: ubuntu-latest, color_test: true }
+          - { name: macos-color, os: macos-14, color_test: true }
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
@@ -29,7 +34,7 @@ jobs:
         if: matrix.ffmpeg
         run: sudo apt-get update && sudo apt-get install -y libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDAPHNE_WARNINGS_AS_ERRORS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDAPHNE_WARNINGS_AS_ERRORS=ON -DDAPHNE_COLOR_TEST_CURVE=${{ matrix.color_test && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
