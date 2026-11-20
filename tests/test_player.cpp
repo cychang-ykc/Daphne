@@ -1006,21 +1006,6 @@ std::filesystem::path write_dsf_bytes(const std::string& name, const std::vector
 }
 
 
-// The file frame each DoP frame of `b` (stereo, Int32) carries; -1 for a frame that is not music (no marker, idle)
-std::vector<int64_t> dop_frames(const std::vector<uint8_t>& b) {
-    std::vector<int64_t> v;
-    for (size_t i = 0; i + 8 <= b.size(); i += 8) {
-        const uint8_t mk = b[i + 3];
-        if (mk != 0x05 && mk != 0xFA) {
-            v.push_back(-1);
-            continue;
-        }
-        const uint8_t a0 = reverse_bits(b[i + 2]), a1 = reverse_bits(b[i + 1]), c0 = reverse_bits(b[i + 6]), c1 = reverse_bits(b[i + 5]);
-        v.push_back(c1 == 0x5A ? static_cast<int64_t>(a0) | static_cast<int64_t>(a1) << 8 | static_cast<int64_t>(c0) << 16 : -1);
-    }
-    return v;
-}
-
 bool wait_for(const std::function<bool()>& f, double limit = 10.0) {
     const auto t0 = std::chrono::steady_clock::now();
     while (!f()) {
