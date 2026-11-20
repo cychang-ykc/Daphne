@@ -2,7 +2,8 @@
 
   power sweep        H2 - H7 and THD from 0.1 W to rated (1 kHz, 8 ohm; pp-el34-ul closed loop also at 50 Hz and 10 kHz,
                      and open loop at 1 kHz), Xyce harmonic balance, numfreq 60
-  transfer curves    the quasi-static transfer curve at 1 kHz: input and output over one cycle of the steady state
+  transfer curves    the quasi-static transfer curve at 1 kHz: input and output over one cycle of the steady state,
+                     the output flipped where the circuit inverts (every preset in phase with its input, spec)
                      (Xyce harmonic balance, time domain) at 0.1 W, 1 W, rated, and twice the rated drive amplitude.
                      A DC sweep is meaningless through the coupling capacitors and the transformer; mid-band steady
                      state is the curve the program's static stage reproduces.
@@ -63,7 +64,13 @@ def transfer_job(args):
                 except (ValueError, IndexError):
                     continue
     a = np.array(rows)
-    return dict(b=b, label=label, amp=amp, t=a[:, 0].tolist(), vin=a[:, 1].tolist(), vout=a[:, 2].tolist(), s=time.time() - t0)
+    # polarity: every preset's output must be in phase with its input (spec); a circuit with an odd number of
+    # inverting stages (set-300b) is flipped here, judged by the fundamental's phase
+    n = len(a); k = np.exp(-2j * np.pi * np.arange(n) / n)
+    inverted = bool(np.real(np.sum(a[:, 2] * k) / np.sum(a[:, 1] * k)) < 0)
+    vout = -a[:, 2] if inverted else a[:, 2]
+    return dict(b=b, label=label, amp=amp, t=a[:, 0].tolist(), vin=a[:, 1].tolist(), vout=vout.tolist(), inverted=inverted,
+                s=time.time() - t0)
 
 
 def response_job(b):
@@ -120,6 +127,7 @@ if __name__ == "__main__":
                         h.write(f"{f:.6g},{d:.4f},{p:.3f}\n")
     errors = [r for r in sw if "error" in r]
     summary = dict(rated_W=RATED, n_sweep=len(sw), n_transfer=len(tr), n_response=len(rs), errors=errors,
+                   polarity_flipped=sorted({r["b"] for r in tr if r["inverted"]}),
                    seconds=dict(total=time.time() - t_all, sweep=t_sweep, transfer=t_tr, response=t_rs,
                                 sweep_job_mean=float(np.mean([r["s"] for r in sw])), transfer_job_mean=float(np.mean([r["s"] for r in tr])),
                                 response_job_mean=float(np.mean([r["s"] for r in rs]))))

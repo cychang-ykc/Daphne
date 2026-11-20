@@ -142,13 +142,15 @@ def set_845():
     return net
 
 
-def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12, drive=None, el34_cutoff_c=0.0):
+def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-12, drive=None, el34_cutoff_c=0.0,
+           r13=5.6e3, c9=330e-12):
     """Mullard 5-20, Fig. 1 values. Feedback R13 5.6 k // C9 330 pF from the secondary to R5 (open loop: the
     feedback resistor goes to ground instead, keeping R5's loading).
     drive (open loop, diagnostics): "splitter" = ideal antiphase sources in place of the ECC83 anodes (DC 307.8 V,
     the coupling capacitors, 470 k grid resistors and 2.2 k stoppers kept); "grid" = ideal sources straight on the
     EL34 grids. {amp} is then the amplitude at each anode / grid.
-    el34_cutoff_c: the EL34 sensitivity test only (spice_ref.pentode cutoff_c), never in a preset."""
+    el34_cutoff_c: the EL34 sensitivity test only (spice_ref.pentode cutoff_c), never in a preset.
+    r13, c9: the feedback network (the book: 5.6 k // 330 pF for 7.5 ohm); the feedback steps of N28 scale them."""
     lp, dcr, tap = 100.0, 170.0, 0.20
     lh = lp / 4
     l1, l2 = lh * tap ** 2, lh * (1 - tap) ** 2
@@ -190,7 +192,7 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-1
     # wiring capacitance at the nodes the tube capacitances leave floating (screens, the splitter's cathodes); the
     # transient cannot start at a node with no capacitance next to the B sources
     net += ["Cw1 s1 0 5p", "Cw2 s3 0 5p", "Cw3 s4 0 5p", "Cw4 kk 0 5p"]
-    net += ["R13 o fb 5.6k", "C9 o fb 330e-12"] if feedback else ["R13 fbx fb 5.6k", "Rfbx fbx 0 1e-3"]
+    net += [f"R13 o fb {f(r13)}", f"C9 o fb {f(c9)}"] if feedback else [f"R13 fbx fb {f(r13)}", "Rfbx fbx 0 1e-3"]
     if drive:
         front = ("Vin ", "R1 ", "R2 ", "R6 ", "R3 ", "C1 ", "R7 ", "C2 ", "R4 ", "C3 ", "R5 ", "BV1", "CV1", "R11 ",
                  "R12 ", "R8 ", "R10 ", "C6 ", "BV2A", "BV2B", "CV2A", "CV2B", "Cw1 ", "Cw4 ", "R13 ", "C9 ", "Rfbx")
