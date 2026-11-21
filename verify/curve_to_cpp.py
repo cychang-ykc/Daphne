@@ -8,7 +8,7 @@ import json, os
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "data", "curves")
 DST = os.path.join(os.path.dirname(HERE), "color", "src", "preset_curves.inc")
-IDS = {"set-300b": "Set300b", "set-300b-x": "Set300bX", "set-2a3": "Set2a3", "set-845": "Set845", "pp-el34-ul": "PpEl34Ul"}
+IDS = {"set-300b": "Set300b", "set-300b-x": "Set300bX", "h2-pure": "H2Pure", "set-2a3": "Set2a3", "set-845": "Set845", "pp-el34-ul": "PpEl34Ul"}
 
 
 def main():
@@ -29,9 +29,14 @@ def main():
         def secs(lst):
             return ", ".join(f"{{Section::Kind::{s['kind']}, {s['f']:.17g}, {s['q']:.17g}}}" for s in lst)
         c = d["calibration"]
+        h2 = d.get("h2_table")
+        if h2:   # the strength's H2 (h2-pure): drive, percent
+            out.append(f"inline constexpr double k_{name}_h2[{2 * len(h2['drive_pct'])}] = {{" +
+                       ", ".join(f"{a:.6g}, {b:.6g}" for a, b in h2["drive_pct"]) + "};")
         out.append(f"inline const PresetCurve k_{name} = {{\"{pid}\", k_{name}_f, {len(vals)}, {d['u_max']:.17g},")
         out.append(f"    LinearModel{{{{{secs(d['linear']['pre'])}}}, {{{secs(d['linear']['post'])}}}}},")
-        out.append(f"    {c['u_rated']:.17g}, {c['u_no_grid']:.17g}, {c['u_data']:.17g}}};")
+        out.append(f"    {c['u_rated']:.17g}, {c['u_no_grid']:.17g}, {c['u_data']:.17g}, "
+                   f"{f'k_{name}_h2' if h2 else 'nullptr'}, {len(h2['drive_pct']) if h2 else 0}}};")
         out.append("")
         entries.append(f"&k_{name}")
     out.append(f"inline const PresetCurve* const k_preset_curves[] = {{{', '.join(entries) if entries else 'nullptr'}}};")
@@ -40,6 +45,7 @@ def main():
     out.append("")
     out.append("inline const PresetLoad k_preset_loads[] = {")
     loads = json.load(open(os.path.join(HERE, "data", "loads", "loads.json")))
+    loads["h2-pure"] = loads["set-300b"]   # h2-pure: set-300b's linear model and output impedance, its loads too
     for key, per in loads.items():
         preset, _, fb = key.partition(":")
         for load, e in per.items():

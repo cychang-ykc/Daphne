@@ -21,7 +21,7 @@
 //   "dsd_modulator": { "order": 5 | 8, "osr": 64 | 128 | 256 | 512 | 1024 },
 //   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. },
 //   "color":   { "enabled": false, "model": "fixed-point" | "circuit",
-//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul" | "set-300b-x" (experimental),
+//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul" | "set-300b-x" | "h2-pure" (experimental),
 //                "drive": 0 .. kColorDriveMax,
 //                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA, per preset>,
 //                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -6 .. 6 }
@@ -60,7 +60,8 @@ enum class VolumeMode { Digital, Fixed };
 enum class ColorModel { FixedPoint };
 // Set300bX: M2's experiment (doc/N28), set-300b with a constant-current-loaded driver (more H2); on the integration
 // branch only, removed or kept after listening
-enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX };
+// H2Pure: M2's experiment (doc/N28), second harmonic and nothing odd, on set-300b's linear model and loads
+enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX, H2Pure };
 enum class ColorBias { Cool, Standard, Hot };
 // What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance (a
 // two-way stand-mount, vented or sealed). load_ohms is the output transformer's tap (M3); this is what it drives.
@@ -235,6 +236,7 @@ inline constexpr bool kColorOperatingPointAdjustable = false;
 //    "operating_point_adjustable": b,   bias and load (M3)
 //    "loads": [{"id", "label"}, ...], "default_load": id,
 //    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build), "experimental": b,
+//                 "h2_table": [[drive, percent], ...] (h2-pure: the strength's H2 for a 1 kHz sine at -18 dBFS RMS),
 //                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
 nlohmann::json color_info();
 // The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is

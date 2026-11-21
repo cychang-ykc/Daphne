@@ -26,6 +26,9 @@ struct PresetCurve {
     double u_max;
     LinearModel linear;
     double u_rated, u_no_grid, u_data;
+    // the strength's H2 for a 1 kHz sine at -18 dBFS RMS (h2-pure: the panel shows it), h2_n pairs of drive, percent
+    const double* h2 = nullptr;
+    int h2_n = 0;
 
     double operator()(double u) const {
         const double p = (u + u_max) * (n - 1) / (2.0 * u_max);

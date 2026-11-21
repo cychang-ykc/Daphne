@@ -199,6 +199,20 @@ function fieldByTitle(g, title) {
   }
   console.log('PASS  the status line: idle -> running -> idle -> running');
 
+  // 3d. h2-pure: the strength's H2 from the core's table, interpolated at the slider's drive (0 when bypassed)
+  const h2info = { ...info, presets: [...info.presets, { id: 'h2-pure', label: 'Pure H2 (experimental)', push_pull: false, experimental: true,
+    h2_table: [[0.05, 0.125], [1.0, 2.5], [2.0, 4.96], [4.0, 9.7]] }] };
+  for (const [drive, bypass, want] of [[1.0, false, '2.50'], [1.5, false, '3.73'], [0.025, false, '0.06'], [4.0, false, '9.70'], [2.0, true, '0.00']]) {
+    api = apiFor(h2info, { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null },
+      { colorEnabled: true, colorPreset: 'h2-pure', colorDrive: drive, colorBypass: bypass });
+    await ctx.module.init(api);
+    card = new El('card'); ui.section = () => card;
+    api.settings.core(card, ui);
+    const st = colorGroup(card).all().find(e => e.classList.contains('dp-color-status')).textContent;
+    assert.ok(st.includes(`H2 at this strength: ${want} %`), `drive ${drive}${bypass ? ' bypassed' : ''}: ${st}`);
+  }
+  console.log("PASS  h2-pure: the strength's H2 in the status line");
+
   // 4. WASAPI shared: the card shows Tube Color only
   ctx.App.settings.outputMode = 'shared';
   api = apiFor(info, null, { colorEnabled: false });

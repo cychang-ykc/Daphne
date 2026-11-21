@@ -37,7 +37,7 @@ public sealed class DaphneOptions
     // what the slider says
     public bool ColorBypass { get; set; }
 
-    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x" };
+    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x", "h2-pure" };
 
     /// <summary>The options as the page reads them; <paramref name="save"/>: as kept in MIKU's settings (no bypass).</summary>
     public JsonObject ToJson(bool save = false)

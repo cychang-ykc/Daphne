@@ -416,6 +416,19 @@
     if (report.some(x => x.includes('idle'))) out.push(op.colorBypass ? 'Bypassed: the stage idles (drive 0), samples unchanged' : 'Idle (strength 0): samples unchanged');
     else if (!c.inChain) out.push('Not in the playback chain');
     else out.push('Active');
+    // h2-pure: the strength's H2 (the core's table: a 1 kHz sine at -18 dBFS RMS), for the listening notes
+    if (p && Array.isArray(p.h2_table) && p.h2_table.length) {
+      const d = op.colorBypass ? 0 : (op.colorDrive == null ? 1 : op.colorDrive), t = p.h2_table;
+      let pct = 0;
+      if (d >= t[t.length - 1][0]) pct = t[t.length - 1][1];
+      else if (d > 0) {
+        let i = 0;
+        while (i + 1 < t.length && t[i + 1][0] < d) i++;
+        const [d0, p0] = i === 0 && d < t[0][0] ? [0, 0] : t[i], [d1, p1] = i === 0 && d < t[0][0] ? t[0] : t[i + 1];
+        pct = p0 + (p1 - p0) * (d - d0) / (d1 - d0);
+      }
+      out.push(`H2 at this strength: ${pct.toFixed(2)} % (1 kHz sine at -18 dBFS RMS)`);
+    }
     if (c.reason) out.push('Path: ' + c.reason);
     for (const r of report) if (!r.includes('idle')) out.push('Path: ' + r);
     if (c.lastEvent) out.push('Last: ' + c.lastEvent);

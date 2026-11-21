@@ -987,3 +987,35 @@ TEST_CASE("color load: set-300b into a vented loudspeaker against the circuit, a
     CHECK(std::abs(first) < 0.02);   // next to nothing at 1 %
     CHECK(biggest < 0.3);            // no more than 0.3 dB per 1 % of drive
 }
+
+// h2-pure (doc/N28, M2's experiment): second harmonic and nothing odd. Its curve rises everywhere; in the stage (with
+// set-300b's linear model, as the preset runs) a 1 kHz sine at -18 dBFS RMS gives the table's H2 at 100 % and 400 %
+// (within 0.1 dB), and no odd harmonic (H3, H5 below -100 dB re the fundamental).
+TEST_CASE("color curves: h2-pure, H2 and nothing odd", "[color][curve]") {
+    const auto* c = daphne::color::preset_curve("h2-pure");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->h2 != nullptr);
+    for (int i = 1; i < c->n; ++i) CHECK(c->f[i] > c->f[i - 1]);
+    const double a = std::pow(10.0, -18.0 / 20.0) * std::sqrt(2.0);
+    for (double drive : {1.0, 4.0}) {
+        INFO("drive " << drive);
+        double want = 0.0;
+        for (int i = 0; i < c->h2_n; ++i)
+            if (std::abs(c->h2[2 * i] - drive) < 1e-9) want = c->h2[2 * i + 1];
+        REQUIRE(want > 0.0);
+        daphne::color::StageParams p;
+        p.drive = drive;
+        p.curve = c;
+        p.linear = c->linear;
+        daphne::color::TubeColorStage st(p);
+        const int rate = 44100, frames = rate / 2;
+        std::vector<double> x(2 * static_cast<size_t>(frames));
+        for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = a * std::sin(2 * std::numbers::pi * 1000.0 * i / rate);
+        const auto y = run_curve(st, x, rate);
+        auto mag = [&](int k) { const auto [u, v] = harmonic_of(y, rate, 1000.0, k, frames - 8820, frames); return std::hypot(u, v); };
+        const double h1 = mag(1);
+        CHECK(20 * std::log10(mag(2) / h1) == Catch::Approx(20 * std::log10(want / 100.0)).margin(0.1));
+        CHECK(20 * std::log10(mag(3) / h1) < -100.0);
+        CHECK(20 * std::log10(mag(5) / h1) < -100.0);
+    }
+}

@@ -75,7 +75,7 @@ class DaphneOptions {
   }
 }
 
-const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul', 'set-300b-x'];
+const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul', 'set-300b-x', 'h2-pure'];
 
 // Tube Color's controls from the core (daphne-helper color_info, doc/N28); null until the extension has asked
 let colorInfo = null;

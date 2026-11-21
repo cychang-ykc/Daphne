@@ -410,7 +410,7 @@ TEST_CASE("C API: dc_color_info", "[capi]") {
     CHECK(j["feedback_db"] == nlohmann::json({0, 6, 12, 20, 30}));
     CHECK(j["load_ohms"] == nlohmann::json({4, 8, 16}));
     CHECK(j["operating_point_adjustable"] == false);   // M2: standard bias, 8 ohm; M3 makes them adjustable
-    REQUIRE(j["presets"].size() == 5);   // (set-300b-x: M2's experiment)
+    REQUIRE(j["presets"].size() == 6);   // (set-300b-x, h2-pure: M2's experiments)
     CHECK(j["presets"][0]["id"] == "set-300b");        // the default first
     int push_pull = 0, hot = 0;
     for (const auto& p : j["presets"]) {
@@ -425,10 +425,10 @@ TEST_CASE("C API: dc_color_info", "[capi]") {
         CHECK(m["standard"].get<double>() <= m["hi"].get<double>());
         if (!m["hot"].is_null()) {
             ++hot;
-            CHECK((p["id"] == "set-300b" || p["id"] == "set-300b-x"));   // only 300B has room above its standard bias (doc/N28)
+            CHECK((p["id"] == "set-300b" || p["id"] == "set-300b-x" || p["id"] == "h2-pure"));   // 300B's range (doc/N28)
             CHECK(m["hot"].get<double>() > m["standard"].get<double>());
         }
     }
     CHECK(push_pull == 1);
-    CHECK(hot == 2);   // set-300b and its experimental variant (the same output stage)
+    CHECK(hot == 3);   // set-300b, set-300b-x and h2-pure (300B's bias range)
 }

@@ -14,7 +14,7 @@ namespace daphne::color {
 bool available(std::string_view preset) { return test_curve() || preset_curve(preset) != nullptr; }
 
 bool available_any() {
-    for (const char* p : {"set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x"})
+    for (const char* p : {"set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x", "h2-pure"})
         if (available(p)) return true;
     return false;
 }
