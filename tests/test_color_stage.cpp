@@ -943,11 +943,13 @@ double tone_level(const daphne::color::PresetCurve* c, const std::vector<daphne:
     p.linear = c->linear;
     p.load = load;
     daphne::color::TubeColorStage st(p);
-    const int rate = 44100, frames = 2 * rate;
+    // 0.5 s (the slowest settling: the 2 Hz DC blocker, 80 ms), measured over the last whole periods in 0.2 s
+    const int rate = 44100, frames = rate / 2;
     std::vector<double> x(2 * static_cast<size_t>(frames));
     for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = 0.01 * std::sin(2 * std::numbers::pi * hz * i / rate);
     const auto y = run_curve(st, x, rate);
-    const int n = static_cast<int>(std::lround(hz * 0.5)) * rate / static_cast<int>(std::lround(hz));   // whole periods
+    const int periods = std::max(1, static_cast<int>(std::floor(hz * 0.2)));
+    const int n = static_cast<int>(std::lround(periods * rate / hz));
     const auto [a, b] = harmonic_of(y, rate, hz, 1, frames - n, frames);
     return 20 * std::log10(std::hypot(a, b));
 }
@@ -961,8 +963,8 @@ TEST_CASE("color load: set-300b into a vented loudspeaker against the circuit, a
     REQUIRE(l != nullptr);
     CHECK(daphne::color::preset_load("set-300b", -1, "resistor-8") == nullptr);   // the 8 ohm resistor: no sections
     const std::vector<daphne::color::Section> none;
-    auto rel = [&](double hz) { return (tone_level(c, l->sections, 1.0, hz) - tone_level(c, none, 1.0, hz)) -
-                                       (tone_level(c, l->sections, 1.0, 1000.0) - tone_level(c, none, 1.0, 1000.0)); };
+    const double at_1k = tone_level(c, l->sections, 1.0, 1000.0) - tone_level(c, none, 1.0, 1000.0);
+    auto rel = [&](double hz) { return tone_level(c, l->sections, 1.0, hz) - tone_level(c, none, 1.0, hz) - at_1k; };
     struct P { double hz, db; };
     for (const auto& pt : {P{40, -1.5932}, P{50, -2.5819}, P{85, 0.5134}, P{150, -1.6162}, P{250, -2.555}, P{2600, 0.7269},
                            P{10000, -2.4308}, P{18000, -3.2664}}) {
@@ -971,15 +973,17 @@ TEST_CASE("color load: set-300b into a vented loudspeaker against the circuit, a
     }
     // the fade at 50 Hz (the port's dip: the load's largest effect there, -2.6 dB re 1 kHz)
     double prev = 0.0, first = 0.0, biggest = 0.0;
-    for (int pct = 1; pct <= 25; ++pct) {
+    int prev_pct = 0;
+    for (int pct : {1, 2, 3, 5, 8, 12, 16, 20, 25}) {   // (sampled: the sanitizer jobs run it too)
         const double d = pct / 100.0;
         const double e = tone_level(c, l->sections, d, 50.0) - tone_level(c, none, d, 50.0);   // the load's effect at this drive
         if (pct == 1) first = e;
         INFO(pct << " %: " << e << " dB");
         CHECK(e <= prev + 1e-9);   // only deeper as the drive rises
-        biggest = std::max(biggest, prev - e);
+        biggest = std::max(biggest, (prev - e) / (pct - prev_pct));   // per 1 % of drive
         prev = e;
+        prev_pct = pct;
     }
     CHECK(std::abs(first) < 0.02);   // next to nothing at 1 %
-    CHECK(biggest < 0.3);            // no step of more than 0.3 dB
+    CHECK(biggest < 0.3);            // no more than 0.3 dB per 1 % of drive
 }
