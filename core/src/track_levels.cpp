@@ -27,7 +27,7 @@ std::string cache_key(const std::filesystem::path& p) {
     if (!ec) {
         k += "|" + std::to_string(size);
         const auto t = std::filesystem::last_write_time(p, ec);
-        if (!ec) k += "|" + std::to_string(t.time_since_epoch().count());
+        if (!ec) k += "|" + std::to_string(static_cast<long long>(t.time_since_epoch().count()));   // (macOS: an __int128 count)
     }
     return k;
 }
