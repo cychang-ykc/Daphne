@@ -48,7 +48,7 @@ TEST_CASE("color settings: defaults, off", "[color]") {
     CHECK_FALSE(s.color.bias_ma.has_value());
     CHECK(s.color.load_ohms == 8);
     CHECK_FALSE(s.color.makeup_gain_db.has_value());
-    CHECK(daphne::kColorDriveMax == 2.0);
+    CHECK(daphne::kColorDriveMax == 4.0);   // 400 % (doc/N28, 2026-11-21)
     CHECK_FALSE(daphne::color_active(s));
 }
 
@@ -88,7 +88,7 @@ TEST_CASE("color settings: invalid values are errors and keep the default", "[co
         const char* json;
         const char* path;
     };
-    for (const Case& k : {Case{R"({"drive": 2.01})", "color.drive"}, Case{R"({"drive": -0.1})", "color.drive"},
+    for (const Case& k : {Case{R"({"drive": 4.01})", "color.drive"}, Case{R"({"drive": -0.1})", "color.drive"},
                           Case{R"({"feedback_db": 10})", "color.feedback_db"}, Case{R"({"preset": "set-6b4g"})", "color.preset"},
                           Case{R"({"model": "spice"})", "color.model"}, Case{R"({"model": "circuit"})", "color.model"},
                           Case{R"({"bias": "warm"})", "color.bias"}, Case{R"({"bias": 0})", "color.bias"},
@@ -106,7 +106,7 @@ TEST_CASE("color settings: invalid values are errors and keep the default", "[co
     CHECK(unknown.ok());
     REQUIRE(unknown.diagnostics.size() == 1);
     CHECK(unknown.diagnostics[0].path == "color.warmth");
-    CHECK(load(R"({"drive": 2.0})").ok());   // the limit itself is allowed
+    CHECK(load(R"({"drive": 4.0})").ok());   // the limit itself is allowed
     CHECK(load(R"({"drive": 0})").ok());
     CHECK(load(R"({"makeup_gain": 6})").ok());
     CHECK(load(R"({"makeup_gain": -6})").ok());
@@ -428,8 +428,8 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
         {"enabled", {true, false}, {0, 1, "true", "false", 5e-324}},
         {"model", {"fixed-point"}, {"circuit", "Fixed-Point", "fixed-point ", 0, true, 5e-324}},
         {"preset", {"set-2a3", "set-300b", "set-845", "pp-el34-ul"}, {"set-300B", "300b", "pp-el34", 1, false, 5e-324}},
-        {"drive", {0, 0.0, 1, 0.01, 1.35, daphne::kColorDriveMax, 5e-324},
-         {-0.01, -1, daphne::kColorDriveMax + 1e-9, 3, 400, "1.0", true}},
+        {"drive", {0, 0.0, 1, 0.01, 1.35, 2.0, 3, daphne::kColorDriveMax, 5e-324},
+         {-0.01, -1, daphne::kColorDriveMax + 1e-9, 4.5, 400, "1.0", true}},
         {"feedback_db", {0, 6, 12, 20, 30}, {6.0, 7, -6, 31, 2147483654LL, "6", false, 5e-324}},
         {"bias", {"cool", "standard", "hot", 35.0, 59.8, 72.5, 100, 36}, {34.99, 100.01, 0, -60, "Hot", "warm", true, 5e-324}},
         {"load_ohms", {4, 8, 16}, {8.0, 0, 2, 32, -8, "8", true, 5e-324}},

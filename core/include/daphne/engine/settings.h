@@ -147,9 +147,10 @@ struct DesignSettings {
     int cache_limit_mb = 1024;   // filter cache size limit (filter_cache.h); 0 = no limit
 };
 
-// The upper limit of the strength slider (drive 1.0 = 100 %, the preset's calibration). One constant: the
-// listening in M2 may raise it to 4.0.
-inline constexpr double kColorDriveMax = 2.0;
+// The upper limit of the strength slider (drive 1.0 = 100 %, the preset's calibration). One constant (the panel reads
+// it through color_info). 4.0 (400 %) from M2's listening on (2026-11-21): on the tube-color integration branch it is
+// open for listening; before the branch is merged into main, 400 % must pass every quality check (doc/N28).
+inline constexpr double kColorDriveMax = 4.0;
 
 // Tube Color (doc/N28). enabled false (the default): not in the chain, playback exactly as without it. Before M2,
 // only test builds can run it (daphne::color::available()); elsewhere enabled true changes nothing either.

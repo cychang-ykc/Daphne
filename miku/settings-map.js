@@ -80,7 +80,7 @@ let colorInfo = null;
 const setColorInfo = i => { colorInfo = i && typeof i === 'object' ? i : null; };
 const getColorInfo = () => colorInfo;
 /** The strength slider's limit (1.0 = 100 %), the core's own constant. */
-const colorDriveMax = () => (colorInfo && Number.isFinite(colorInfo.drive_max) ? colorInfo.drive_max : 2.0);
+const colorDriveMax = () => (colorInfo && Number.isFinite(colorInfo.drive_max) ? colorInfo.drive_max : 4.0);
 
 /**
  * Tube Color (doc/N28): the panel's choices. The bypass is drive 0 (the stage idles in place, bit-identical, no

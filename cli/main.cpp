@@ -774,7 +774,7 @@ int cmd_render_dsp(std::vector<std::string> args) {
     std::vector<double> buf(static_cast<size_t>(kChunk) * in.channels);
     std::vector<double> out(static_cast<size_t>(chain.max_output_frames()) * dev.channels);
     std::vector<uint8_t> bytes(static_cast<size_t>(chain.max_output_frames()) * dev.block_align());
-    int64_t total = 0, clipped = 0;
+    int64_t total = 0, clipped = 0, color_limited = 0;
     std::vector<uint8_t> dop;
     auto emit = [&](int n) {
         if (dsd) {
@@ -786,6 +786,7 @@ int cmd_render_dsp(std::vector<std::string> args) {
         }
         clipped += daphne::convert_to_device(out.data(), static_cast<size_t>(n) * dev.channels, dev, bytes.data());
         clipped += chain.take_clips();
+        color_limited += chain.take_color_limited();
         drwav_write_pcm_frames(&w, static_cast<drwav_uint64>(n), bytes.data());
         total += n;
     };
@@ -796,7 +797,11 @@ int cmd_render_dsp(std::vector<std::string> args) {
     }
     emit(chain.flush(out.data()));
     drwav_uninit(&w);
-    std::cout << "rendered " << total << " frames, clipped " << clipped << "\n";
+    std::cout << "rendered " << total << " frames, clipped " << clipped;
+    const auto st = chain.all_stages();
+    if (std::find(st.begin(), st.end(), "color limiter") != st.end())
+        std::cout << ", color_limited " << color_limited;   // frames Tube Color's soft limiter turned down (doc/N28)
+    std::cout << "\n";
     return 0;
 }
 

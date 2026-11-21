@@ -360,7 +360,7 @@
       r.onchange = () => { pending = +r.value; clearTimeout(timer); flush(); };
       return [r, t];
     };
-    const max = Math.round((info.drive_max || 2) * 100);
+    const max = Math.round((info.drive_max || 4) * 100);
     const pct = Math.min(max, Math.round((op.colorDrive == null ? 1 : op.colorDrive) * 100));
     g.field('Strength', '100 % = the amplifier as calibrated, 0 = no effect. Changes glide, without a gap.',
       slider(0, max, 1, pct, x => x + ' %', x => set({ colorDrive: x / 100 }).then(refresh)));

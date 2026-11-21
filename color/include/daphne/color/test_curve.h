@@ -26,6 +26,8 @@ struct TestCurve {
         const double y = kKnee + (1.0 - kKnee) * std::tanh((a - kKnee) / (1.0 - kKnee));
         return p < 0.0 ? -y : y;
     }
+    // (since the 400 % limit, doc/N28: drive 400 % puts a full-scale sample at 4, past kMaxIn: clamped, flat, still
+    // defined; the test curve is for the machinery, not for how 400 % sounds)
     // Monotonic: p'(x) = 1 + 2 a2 x + 3 a3 x^2 > 0 for |x| <= kMaxIn (drive 200 % on a full-scale sample, with room
     // for overs; p'(-2.5) = 0.125), and flat beyond it (the input is clamped there).
     static constexpr double kMaxIn = 2.5;

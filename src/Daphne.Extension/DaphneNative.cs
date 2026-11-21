@@ -113,5 +113,5 @@ static class DaphneNative
 
     /// <summary>The strength slider's limit (1.0 = 100 %), the core's own constant.</summary>
     public static double ColorDriveMax =>
-        ColorInfo is { } i && i.TryGetProperty("drive_max", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble() : 2.0;
+        ColorInfo is { } i && i.TryGetProperty("drive_max", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble() : 4.0;
 }
