@@ -162,7 +162,8 @@ function buildPath(ctx) {
       pin: [to(pcm(F64, rateNow))],
     });
   }
-  if (chain.includes('tube color')) proc.push(colorRow(o, r, chain, pcmRate, rateNow));
+  // idle too (drive 0, the panel's bypass): the chain leaves the idle stage out, but the path says it is there, idle
+  if (chain.includes('tube color') || String(r.filter || '').includes('Tube Color idle')) proc.push(colorRow(o, r, chain, pcmRate, rateNow));
   else if (o.colorEnabled && SM.getColorInfo() && !presetRuns(SM.getColorInfo(), o.colorPreset))
     notes.push("Tube Color is on, but this amplifier's curve is not in this build yet: playback is unchanged.");
   if (chain.includes('modulator pre-filter') || chain.includes('modulator limiter')) {
@@ -180,8 +181,10 @@ function buildPath(ctx) {
   }
   if (proc.every(x => !x.mod)) {
     const vol = volPass ? (volumeMode === 'digital' ? '數位音量：0 dB，不處理' : '音量：固定 0 dB，不調整數位增益') : null;
+    const colorIdle = proc.find(x => x.k === 'Tube Color');   // idle: kept, so the card says it is there
     proc.length = 0;
     proc.push({ ...row('DSP', dsdFile ? '無：DSD 原樣送出' : '無：樣本數值不變', false, vol), pin: [to(dsdFile ? dsd1(srcRate) : pcm(F64, pcmRate))] });
+    if (colorIdle) proc.push(colorIdle);
   }
   sections.push({ title: 'DSP', mark: true, rows: proc });
 

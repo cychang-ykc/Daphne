@@ -37,8 +37,10 @@ const h = (tag, attrs, ...kids) => { const e = new El(tag, attrs); e.append(...k
 const calls = [];
 let state;
 const timers = [];
+const intervals = [];
 const ctx = {
-  console, h, setTimeout: (f, ms) => { timers.push(f); return timers.length; }, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
+  console, h, setTimeout: (f, ms) => { timers.push(f); return timers.length; }, clearTimeout: () => {},
+  setInterval: (f, ms) => { intervals.push(f); return intervals.length; }, clearInterval: () => {},
   document: { contains: () => true, createElement: () => ({ content: { firstChild: null } }), body: new El('body') },
   I18N: { lang: 'en' }, Router: { render: () => { ctx.rerendered = (ctx.rerendered || 0) + 1; } }, toast: () => {},
   App: { settings: { outputMode: 'exclusive', fixedRate: 0, maxDsd: 0 } },
@@ -168,6 +170,25 @@ function fieldByTitle(g, title) {
   assert.match(fieldByTitle(g, 'Amplifier').textContent, /not in this build yet/);
   assert.match(g.all().find(e => e.classList.contains('dp-color-status')).textContent, /not in this build yet/);
   console.log('PASS  a preset without its curve: marked, said');
+
+  // 3c. the status line follows the core in and out of idle on the page's refresh (doc/N28)
+  intervals.length = 0;
+  api = apiFor(info, { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null },
+    { colorEnabled: true, colorPreset: 'set-300b', colorDrive: 1, colorBypass: false });
+  await ctx.module.init(api);
+  card = new El('card'); ui.section = () => card;
+  api.settings.core(card, ui);
+  g = colorGroup(card);
+  const line = g.all().find(e => e.classList.contains('dp-color-status'));
+  for (const idle of [false, true, false, true]) {
+    state.colorNow = idle ? { playing: true, inChain: false, reason: '', report: ['Tube Color idle (drive 0)'], lastEvent: null }
+                          : { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null };
+    for (const f of intervals) f();   // the page's timers: the refresh among them
+    await tick(); await tick();
+    if (idle) assert.match(line.textContent, /Idle/, 'idle shown');
+    else { assert.match(line.textContent, /Active/, 'running shown'); assert.doesNotMatch(line.textContent, /Idle/); }
+  }
+  console.log('PASS  the status line: idle -> running -> idle -> running');
 
   // 4. WASAPI shared: the card shows Tube Color only
   ctx.App.settings.outputMode = 'shared';

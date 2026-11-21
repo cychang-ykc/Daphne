@@ -86,10 +86,35 @@ function colorStatus() {
   console.log('PASS  Tube Color status for the panel');
 }
 
+// The status follows the core in and out of idle (doc/N28): each "changed" event re-reads the report (the helper's
+// state), so the panel's line and the signal path go idle -> running -> idle -> running with it.
+async function colorStatusCycle() {
+  let idle = false;
+  const report = () => ({
+    chain: idle ? ['quantizer'] : ['tube color', 'color limiter', 'quantizer'], reason: idle ? '' : 'DSP active (Tube Color)',
+    filter: '2048 taps' + (idle ? ' | Tube Color idle (drive 0)' : ''), source: { rate: 44100, dsd_rate: 0 }, device: { rate: 44100 },
+  });
+  const client = { running: true, start() {}, on() {}, request: cmd => Promise.resolve(cmd === 'state' ? { ok: true, state: { duration: 10, report: report() } } : { ok: true }) };
+  const e = new DaphneEngine({ outputMode: 'coreaudio-exclusive' }, new SM.DaphneOptions(), {}, root);
+  e.client = client;
+  e.loaded = true;
+  e.buildSignal = () => null;
+  for (const want of [false, true, false, true, false]) {
+    idle = want;
+    e.onEvent({ type: 'changed' });
+    await sleep(10);
+    const st = e.colorStatus();
+    assert.strictEqual(st.inChain, !want, `in the chain while ${want ? 'idle' : 'running'}`);
+    assert.strictEqual(st.report.some(x => x.includes('idle')), want);
+  }
+  console.log('PASS  Tube Color status: idle -> running -> idle -> running');
+}
+
 (async () => {
   await dsdModeTwice();
   colorMapping();
   colorStatus();
+  await colorStatusCycle();
 })().catch(err => {
   console.error('FAIL ', err.message);
   process.exit(1);

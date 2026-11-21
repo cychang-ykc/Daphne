@@ -222,7 +222,10 @@ public sealed partial class DaphneEngine
             proc.Add(Row("升頻", devRate == pcmRate ? "1 倍 · 只去除錄音振鈴" : $"{Khz(pcmRate)} → {Khz(devRate)} kHz（×{devRate / pcmRate}）", true,
                 FilterLines(o.Apodize && upsampler)) with { pin = new[] { To(Pcm(F64, rateNow)) } });
         }
-        if (chain.Contains("tube color")) proc.Add(ColorRow(chain, pcmRate, rateNow));
+        // idle too (drive 0, the panel's bypass): the stage passes the samples through, so the chain leaves it out, but the
+        // path says it is there, idle
+        if (chain.Contains("tube color") || (_report.GetProperty("filter").GetString() ?? "").Contains("Tube Color idle"))
+            proc.Add(ColorRow(chain, pcmRate, rateNow));
         else if (o.ColorEnabled && DaphneNative.ColorInfo is { } ci && !ColorPresetRuns(ci, o.ColorPreset))
             notes.Add("Tube Color is on, but this amplifier's curve is not in this build yet: playback is unchanged.");
         if (chain.Contains("modulator pre-filter") || chain.Contains("modulator limiter"))
@@ -247,9 +250,11 @@ public sealed partial class DaphneEngine
         if (proc.All(r => !r.mod))
         {
             string vol = volPass ? (volumeMode == "digital" ? "數位音量：0 dB，不處理" : "音量：固定 0 dB，不調整數位增益") : null;
+            var colorIdle = proc.FirstOrDefault(r => r.k == "Tube Color");   // idle: kept, so the card says it is there
             proc.Clear();
             proc.Add(Row("DSP", dsdFile ? "無：DSD 原樣送出" : "無：樣本數值不變", false, vol)
                 with { pin = new[] { To(dsdFile ? Dsd1(srcRate) : Pcm(F64, pcmRate)) } });
+            if (colorIdle != null) proc.Add(colorIdle);
         }
         sections.Add(new { title = "DSP", mark = true, rows = proc });   // Daphne's own processing: its mark after the title
 

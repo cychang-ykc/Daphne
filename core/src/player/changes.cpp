@@ -131,10 +131,14 @@ bool Player::Impl::handle(const Settings& ns, const OutputChoice& no) {
     if (cur->update(chain_settings(ns, run_osr))) {
         s = ns;
         event("applied in place (EQ / crossfeed / volume)");
-        // the stages that are active now (EQ switched on / off, volume at 0 dB ...)
+        // the stages that are active now (EQ switched on / off, volume at 0 dB ...), and the path's words with them:
+        // Tube Color's drive crossing 0 in place changes "Tube Color idle (drive 0)" there (doc/N28), and a host
+        // re-reads the report on "changed" only
         const auto stages = cur->stages();
-        const bool changed_stages = stages != rep.chain, was_bit_perfect = rep.bit_perfect;
+        const std::string filter = report.filter(s, dsdenc.get());
+        const bool changed_stages = stages != rep.chain || filter != rep.filter, was_bit_perfect = rep.bit_perfect;
         rep.chain = stages;
+        rep.filter = filter;
         report.bit_perfect(tl.heard_chain(cur.get()));
         if (changed_stages || rep.bit_perfect != was_bit_perfect) {
             if (cb.on_changed) cb.on_changed(rep);

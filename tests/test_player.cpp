@@ -85,6 +85,7 @@ struct Rig {
     std::mutex m;
     std::vector<std::string> events;
     int started = 0, tracks = 0, changed = 0;
+    PlayReport last_changed;   // the report of the last on_start / on_changed
     std::atomic<bool> ended{false};
     std::unique_ptr<Player> player;
     OutputCaps caps;   // what the fake output says it offers
@@ -128,17 +129,19 @@ struct Rig {
     }
     PlayCallbacks callbacks() {
         PlayCallbacks cb;
-        cb.on_start = [this](const PlayReport&) {
+        cb.on_start = [this](const PlayReport& rep) {
             std::lock_guard<std::mutex> l(m);
             started++;
+            last_changed = rep;
         };
         cb.on_track_started = [this](const PlayReport&) {
             std::lock_guard<std::mutex> l(m);
             tracks++;
         };
-        cb.on_changed = [this](const PlayReport&) {
+        cb.on_changed = [this](const PlayReport& rep) {
             std::lock_guard<std::mutex> l(m);
             changed++;
+            last_changed = rep;
         };
         cb.on_event = [this](const std::string& e) {
             std::lock_guard<std::mutex> l(m);
@@ -1750,6 +1753,42 @@ TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[
         if (k.drive == 0) CHECK(rep.color_limited == 0);   // idle: the samples as they are (0.99 peaks untouched)
         r.player.reset();
     }
+}
+
+// The path report follows the stage in and out of idle (doc/N28; a host's panel and signal path re-read it on
+// "changed"): drive 0 in place says "Tube Color idle (drive 0)" with no tube color stage; back to a drive, the stage
+// again and no "idle"; twice round. Before the fix the words stayed at idle after the drive came back.
+TEST_CASE("Player: Tube Color's path report follows idle and back", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["a"] = sine(44100, 1000.0, 8.0, 0.3);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 1.0;
+    REQUIRE(r.start("a", s));
+    auto state_is = [&](bool idle) {
+        return wait_until(r, [&] {
+            std::lock_guard<std::mutex> l(r.m);
+            const auto& rep = r.last_changed;
+            const bool has_stage = std::find(rep.chain.begin(), rep.chain.end(), std::string("tube color")) != rep.chain.end();
+            const bool says_idle = rep.filter.find("Tube Color idle (drive 0)") != std::string::npos;
+            return !rep.filter.empty() && has_stage == !idle && says_idle == idle;
+        }, idle ? "the report: idle" : "the report: running", 5.0);
+    };
+    REQUIRE(state_is(false));
+    for (int round = 0; round < 2; ++round) {
+        INFO("round " << round);
+        Settings z = s;
+        z.color.drive = 0.0;
+        r.player->apply(z, OutputChoice{});
+        REQUIRE(state_is(true));
+        r.player->apply(s, OutputChoice{});
+        REQUIRE(state_is(false));
+    }
+    r.player->stop();
+    r.finish();
+    r.player.reset();
 }
 
 // Tube Color on at drive 0 (doc/N28): the stage a pure delay the player compensates, the quantizer it keeps passing the

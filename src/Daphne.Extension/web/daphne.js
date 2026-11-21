@@ -406,8 +406,9 @@
     if (!c || !c.playing) return ['On · nothing playing'];
     const out = [];
     const report = Array.isArray(c.report) ? c.report : [];
-    if (!c.inChain) out.push('Not in the playback chain');
-    else if (report.some(x => x.includes('idle'))) out.push(op.colorBypass ? 'Bypassed: the stage idles (drive 0), samples unchanged' : 'Idle (strength 0): samples unchanged');
+    // idle first: an idle stage passes the samples through, so the chain the core reports leaves it out
+    if (report.some(x => x.includes('idle'))) out.push(op.colorBypass ? 'Bypassed: the stage idles (drive 0), samples unchanged' : 'Idle (strength 0): samples unchanged');
+    else if (!c.inChain) out.push('Not in the playback chain');
     else out.push('Active');
     if (c.reason) out.push('Path: ' + c.reason);
     for (const r of report) if (!r.includes('idle')) out.push('Path: ' + r);
