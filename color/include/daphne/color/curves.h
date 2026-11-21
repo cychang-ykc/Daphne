@@ -13,6 +13,7 @@
 //               static curve cannot follow the bias shift grid current makes (N28)
 
 #include <string_view>
+#include <vector>
 
 #include "daphne/color/linear.h"
 
@@ -44,5 +45,19 @@ struct PresetCurve {
 
 // The preset's curve, or nullptr when it has not been exported yet (the preset cannot run in this build).
 const PresetCurve* preset_curve(std::string_view id);
+
+// The virtual loudspeaker load (doc/N28, verify/load_filters.py): for a preset (its feedback step for pp-el34-ul,
+// -1 otherwise) and a load, the sections that change the response from the 8 ohm resistor's to the loudspeaker's
+// (|Z / (Z + Zout)| / |8 / (8 + Zout)|, Zout the preset's output impedance) and their makeup gain (the median loudness
+// change on the six test tracks). The 8 ohm resistor has none. M3's bias will change Zout: the data is keyed by what
+// Zout depends on.
+struct PresetLoad {
+    const char* preset;
+    int feedback_db;      // -1: not a push-pull preset
+    const char* load;     // the settings' name ("bookshelf-vented")
+    std::vector<Section> sections;
+    double makeup_db;
+};
+const PresetLoad* preset_load(std::string_view preset, int feedback_db, std::string_view load);
 
 }  // namespace daphne::color

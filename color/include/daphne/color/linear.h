@@ -16,12 +16,18 @@
 
 namespace daphne::color {
 
+// General1 / General2: a section of the virtual loudspeaker load (doc/N28, verify/load_filters.py): its poles at fc_hz
+// (and q), its numerator c1 S + c0 over S + 1, or c2 S^2 + c1 S + c0 over S^2 + S / q + 1 (S = s / (2 pi fc_hz); a
+// state-variable filter mixing its outputs). It has no corner to move and does not fade itself: the stage fades the
+// whole load, y + m (L(y) - y) (one section's share of the load can be far from unity; the whole is near it).
 struct Section {
-    enum class Kind { HighPass1, LowPass1, HighPass2, LowPass2 };
+    enum class Kind { HighPass1, LowPass1, HighPass2, LowPass2, General1, General2 };
     Kind kind = Kind::HighPass2;
-    double fc_hz = 20.0;   // the reference corner
+    double fc_hz = 20.0;   // the reference corner (general: the poles)
     double q = 0.7071;     // second order
+    double c2 = 0.0, c1 = 0.0, c0 = 0.0;   // general: the numerator
     bool high() const { return kind == Kind::LowPass1 || kind == Kind::LowPass2; }   // a high-frequency section
+    bool general() const { return kind == Kind::General1 || kind == Kind::General2; }
 };
 
 struct LinearModel {
@@ -51,6 +57,7 @@ private:
     bool active_ = false;   // false: the reference corner is above the rate's reach (no local oversampling yet)
     double g_ref_ = 0.0, k_ = 0.0;
     double g_ = 0.0, a_ = 0.0;   // the current coefficients (a: 1st order G, 2nd order h)
+    double n2_ = 0.0, n1_ = 0.0, n0_ = 0.0;   // general: the numerator at the current fade
 };
 
 // A chain of sections, two state words per channel and section.

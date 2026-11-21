@@ -52,7 +52,11 @@ function colorMapping() {
   SM.setColorInfo({ available: true, drive_max: 2.0, presets: [] });
   const o = new SM.DaphneOptions();
   let c = SM.build({}, { outputMode: 'coreaudio-exclusive' }, o, null).color;
-  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, makeup_gain: 'auto' });
+  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, load: 'bookshelf-vented', makeup_gain: 'auto' });
+  o.merge({ colorLoad: 'resistor-8' });
+  assert.strictEqual(SM.colorOf(o).load, 'resistor-8');
+  o.merge({ colorLoad: 'horn' });
+  assert.strictEqual(SM.colorOf(o).load, 'bookshelf-vented');   // an unknown load: the default
   o.merge({ colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1.35, colorFeedbackDb: 7, colorTrimDb: 1.54 });
   assert.strictEqual(o.colorFeedbackDb, 6);   // 7 is no step: its default, the others as given
   assert.strictEqual(o.colorPreset, 'pp-el34-ul');

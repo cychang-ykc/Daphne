@@ -59,6 +59,7 @@ std::string DspChain::structure_key(const Settings& s) {
         k.color.feedback_db = c.preset == ColorPreset::PpEl34Ul ? c.feedback_db : 6;
         k.color.bias_ma = color_bias_current_ma(c);
         k.color.load_ohms = c.load_ohms;
+        k.color.load = c.load;
     }
     k.eq = {};
     k.crossfeed = {};
@@ -172,6 +173,14 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
 #else
         cp.curve = color::preset_curve(color_preset_name(s.color.preset));
         if (cp.curve) cp.linear = cp.curve->linear;
+        // the loudspeaker load (doc/N28): its sections after the output transformer's, faded in with them
+        if (s.color.load != ColorLoad::Resistor8) {
+            const int fb = s.color.preset == ColorPreset::PpEl34Ul ? s.color.feedback_db : -1;
+            if (const auto* l = color::preset_load(color_preset_name(s.color.preset), fb, color_load_name(s.color.load))) {
+                cp.load = l->sections;
+                cp.load_gain_db = l->makeup_db;
+            }
+        }
 #endif
         auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
         color_ = c.get();

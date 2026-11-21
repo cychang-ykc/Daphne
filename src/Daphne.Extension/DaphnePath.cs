@@ -106,11 +106,19 @@ public sealed partial class DaphneEngine
             $"Preset: {label}" + (pp ? $" · feedback {o.ColorFeedbackDb} dB" : ""),
             idle ? $"Bypass: drive 0, the samples pass unchanged (the slider stays at {pct})" : $"Drive: {pct}",
             "Operating point: standard bias, 8 ohm tap (adjustable from M3)",
+            "Load: " + LoadLabel(o.ColorLoad),
             $"Level: {trim}",
             dsdCore ? $"After the DSD modulator's pre-filter, at {Khz(rate)} kHz" : null,
             chain.Contains("color limiter") ? "Soft limiter after it: ceiling -0.3 dBFS, knee from -0.5 dBFS" + LimitedText() : null,
             curve) with { pin = new[] { To(Pcm(F64, rate)) } };
     }
+
+    static string LoadLabel(string id) => id switch
+    {
+        "resistor-8" => "8 ohm resistor",
+        "bookshelf-sealed" => "bookshelf speaker, sealed (its impedance against the amplifier's output impedance)",
+        _ => "bookshelf speaker, vented (its impedance against the amplifier's output impedance)",
+    };
 
     /// <summary>How much Tube Color's soft limiter has turned down so far (the report's color_limited, in seconds).</summary>
     string LimitedText()

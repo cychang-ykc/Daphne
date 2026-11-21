@@ -62,6 +62,9 @@ enum class ColorModel { FixedPoint };
 // branch only, removed or kept after listening
 enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX };
 enum class ColorBias { Cool, Standard, Hot };
+// What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance (a
+// two-way stand-mount, vented or sealed). load_ohms is the output transformer's tap (M3); this is what it drives.
+enum class ColorLoad { Resistor8, BookshelfVented, BookshelfSealed };
 
 struct OutputSettings {
     OutputApi api = kDefaultOutputApi;
@@ -168,6 +171,7 @@ struct ColorSettings {
     // in the current preset's range (color_bias_range), else the standard bias does (color_bias_current_ma).
     std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
+    ColorLoad load = ColorLoad::BookshelfVented;   // "resistor-8" | "bookshelf-vented" | "bookshelf-sealed"
     // nullopt = "auto" (loudness kept within 0.5 dB); else a trim of -6 .. 6 dB on top of auto
     std::optional<double> makeup_gain_db;
 };
@@ -181,6 +185,8 @@ struct ColorBiasRange {
 ColorBiasRange color_bias_range(ColorPreset p);
 // The preset's settings name ("set-300b").
 const char* color_preset_name(ColorPreset p);
+// The load's settings name ("bookshelf-vented").
+const char* color_load_name(ColorLoad l);
 // The named biases (doc/N28): cool = 0.8 x standard; hot = min(1.1 x standard, hot_cap_ma), offered only where it is
 // at least 5 % above standard (nullopt otherwise: of the four presets only set-300b has it).
 inline constexpr double kColorCoolFactor = 0.8, kColorHotFactor = 1.1, kColorHotMinStep = 0.05;
@@ -227,6 +233,7 @@ inline constexpr bool kColorOperatingPointAdjustable = false;
 //    "feedback_db": [...],      pp-el34-ul's feedback steps
 //    "load_ohms": [...],
 //    "operating_point_adjustable": b,   bias and load (M3)
+//    "loads": [{"id", "label"}, ...], "default_load": id,
 //    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build), "experimental": b,
 //                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
 nlohmann::json color_info();

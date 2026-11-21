@@ -1476,6 +1476,7 @@ TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage i
     r.sources["pink"] = pink_and_sine(rate, 3.5, 0.003, 0.003, 997.0);   // about -50 dBFS: the curve stays linear
     Settings s;
     s.color.enabled = true;
+    s.color.load = daphne::ColorLoad::Resistor8;   // (the alignment, against a flat response: the load is tested on its own)
     s.color.drive = 0.5;
     Settings z = s;
     z.color.drive = 0.0;

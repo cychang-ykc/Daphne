@@ -369,6 +369,12 @@
       g.field('Feedback', 'The push-pull amplifier\'s negative feedback: more feedback, less distortion.',
         ui.select(steps, op.colorFeedbackDb == null ? 6 : op.colorFeedbackDb, v => set({ colorFeedbackDb: +v }).then(refresh)));
     }
+    // what the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance
+    if (Array.isArray(info.loads) && info.loads.length) {
+      const load = info.loads.some(l => l.id === op.colorLoad) ? op.colorLoad : (info.default_load || info.loads[0].id);
+      g.field('Load', "What the amplifier drives: its output impedance against the loudspeaker's shapes the response.",
+        ui.select(info.loads.map(l => [l.id, l.label]), load, v => set({ colorLoad: v }).then(refresh)));
+    }
     const trimMax = info.makeup_trim_max_db || 6;
     const trimText = x => (Math.abs(x) < 0.05 ? 'auto' : (x > 0 ? '+' : '') + x.toFixed(1) + ' dB');
     g.field('Level', 'On top of the automatic loudness match.',

@@ -434,6 +434,7 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
         {"bias", {"cool", "standard", "hot", 35.0, 59.8, 72.5, 100, 36}, {34.99, 100.01, 0, -60, "Hot", "warm", true, 5e-324}},
         {"load_ohms", {4, 8, 16}, {8.0, 0, 2, 32, -8, "8", true, 5e-324}},
         {"makeup_gain", {"auto", 0, -6, 6, 1.5, -0.001, 5e-324}, {6.0001, -7, 12, "AUTO", "3", false}},
+        {"load", {"resistor-8", "bookshelf-vented", "bookshelf-sealed"}, {"bookshelf", "Resistor-8", "horn", 8, true}},
     };
     for (auto& f : fields) f.invalid.insert(f.invalid.end(), foreign.begin(), foreign.end());
     const auto defaults = daphne::Settings{};
@@ -477,6 +478,9 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
             }
             if (k == "load_ohms") want.load_ohms = v.get<int>();
             if (k == "makeup_gain" && v.is_number()) want.makeup_gain_db = v.get<double>();
+            if (k == "load")
+                want.load = v == "resistor-8" ? daphne::ColorLoad::Resistor8 : v == "bookshelf-sealed" ? daphne::ColorLoad::BookshelfSealed
+                                                                                 : daphne::ColorLoad::BookshelfVented;
         }
         // the object as given (NaN and infinity included), and as text (where they become null: invalid as well)
         for (int as_text = 0; as_text < 2; ++as_text) {
@@ -499,7 +503,7 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
             rest_default.erase("color");
             const bool ok = errors == expected && c.enabled == want.enabled && c.model == want.model &&
                             c.preset == want.preset && c.drive == want.drive && c.feedback_db == want.feedback_db &&
-                            c.bias == want.bias && same(c.bias_ma, want.bias_ma) && c.load_ohms == want.load_ohms &&
+                            c.bias == want.bias && same(c.bias_ma, want.bias_ma) && c.load_ohms == want.load_ohms && c.load == want.load &&
                             same(c.makeup_gain_db, want.makeup_gain_db) && rest == rest_default;
             if (!ok) {
                 std::string got_errors;
@@ -511,4 +515,22 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
         }
     }
     SUCCEED("seed " << seed << ", " << rounds << " rounds");
+}
+
+// The loudspeaker load (doc/N28): its names, the default (vented), written back; an unknown one is an error that keeps
+// the default and the other fields.
+TEST_CASE("color settings: the load", "[color]") {
+    CHECK(Settings{}.color.load == daphne::ColorLoad::BookshelfVented);
+    for (const auto& [name, l] : {std::pair{"resistor-8", daphne::ColorLoad::Resistor8}, std::pair{"bookshelf-vented", daphne::ColorLoad::BookshelfVented},
+                                  std::pair{"bookshelf-sealed", daphne::ColorLoad::BookshelfSealed}}) {
+        const auto r = load(std::string(R"({"load": ")") + name + R"("})");
+        CHECK(r.ok());
+        CHECK(r.settings.color.load == l);
+        CHECK(daphne::settings_to_json(r.settings)["color"]["load"] == name);
+        CHECK(std::string(daphne::color_load_name(l)) == name);
+    }
+    const auto bad = load(R"({"load": "horn", "drive": 1.5})");
+    CHECK(has_error(bad, "color.load"));
+    CHECK(bad.settings.color.load == daphne::ColorLoad::BookshelfVented);
+    CHECK(bad.settings.color.drive == 1.5);
 }

@@ -36,6 +36,17 @@ def main():
         entries.append(f"&k_{name}")
     out.append(f"inline const PresetCurve* const k_preset_curves[] = {{{', '.join(entries) if entries else 'nullptr'}}};")
     out.append(f"inline constexpr int k_preset_curve_count = {len(entries)};")
+    # the loudspeaker loads (verify/load_filters.py -> data/loads/loads.json)
+    out.append("")
+    out.append("inline const PresetLoad k_preset_loads[] = {")
+    loads = json.load(open(os.path.join(HERE, "data", "loads", "loads.json")))
+    for key, per in loads.items():
+        preset, _, fb = key.partition(":")
+        for load, e in per.items():
+            secs = ", ".join(f"{{Section::Kind::{s['kind']}, {s['f']:.17g}, {s['q']:.17g}, {s['c'][0]:.17g}, {s['c'][1]:.17g}, {s['c'][2]:.17g}}}"
+                             for s in e["sections"])
+            out.append(f'    {{"{preset}", {int(fb) if fb else -1}, "{load}", {{{secs}}}, {e.get("makeup_db", 0.0):.17g}}},')
+    out.append("};")
     open(DST, "w", encoding="utf-8", newline="\n").write("\n".join(out) + "\n")
     print(f"{DST}: {', '.join(e[3:] for e in entries)}")
 

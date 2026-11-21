@@ -68,6 +68,7 @@ void TubeColorStage::prepare(const dsp::Format& in) {
     w_step_ = 1.0 / std::max(1.0, std::round(kSwitchMs * 1e-3 * in.rate));
     pre_.prepare(p_.linear.pre, rate, ch);
     post_.prepare(p_.linear.post, rate, ch);
+    load_.prepare(p_.load, rate, ch);
     mix_d_ = -1.0;
     update_mix();
     primed_ = w_ > 0.0;   // running from the start: its state builds up with the music
@@ -80,6 +81,7 @@ void TubeColorStage::reset() {
     hist_at_ = fed_ = 0;
     pre_.reset();
     post_.reset();
+    load_.reset();
     os_.reset();
     // a reset (seek, new track) lands where the drive and the volume are going
     const double v = vol_.back().to;
@@ -106,6 +108,7 @@ void TubeColorStage::update_mix() {
     if (d_ == mix_d_ || d_ <= 0.0) return;
     mix_d_ = d_;
     const double m = response_mix(d_);
+    mix_m_ = m;
     pre_.set_mix(m);
     post_.set_mix(m);
 }
@@ -125,6 +128,7 @@ void TubeColorStage::prime() {
     std::fill(dc_y1_.begin(), dc_y1_.end(), 0.0);
     pre_.reset();
     post_.reset();
+    load_.reset();
     d_ = last_target_ = kRiseFrom;
     left_ = 0;
     update_mix();
@@ -163,7 +167,8 @@ void TubeColorStage::run_frame(const double* x, double* y) {
         const double w = r - dc_x1_[k] + dc_r_ * dc_y1_[k];      // without its DC
         dc_x1_[k] = r;
         dc_y1_[k] = w;
-        y[c] = post_.process(v + w, c);
+        const double o = post_.process(v + w, c);
+        y[c] = p_.load.empty() ? o : o + mix_m_ * (load_.process(o, c) - o);   // the load, faded with the response
     }
 }
 
@@ -222,7 +227,7 @@ int TubeColorStage::process(const double* in, int frames, double* out) {
             if ((trim_step_ > 0 && trim_ >= trim_target_) || (trim_step_ < 0 && trim_ <= trim_target_)) trim_ = trim_target_;
         }
         // the makeup gain: the drive's automatic one and the trim, on what the processing path makes
-        const double makeup = std::pow(10.0, auto_makeup_db(d_) / 20.0) * trim_;
+        const double makeup = std::pow(10.0, (auto_makeup_db(d_) + p_.load_gain_db * mix_m_) / 20.0) * trim_;
         const double g_in = skip_curve_ ? 1.0 : 1.0 / (v_in * p_.level), g_out = (skip_curve_ ? 1.0 : v_out * p_.level) * makeup;
         if (w_ <= 0.0) {   // idle: the delay path alone
             primed_ = false;

@@ -47,6 +47,8 @@ struct StageParams {
     double level = 1.0;   // a fixed gain before the stage, cancelled with the volume (2: a DSD file converted, +6 dB)
     double volume = 1.0;  // the digital volume at the start (linear)
     double trim_db = 0.0; // the makeup gain's manual trim on top of the automatic one (color.makeup_gain: -6 .. 6 dB)
+    std::vector<Section> load;   // the loudspeaker load's sections (curves.h PresetLoad), after post, faded as a whole
+    double load_gain_db = 0.0;   // its makeup, faded in with it
 };
 
 // The automatic makeup gain (dB) for a drive: keeps the loudness within 0.5 dB as the drive changes (doc/N28). M2 fills it
@@ -110,11 +112,13 @@ private:
     dsp::Format fmt_;
     std::atomic<double> target_;
     double last_target_ = 0.0, d_ = 0.0, step_ = 0.0, mix_d_ = -1.0;
+    double mix_m_ = 0.0;   // the response's fade now (response_mix)
     int left_ = 0, glide_frames_ = 1;
     double w_ = 0.0, w_step_ = 1.0;   // the processing path's share (0: the delay path alone)
     bool primed_ = false, untouched_ = true;
     int delay_ = 0;
     SectionChain pre_, post_;
+    SectionChain load_;   // the loudspeaker load (doc/N28): y + m (L(y) - y) after post
     Oversampler os_;
     std::vector<double> hi_;                        // L frames at the high rate
     std::vector<double> hist_;                      // the last input frames (ring of hist_frames_)

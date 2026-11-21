@@ -26,9 +26,14 @@ void SectionFilter::prepare(const Section& s, int rate) {
 
 void SectionFilter::set_mix(double m) {
     if (!active_) return;
-    const double c = std::sqrt(std::clamp(m, 1e-24, 1.0));
-    g_ = s_.high() ? g_ref_ / c : g_ref_ * c;
-    const bool first = s_.kind == Section::Kind::HighPass1 || s_.kind == Section::Kind::LowPass1;
+    const bool first = s_.kind == Section::Kind::HighPass1 || s_.kind == Section::Kind::LowPass1 || s_.kind == Section::Kind::General1;
+    if (s_.general()) {   // always the whole section: the stage fades the load as a whole
+        g_ = g_ref_;
+        n2_ = s_.c2, n1_ = s_.c1, n0_ = s_.c0;
+    } else {
+        const double c = std::sqrt(std::clamp(m, 1e-24, 1.0));
+        g_ = s_.high() ? g_ref_ / c : g_ref_ * c;
+    }
     a_ = first ? g_ / (1.0 + g_) : 1.0 / (1.0 + g_ * (g_ + k_));
 }
 
@@ -49,6 +54,19 @@ double SectionFilter::process(double x, double* st) const {
             st[1] = g_ * bp + lp;
             return s_.kind == Section::Kind::LowPass2 ? lp : hp;
         }
+        case Section::Kind::General1: {
+            const double v = (x - st[0]) * a_, lp = v + st[0];
+            st[0] = lp + v;
+            return n1_ * (x - lp) + n0_ * lp;
+        }
+        case Section::Kind::General2: {
+            const double hp = (x - (g_ + k_) * st[0] - st[1]) * a_;
+            const double bp = g_ * hp + st[0];
+            st[0] = g_ * hp + bp;
+            const double lp = g_ * bp + st[1];
+            st[1] = g_ * bp + lp;
+            return n2_ * hp + n1_ * bp + n0_ * lp;
+        }
     }
     return x;
 }
@@ -61,6 +79,8 @@ std::complex<double> SectionFilter::response(double hz) const {
         case Section::Kind::LowPass1: return 1.0 / (s + 1.0);
         case Section::Kind::HighPass2: return s * s / (s * s + k_ * s + 1.0);
         case Section::Kind::LowPass2: return 1.0 / (s * s + k_ * s + 1.0);
+        case Section::Kind::General1: return (n1_ * s + n0_) / (s + 1.0);
+        case Section::Kind::General2: return (n2_ * s * s + n1_ * s + n0_) / (s * s + k_ * s + 1.0);
     }
     return 1.0;
 }

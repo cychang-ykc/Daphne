@@ -929,3 +929,57 @@ TEST_CASE("color curves: set-300b-x in the stage against the circuit", "[color][
     auto mag = [&](int k) { const auto [a, bb] = harmonic_of(y, rate, 1000.0, k, frames - rate / 2, frames); return std::hypot(a, bb); };
     CHECK(h2_x - 20 * std::log10(mag(2) / mag(1)) > 4.0);
 }
+
+// The virtual loudspeaker load (doc/N28): set-300b into the vented two-way loudspeaker against the 8 ohm resistor, the
+// stage's steady-state response against the circuit with the loudspeaker in it (ngspice AC, verify/load_filters.py),
+// relative to 1 kHz: within 0.1 dB. And its fade: from drive 0 to 25 % in 1 % steps the load's effect at 50 Hz grows
+// monotonically from nothing, in small steps.
+namespace {
+
+double tone_level(const daphne::color::PresetCurve* c, const std::vector<daphne::color::Section>& load, double drive, double hz) {
+    daphne::color::StageParams p;
+    p.drive = drive;
+    p.curve = c;
+    p.linear = c->linear;
+    p.load = load;
+    daphne::color::TubeColorStage st(p);
+    const int rate = 44100, frames = 2 * rate;
+    std::vector<double> x(2 * static_cast<size_t>(frames));
+    for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = 0.01 * std::sin(2 * std::numbers::pi * hz * i / rate);
+    const auto y = run_curve(st, x, rate);
+    const int n = static_cast<int>(std::lround(hz * 0.5)) * rate / static_cast<int>(std::lround(hz));   // whole periods
+    const auto [a, b] = harmonic_of(y, rate, hz, 1, frames - n, frames);
+    return 20 * std::log10(std::hypot(a, b));
+}
+
+}  // namespace
+
+TEST_CASE("color load: set-300b into a vented loudspeaker against the circuit, and its fade", "[color][load]") {
+    const auto* c = daphne::color::preset_curve("set-300b");
+    const auto* l = daphne::color::preset_load("set-300b", -1, "bookshelf-vented");
+    REQUIRE(c != nullptr);
+    REQUIRE(l != nullptr);
+    CHECK(daphne::color::preset_load("set-300b", -1, "resistor-8") == nullptr);   // the 8 ohm resistor: no sections
+    const std::vector<daphne::color::Section> none;
+    auto rel = [&](double hz) { return (tone_level(c, l->sections, 1.0, hz) - tone_level(c, none, 1.0, hz)) -
+                                       (tone_level(c, l->sections, 1.0, 1000.0) - tone_level(c, none, 1.0, 1000.0)); };
+    struct P { double hz, db; };
+    for (const auto& pt : {P{40, -1.5932}, P{50, -2.5819}, P{85, 0.5134}, P{150, -1.6162}, P{250, -2.555}, P{2600, 0.7269},
+                           P{10000, -2.4308}, P{18000, -3.2664}}) {
+        INFO(pt.hz << " Hz");
+        CHECK(rel(pt.hz) == Catch::Approx(pt.db).margin(0.1));
+    }
+    // the fade at 50 Hz (the port's dip: the load's largest effect there, -2.6 dB re 1 kHz)
+    double prev = 0.0, first = 0.0, biggest = 0.0;
+    for (int pct = 1; pct <= 25; ++pct) {
+        const double d = pct / 100.0;
+        const double e = tone_level(c, l->sections, d, 50.0) - tone_level(c, none, d, 50.0);   // the load's effect at this drive
+        if (pct == 1) first = e;
+        INFO(pct << " %: " << e << " dB");
+        CHECK(e <= prev + 1e-9);   // only deeper as the drive rises
+        biggest = std::max(biggest, prev - e);
+        prev = e;
+    }
+    CHECK(std::abs(first) < 0.02);   // next to nothing at 1 %
+    CHECK(biggest < 0.3);            // no step of more than 0.3 dB
+}

@@ -35,6 +35,8 @@ const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {
                                              {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul},
                                              {"set-300b-x", ColorPreset::Set300bX}};
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
+const EnumTable<ColorLoad> kColorLoad = {{"resistor-8", ColorLoad::Resistor8}, {"bookshelf-vented", ColorLoad::BookshelfVented},
+                                         {"bookshelf-sealed", ColorLoad::BookshelfSealed}};
 
 template <class E>
 const char* to_name(const EnumTable<E>& t, E v) {
@@ -224,7 +226,7 @@ void read_eq(Reader& r, const json& o, EqSettings& s) {
 
 void read_color(Reader& r, const json& o, ColorSettings& s) {
     const std::string p = "color";
-    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "makeup_gain"});
+    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "load", "makeup_gain"});
     r.boolean(o, "enabled", p, s.enabled);
     r.enumeration(o, "model", p, s.model, kColorModel);
     r.enumeration(o, "preset", p, s.preset, kColorPreset);
@@ -259,6 +261,7 @@ void read_color(Reader& r, const json& o, ColorSettings& s) {
         }
     }
     r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
+    r.enumeration(o, "load", p, s.load, kColorLoad);
     r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -kColorMakeupTrimMaxDb, kColorMakeupTrimMaxDb);
 }
 
@@ -366,11 +369,13 @@ json settings_to_json(const Settings& s) {
           {"feedback_db", s.color.feedback_db},
           {"bias", s.color.bias_ma ? json(*s.color.bias_ma) : json(to_name(kColorBias, s.color.bias))},
           {"load_ohms", s.color.load_ohms},
+          {"load", to_name(kColorLoad, s.color.load)},
           {"makeup_gain", auto_or(s.color.makeup_gain_db)}}},
     };
 }
 
 const char* color_preset_name(ColorPreset p) { return to_name(kColorPreset, p); }
+const char* color_load_name(ColorLoad l) { return to_name(kColorLoad, l); }
 
 ColorBiasRange color_bias_range(ColorPreset p) {
     // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
@@ -466,6 +471,10 @@ nlohmann::json color_info() {
             {"feedback_db", {0, 6, 12, 20, 30}},
             {"load_ohms", {4, 8, 16}},
             {"operating_point_adjustable", kColorOperatingPointAdjustable},
+            {"loads", json::array({{{"id", "resistor-8"}, {"label", "8 ohm resistor"}},
+                                   {{"id", "bookshelf-vented"}, {"label", "Bookshelf speaker, vented"}},
+                                   {{"id", "bookshelf-sealed"}, {"label", "Bookshelf speaker, sealed"}}})},
+            {"default_load", to_name(kColorLoad, ColorSettings{}.load)},
             {"presets", list}};
 }
 

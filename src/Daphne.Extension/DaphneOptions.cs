@@ -32,6 +32,7 @@ public sealed class DaphneOptions
     public double ColorDrive { get; set; } = 1.0;            // 0 .. the core's drive_max (1.0 = 100 %)
     public int ColorFeedbackDb { get; set; } = 6;            // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     public double ColorTrimDb { get; set; }                  // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
+    public string ColorLoad { get; set; } = "bookshelf-vented";   // what it drives: resistor-8 | bookshelf-vented | bookshelf-sealed
     // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved: a new session plays
     // what the slider says
     public bool ColorBypass { get; set; }
@@ -47,7 +48,7 @@ public sealed class DaphneOptions
             ["phaseCustom"] = PhaseCustom, ["apodize"] = Apodize, ["doubleDouble"] = DoubleDouble, ["order"] = Order, ["osr"] = Osr,
             ["dsdPcmLowpass"] = DsdPcmLowpass, ["dsdPcmLimiter"] = DsdPcmLimiter, ["threads"] = Threads, ["cacheLimitMb"] = CacheLimitMb,
             ["colorEnabled"] = ColorEnabled, ["colorPreset"] = ColorPreset, ["colorDrive"] = ColorDrive,
-            ["colorFeedbackDb"] = ColorFeedbackDb, ["colorTrimDb"] = ColorTrimDb,
+            ["colorFeedbackDb"] = ColorFeedbackDb, ["colorTrimDb"] = ColorTrimDb, ["colorLoad"] = ColorLoad,
         };
         if (!save) j["colorBypass"] = ColorBypass;
         return j;
@@ -83,6 +84,7 @@ public sealed class DaphneOptions
                 case "colorFeedbackDb": ColorFeedbackDb = v.ValueKind == JsonValueKind.Number && v.GetInt32() is 0 or 6 or 12 or 20 or 30 ? v.GetInt32() : 6; break;
                 case "colorTrimDb": ColorTrimDb = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Round(Math.Clamp(v.GetDouble(), -6, 6), 1) : 0; break;
                 case "colorBypass": ColorBypass = v.ValueKind == JsonValueKind.True; break;
+                case "colorLoad": ColorLoad = v.GetString() is "resistor-8" or "bookshelf-sealed" ? v.GetString() : "bookshelf-vented"; break;
             }
         }
     }
@@ -181,7 +183,7 @@ static class SettingsMap
         return new JsonObject
         {
             ["enabled"] = o.ColorEnabled, ["model"] = "fixed-point", ["preset"] = o.ColorPreset, ["drive"] = drive,
-            ["feedback_db"] = o.ColorFeedbackDb, ["bias"] = "standard", ["load_ohms"] = 8,
+            ["feedback_db"] = o.ColorFeedbackDb, ["bias"] = "standard", ["load_ohms"] = 8, ["load"] = o.ColorLoad,
             ["makeup_gain"] = Math.Abs(o.ColorTrimDb) < 0.05 ? JsonValue.Create("auto") : JsonValue.Create(o.ColorTrimDb),
         };
     }

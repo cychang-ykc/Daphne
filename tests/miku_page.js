@@ -72,7 +72,9 @@ const ui = {
 };
 const info = {
   available: true, curve: 'test', drive_max: 2, makeup_trim_max_db: 6, feedback_db: [0, 6, 12, 20, 30], load_ohms: [4, 8, 16],
-  operating_point_adjustable: false,
+  operating_point_adjustable: false, default_load: 'bookshelf-vented',
+  loads: [{ id: 'resistor-8', label: '8 ohm resistor' }, { id: 'bookshelf-vented', label: 'Bookshelf speaker, vented' },
+          { id: 'bookshelf-sealed', label: 'Bookshelf speaker, sealed' }],
   presets: [{ id: 'set-300b', label: '300B single-ended', push_pull: false }, { id: 'set-2a3', label: '2A3 single-ended', push_pull: false },
             { id: 'set-845', label: '845 single-ended', push_pull: false }, { id: 'pp-el34-ul', label: 'EL34 push-pull (ultralinear)', push_pull: true }],
 };
@@ -99,7 +101,7 @@ function fieldByTitle(g, title) {
   assert.ok(!g.classList.contains('dp-off'));
   for (const t of ['Tube Color', 'Amplifier', 'Strength', 'Level', 'Bypass (A/B)']) assert.ok(fieldByTitle(g, t), t);
   assert.ok(!fieldByTitle(g, 'Feedback'), 'no feedback for 300B');
-  assert.ok(!g.all().some(e => e.tag === 'b' && /bias|load/i.test(e.textContent)), 'no bias / load (M3)');
+  assert.ok(!g.all().some(e => e.tag === 'b' && /bias|tap/i.test(e.textContent)), 'no bias / output tap (M3; the Load menu is what it drives)');
   const strength = fieldByTitle(g, 'Strength').all().find(e => e.tag === 'input');
   assert.strictEqual(strength.max, 200);
   assert.strictEqual(strength.value, 135);
@@ -128,7 +130,14 @@ function fieldByTitle(g, title) {
   assert.strictEqual(lvl.min, -6); assert.strictEqual(lvl.max, 6); assert.strictEqual(lvl.step, 0.5);
   lvl.value = -2.5; lvl.onchange(); await tick();
   eq(calls[0], ['set', { colorTrimDb: -2.5 }]);
-  console.log('PASS  available: fields, slider throttling, bypass, level, status');
+  // the load menu: the core's loads, the default where none is set; a choice is sent as colorLoad
+  const loadSel = fieldByTitle(g, 'Load').all().find(e => e.tag === 'select');
+  eq(loadSel.opts.map(x => x[0]), ['resistor-8', 'bookshelf-vented', 'bookshelf-sealed']);
+  assert.strictEqual(loadSel.value, 'bookshelf-vented');
+  calls.length = 0;
+  loadSel.value = 'resistor-8'; loadSel.onchange(); await tick();
+  eq(calls[0], ['set', { colorLoad: 'resistor-8' }]);
+  console.log('PASS  available: fields, slider throttling, bypass, level, load, status');
 
   // 2. push-pull: the feedback field
   api = apiFor(info, { playing: false, lastEvent: null }, { colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1, colorFeedbackDb: 30, colorTrimDb: 0 });

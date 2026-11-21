@@ -48,7 +48,7 @@ def zout(preset, fb_db=6):
             continue
         net.append(l)
     net.append("Iinj 0 o DC 0 AC 1")
-    return ac_run(net)
+    return ac_run(net, f_lo=1.0)   # (from 1 Hz: the load filters are fitted from 5 Hz)
 
 
 def response(preset, load_lines, fb_db=6):
@@ -111,13 +111,14 @@ def speaker(kind="vented"):
         return 1.0 / (1.0 / z_woofer + 1.0 / z_tweeter)
 
     f_ = A.f
+    # (sealed: the box's air spring Lb in parallel with the suspension's Lces, as one inductor: two ideal inductors
+    # straight in parallel are a loop the circuit's operating point cannot solve)
+    lm = Lces if kind == "vented" else Lces * Lb / (Lces + Lb)
     lines = [  # woofer: o -L1- spkw1 (C1 to 0); spkw1 -Re- -Le||Rle- motional to 0
         f"Lspkx1 o spkw1 {f_(Lx)}", f"Cspkx1 spkw1 0 {f_(Cx)}", f"Rspkwe spkw1 spkw2 {f_(Re)}", f"Lspkwe spkw2 spkw3 {f_(Le)}", f"Rspkwle spkw2 spkw3 {f_(Rle)}",
-        f"Cspkwm spkw3 0 {f_(Cmes)}", f"Lspkwm spkw3 0 {f_(Lces)}", f"Rspkwm spkw3 0 {f_(Res)}"]
+        f"Cspkwm spkw3 0 {f_(Cmes)}", f"Lspkwm spkw3 0 {f_(lm)}", f"Rspkwm spkw3 0 {f_(Res)}"]
     if kind == "vented":
         lines += [f"Lspkwb spkw3 spkw4 {f_(Lb)}", f"Cspkwp spkw4 0 {f_(Cp)}", f"Rspkwp spkw4 0 {f_(Rp)}"]
-    else:
-        lines += [f"Lspkwb spkw3 0 {f_(Lb)}"]
     lines += [  # tweeter: o -C2- spkt1 (L2 to 0); spkt1 -pad- -Re- -Le- motional to 0
         f"Cspkx2 o spkt1 {f_(Cx)}", f"Lspkx2 spkt1 0 {f_(Lx)}", f"Rspktp spkt1 spkt2 {f_(tPad + tRe)}", f"Lspkte spkt2 spkt3 {f_(tLe)}",
         f"Cspktm spkt3 0 {f_(tC)}", f"Lspktm spkt3 0 {f_(tL)}", f"Rspktm spkt3 0 {f_(tRes)}"]
