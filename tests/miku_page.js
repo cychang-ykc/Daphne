@@ -213,6 +213,40 @@ function fieldByTitle(g, title) {
   }
   console.log("PASS  h2-pure: the strength's H2 in the status line");
 
+  // 3e. the level alignment (an M2 experiment): the menu from the core's modes (off where none is set), a choice sent as
+  // colorAlign; the status line with the track's measures, the gain and the effective drive, or that it is scanning
+  const alInfo = { ...info, default_align: 'off', align_refs: { lufs: -14.28, p999_db: -7.64 },
+    aligns: [{ id: 'off', label: 'Off (as before)' }, { id: 'loudness', label: 'Loudness (integrated LUFS)' },
+             { id: 'near-peak', label: 'Near-peak (99.9th percentile)' }, { id: 'conservative', label: 'Conservative (the larger cut)' }] };
+  const alStatus = align => ({ playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null, align });
+  api = apiFor(alInfo, alStatus({ status: 'ready', mode: 'loudness', lufs: -4.1, p999_db: -1.24, gain_db: -10.18, drive: 2, drive_eff: 0.6204 }),
+    { colorEnabled: true, colorPreset: 'h2-pure', colorDrive: 2, colorAlign: 'loudness' });
+  await ctx.module.init(api);
+  card = new El('card'); ui.section = () => card;
+  api.settings.core(card, ui);
+  g = colorGroup(card);
+  const alSel = fieldByTitle(g, 'Level align (experimental)').all().find(e => e.tag === 'select');
+  eq(alSel.opts.map(x => x[0]), ['off', 'loudness', 'near-peak', 'conservative']);
+  assert.strictEqual(alSel.value, 'loudness');
+  let alLine = g.all().find(e => e.classList.contains('dp-color-status')).textContent;
+  assert.ok(alLine.includes('Track -4.1 LUFS, 99.9 % -1.2 dBFS · align (loudness) -10.2 dB · drive 200 % → 62 % effective'), alLine);
+  calls.length = 0;
+  alSel.value = 'conservative'; alSel.onchange(); await tick();
+  eq(calls[0], ['set', { colorAlign: 'conservative' }]);
+  for (const [st, want] of [[{ status: 'scanning', mode: 'near-peak' }, 'Level align (near-peak): scanning the track; unaligned until it is done'],
+                            [{ status: 'failed', mode: 'loudness' }, 'could not be scanned'],
+                            [{ status: 'ready', mode: 'off', lufs: null, p999_db: null, gain_db: 0, drive: 1, drive_eff: 1 }, 'Track silence, 99.9 % silence']]) {
+    api = apiFor(alInfo, alStatus(st), { colorEnabled: true, colorPreset: 'set-300b', colorDrive: 1 });
+    await ctx.module.init(api);
+    card = new El('card'); ui.section = () => card;
+    api.settings.core(card, ui);
+    g = colorGroup(card);
+    alLine = g.all().find(e => e.classList.contains('dp-color-status')).textContent;
+    assert.ok(alLine.includes(want), `${st.status}: ${alLine}`);
+    if (st.status === 'ready') assert.strictEqual(fieldByTitle(g, 'Level align (experimental)').all().find(e => e.tag === 'select').value, 'off');
+  }
+  console.log('PASS  the level alignment: menu and status line');
+
   // 4. WASAPI shared: the card shows Tube Color only
   ctx.App.settings.outputMode = 'shared';
   api = apiFor(info, null, { colorEnabled: false });

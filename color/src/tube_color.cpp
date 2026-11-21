@@ -26,6 +26,7 @@ double auto_makeup_db(double drive) {
 
 TubeColorStage::TubeColorStage(StageParams p) : p_(std::move(p)), target_(std::max(0.0, p_.drive)) {
     trim_ = trim_target_ = std::pow(10.0, p_.trim_db / 20.0);
+    align_ = align_target_ = std::clamp(p_.align, 1e-6, 1.0);
     // built at a drive above 0: running from the start; at 0: idle
     d_ = last_target_ = target_.load();
     w_ = d_ > 0.0 ? 1.0 : 0.0;
@@ -65,6 +66,7 @@ void TubeColorStage::prepare(const dsp::Format& in) {
     dc_x1_.assign(chs, 0.0);
     dc_y1_.assign(chs, 0.0);
     glide_frames_ = std::max(1, static_cast<int>(std::lround(kGlideMs * 1e-3 * in.rate)));
+    align_frames_ = std::max(1, static_cast<int>(std::lround(kAlignGlideMs * 1e-3 * in.rate)));
     w_step_ = 1.0 / std::max(1.0, std::round(kSwitchMs * 1e-3 * in.rate));
     pre_.prepare(p_.linear.pre, rate, ch);
     post_.prepare(p_.linear.post, rate, ch);
@@ -92,6 +94,8 @@ void TubeColorStage::reset() {
     left_ = 0;
     w_ = t > 0.0 ? 1.0 : 0.0;
     primed_ = w_ > 0.0;
+    align_ = align_target_;   // and where the alignment is going
+    align_left_ = 0;
     update_mix();
 }
 
@@ -102,6 +106,18 @@ void TubeColorStage::set_trim(double db) {
     if (t == trim_target_) return;
     trim_target_ = t;
     trim_step_ = (t - trim_) / glide_frames_;
+}
+
+void TubeColorStage::set_align(double a, bool now) {
+    a = std::clamp(a, 1e-6, 1.0);
+    align_target_ = a;
+    if (now) {
+        align_ = a;
+        align_left_ = 0;
+        return;
+    }
+    align_left_ = align_frames_;
+    align_step_ = (a - align_) / align_frames_;
 }
 
 void TubeColorStage::update_mix() {
@@ -148,7 +164,7 @@ void TubeColorStage::prime() {
 }
 
 void TubeColorStage::run_frame(const double* x, double* y) {
-    const double d = d_;
+    const double d = d_ * align_;   // the effective drive (the level alignment)
 #if defined(DAPHNE_COLOR_TEST_CURVE)
     const TestCurve test;
 #endif
@@ -222,12 +238,13 @@ int TubeColorStage::process(const double* in, int frames, double* out) {
         // the volume cancelled around the processing path: in by the input's, out by the output content's
         const double v_in = volume_at(in_count_), v_out = volume_at(in_count_ - delay_);
         skip_curve_ = v_in < kSkipBelow;
+        if (align_left_ > 0) align_ = --align_left_ == 0 ? align_target_ : align_ + align_step_;
         if (trim_ != trim_target_) {   // the trim glides (linear in amplitude, ending on the target)
             trim_ += trim_step_;
             if ((trim_step_ > 0 && trim_ >= trim_target_) || (trim_step_ < 0 && trim_ <= trim_target_)) trim_ = trim_target_;
         }
         // the makeup gain: the drive's automatic one and the trim, on what the processing path makes
-        const double makeup = std::pow(10.0, (auto_makeup_db(d_) + p_.load_gain_db * mix_m_) / 20.0) * trim_;
+        const double makeup = std::pow(10.0, (auto_makeup_db(d_ * align_) + p_.load_gain_db * mix_m_) / 20.0) * trim_;
         const double g_in = skip_curve_ ? 1.0 : 1.0 / (v_in * p_.level), g_out = (skip_curve_ ? 1.0 : v_out * p_.level) * makeup;
         if (w_ <= 0.0) {   // idle: the delay path alone
             primed_ = false;

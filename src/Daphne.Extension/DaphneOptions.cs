@@ -33,6 +33,8 @@ public sealed class DaphneOptions
     public int ColorFeedbackDb { get; set; } = 6;            // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     public double ColorTrimDb { get; set; }                  // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
     public string ColorLoad { get; set; } = "bookshelf-vented";   // what it drives: resistor-8 | bookshelf-vented | bookshelf-sealed
+    // the level alignment (an M2 experiment): off | loudness | near-peak | conservative
+    public string ColorAlign { get; set; } = "off";
     // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved: a new session plays
     // what the slider says
     public bool ColorBypass { get; set; }
@@ -48,7 +50,7 @@ public sealed class DaphneOptions
             ["phaseCustom"] = PhaseCustom, ["apodize"] = Apodize, ["doubleDouble"] = DoubleDouble, ["order"] = Order, ["osr"] = Osr,
             ["dsdPcmLowpass"] = DsdPcmLowpass, ["dsdPcmLimiter"] = DsdPcmLimiter, ["threads"] = Threads, ["cacheLimitMb"] = CacheLimitMb,
             ["colorEnabled"] = ColorEnabled, ["colorPreset"] = ColorPreset, ["colorDrive"] = ColorDrive,
-            ["colorFeedbackDb"] = ColorFeedbackDb, ["colorTrimDb"] = ColorTrimDb, ["colorLoad"] = ColorLoad,
+            ["colorFeedbackDb"] = ColorFeedbackDb, ["colorTrimDb"] = ColorTrimDb, ["colorLoad"] = ColorLoad, ["colorAlign"] = ColorAlign,
         };
         if (!save) j["colorBypass"] = ColorBypass;
         return j;
@@ -85,6 +87,7 @@ public sealed class DaphneOptions
                 case "colorTrimDb": ColorTrimDb = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Round(Math.Clamp(v.GetDouble(), -6, 6), 1) : 0; break;
                 case "colorBypass": ColorBypass = v.ValueKind == JsonValueKind.True; break;
                 case "colorLoad": ColorLoad = v.GetString() is "resistor-8" or "bookshelf-sealed" ? v.GetString() : "bookshelf-vented"; break;
+                case "colorAlign": ColorAlign = v.ValueKind == JsonValueKind.String && v.GetString() is "loudness" or "near-peak" or "conservative" ? v.GetString() : "off"; break;
             }
         }
     }
@@ -183,7 +186,7 @@ static class SettingsMap
         return new JsonObject
         {
             ["enabled"] = o.ColorEnabled, ["model"] = "fixed-point", ["preset"] = o.ColorPreset, ["drive"] = drive,
-            ["feedback_db"] = o.ColorFeedbackDb, ["bias"] = "standard", ["load_ohms"] = 8, ["load"] = o.ColorLoad,
+            ["feedback_db"] = o.ColorFeedbackDb, ["bias"] = "standard", ["load_ohms"] = 8, ["load"] = o.ColorLoad, ["align"] = o.ColorAlign,
             ["makeup_gain"] = Math.Abs(o.ColorTrimDb) < 0.05 ? JsonValue.Create("auto") : JsonValue.Create(o.ColorTrimDb),
         };
     }

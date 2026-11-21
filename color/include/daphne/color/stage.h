@@ -27,6 +27,11 @@
 //               aligned), then the drive glides (kGlideMs) to its value
 //   reaching 0  the drive glides down to kRiseFrom, the processing path crossfades back to the delay path, idle
 // Other drive changes glide in place.
+//
+// The level alignment (doc/N28, an M2 experiment; core track_levels.h): a gain a <= 1 on the curve's input, divided out
+// after it, i.e. the curve at the effective drive d a: f(d a x~) / (d a). The response's fade, the load and the trim
+// follow the drive d alone (the slider), so the alignment changes only how hard the curve is driven. It glides
+// (kAlignGlideMs); idle (drive 0) it does nothing, so drive 0 stays bit-identical.
 
 #include <atomic>
 #include <complex>
@@ -49,6 +54,7 @@ struct StageParams {
     double trim_db = 0.0; // the makeup gain's manual trim on top of the automatic one (color.makeup_gain: -6 .. 6 dB)
     std::vector<Section> load{};   // the loudspeaker load's sections (curves.h PresetLoad), after post, faded as a whole
     double load_gain_db = 0.0;   // its makeup, faded in with it
+    double align = 1.0;   // the level alignment's gain on the curve's input at the start (0 < a <= 1)
 };
 
 // The automatic makeup gain (dB) for a drive: keeps the loudness within 0.5 dB as the drive changes (doc/N28). M2 fills it
@@ -64,6 +70,7 @@ public:
     static constexpr int kControl = 16;         // frames between updates of the fade while the drive glides
     static constexpr int kHistory = 2 * Oversampler::kTapsPerPhase;   // input frames that prime the oversampler
     static constexpr double kSkipBelow = 1e-4;                        // -80 dB of volume: the curve skipped
+    static constexpr double kAlignGlideMs = 300.0;                    // the level alignment's glide
 
     explicit TubeColorStage(StageParams p = {});
     void prepare(const dsp::Format& in) override;
@@ -82,6 +89,11 @@ public:
     void set_drive(double d);
     // The makeup gain's manual trim (dB), gliding there (kGlideMs). On the processing thread.
     void set_trim(double db);
+    // The level alignment's gain on the curve's input (0 < a <= 1), gliding there (kAlignGlideMs), or there at once
+    // (now: a chain about to start). On the processing thread.
+    void set_align(double a, bool now = false);
+    double align_target() const { return align_target_; }
+    double align() const { return align_; }
     // The digital volume (linear) from the stage's input frame `at` (counted from prepare / reset) on, reached by a
     // linear ramp of `ramp` frames from where it is there, as the chain's gain stage does. On the processing thread.
     void set_volume(double v, int64_t at, int ramp);
@@ -106,6 +118,8 @@ private:
     int64_t in_count_ = 0;                          // input frames since prepare / reset
     bool skip_curve_ = false;                       // this frame: the volume below kSkipBelow
     double trim_ = 1.0, trim_target_ = 1.0, trim_step_ = 0.0;   // the trim (linear), gliding
+    double align_ = 1.0, align_target_ = 1.0, align_step_ = 0.0;   // the level alignment (linear), gliding
+    int align_left_ = 0, align_frames_ = 1;
     void process_path(const double* x, double* y);   // one input frame through the processing path
 
     StageParams p_;

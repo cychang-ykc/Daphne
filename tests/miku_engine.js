@@ -52,11 +52,18 @@ function colorMapping() {
   SM.setColorInfo({ available: true, drive_max: 2.0, presets: [] });
   const o = new SM.DaphneOptions();
   let c = SM.build({}, { outputMode: 'coreaudio-exclusive' }, o, null).color;
-  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, load: 'bookshelf-vented', makeup_gain: 'auto' });
+  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, load: 'bookshelf-vented', align: 'off', makeup_gain: 'auto' });
   o.merge({ colorLoad: 'resistor-8' });
   assert.strictEqual(SM.colorOf(o).load, 'resistor-8');
   o.merge({ colorLoad: 'horn' });
   assert.strictEqual(SM.colorOf(o).load, 'bookshelf-vented');   // an unknown load: the default
+  // the level alignment (an M2 experiment): its modes, an unknown one off
+  for (const m of ['loudness', 'near-peak', 'conservative', 'off']) {
+    o.merge({ colorAlign: m });
+    assert.strictEqual(SM.colorOf(o).align, m);
+  }
+  o.merge({ colorAlign: 'peak' });
+  assert.strictEqual(SM.colorOf(o).align, 'off');
   o.merge({ colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1.35, colorFeedbackDb: 7, colorTrimDb: 1.54 });
   assert.strictEqual(o.colorFeedbackDb, 6);   // 7 is no step: its default, the others as given
   assert.strictEqual(o.colorPreset, 'pp-el34-ul');
@@ -86,7 +93,11 @@ function colorStatus() {
   e.loaded = true;
   e.report = { chain: ['resampler', 'tube color', 'quantizer'], reason: 'DSP active (Tube Color)', filter: 'x | Tube Color idle (drive 0)' };
   e.colorEvent = 'DSD remodulated (Tube Color)';
-  assert.deepStrictEqual(e.colorStatus(), { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: ['Tube Color idle (drive 0)'], lastEvent: 'DSD remodulated (Tube Color)' });
+  assert.deepStrictEqual(e.colorStatus(), { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: ['Tube Color idle (drive 0)'], lastEvent: 'DSD remodulated (Tube Color)', align: null });
+  // the level alignment (an M2 experiment): the state's report.color_align, passed as it is
+  const ca = { status: 'ready', mode: 'loudness', lufs: -4.1, p999_db: -1.2, gain_db: -10.2, drive: 2, drive_eff: 0.62 };
+  e.report = { ...e.report, color_align: ca };
+  assert.deepStrictEqual(e.colorStatus().align, ca);
   console.log('PASS  Tube Color status for the panel');
 }
 

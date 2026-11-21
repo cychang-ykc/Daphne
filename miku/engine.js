@@ -376,7 +376,8 @@ class DaphneEngine extends EventEmitter {
     const r = this.report, lastEvent = this.colorEvent || null;
     if (!this.loaded || !r || !Array.isArray(r.chain)) return { playing: false, lastEvent };
     const report = String(r.filter || '').split(' | ').filter(x => x.includes('Tube Color'));
-    return { playing: true, inChain: r.chain.includes('tube color'), reason: r.reason || null, report, lastEvent };
+    // the level alignment for the track heard (an M2 experiment; the state's report.color_align, live)
+    return { playing: true, inChain: r.chain.includes('tube color'), reason: r.reason || null, report, lastEvent, align: r.color_align || null };
   }
 
   async dispose() {

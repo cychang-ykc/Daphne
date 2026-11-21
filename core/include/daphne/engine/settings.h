@@ -66,6 +66,8 @@ enum class ColorBias { Cool, Standard, Hot };
 // What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance (a
 // two-way stand-mount, vented or sealed). load_ohms is the output transformer's tap (M3); this is what it drives.
 enum class ColorLoad { Resistor8, BookshelfVented, BookshelfSealed };
+// The level alignment (track_levels.h; an M2 experiment): off | loudness | near-peak | conservative
+enum class ColorAlign { Off, Loudness, NearPeak, Conservative };
 
 struct OutputSettings {
     OutputApi api = kDefaultOutputApi;
@@ -173,6 +175,9 @@ struct ColorSettings {
     std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
     ColorLoad load = ColorLoad::BookshelfVented;   // "resistor-8" | "bookshelf-vented" | "bookshelf-sealed"
+    // the curve's input aligned by the track's level (track_levels.h; experimental): "off" | "loudness" | "near-peak" |
+    // "conservative"; taken in place
+    ColorAlign align = ColorAlign::Off;
     // nullopt = "auto" (loudness kept within 0.5 dB); else a trim of -6 .. 6 dB on top of auto
     std::optional<double> makeup_gain_db;
 };
@@ -188,6 +193,8 @@ ColorBiasRange color_bias_range(ColorPreset p);
 const char* color_preset_name(ColorPreset p);
 // The load's settings name ("bookshelf-vented").
 const char* color_load_name(ColorLoad l);
+// The alignment's settings name ("near-peak").
+const char* color_align_name(ColorAlign a);
 // The named biases (doc/N28): cool = 0.8 x standard; hot = min(1.1 x standard, hot_cap_ma), offered only where it is
 // at least 5 % above standard (nullopt otherwise: of the four presets only set-300b has it).
 inline constexpr double kColorCoolFactor = 0.8, kColorHotFactor = 1.1, kColorHotMinStep = 0.05;

@@ -10,7 +10,12 @@ void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
     report.design_prog = 0.0;
     build_designs = (chain_fmt.rate != src.rate || cs.filter.apodize) && !filter_cached(cs.filter, src.rate, chain_fmt.rate);
     build_cancel = std::make_shared<std::atomic<bool>>(false);
-    building = std::async(std::launch::async, [cs, src, devf = chain_fmt, this, flag = build_cancel]() -> std::unique_ptr<DspChain> {
+    // the level alignment where it is now (track_levels.h); a scan finished meanwhile glides it from there
+    const double align = color_active(ns) && ns.color.align != ColorAlign::Off ? [&] {
+        const TrackLevels* l = levels_of(decoding_path());
+        return l ? std::pow(10.0, color_align_gain_db(ns.color.align, *l) / 20.0) : 1.0;
+    }() : 1.0;
+    building = std::async(std::launch::async, [cs, src, devf = chain_fmt, this, flag = build_cancel, align]() -> std::unique_ptr<DspChain> {
         PoolThreadScope pool;   // the priority below is undone when the task ends (common.h)
         // playback is running: stay below it (the design workers take this priority)
         platform::set_thread_priority(platform::Priority::BelowNormal);
@@ -20,6 +25,7 @@ void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
         std::string e;
         try {
             if (!c->build(cs, src, devf, kChunk, &e)) return nullptr;
+            c->set_color_align(align, true);
         } catch (const dsp::DesignCancelled&) {
             return nullptr;
         } catch (const std::exception&) {   // e.g. memory for a long filter: the current chain stays

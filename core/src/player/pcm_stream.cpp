@@ -173,6 +173,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
                 if (designing) report.design();
             built = job.get();
             if (!built) e = be;
+            else cur->set_color_align(align_for(decoding_path()), true);   // the level alignment where it is (track_levels.h)
             report.design(true);
         }
         if (!built) {   // never play at the wrong rate

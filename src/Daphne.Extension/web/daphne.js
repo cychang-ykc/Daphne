@@ -375,6 +375,15 @@
       g.field('Load', "What the amplifier drives: its output impedance against the loudspeaker's shapes the response.",
         ui.select(info.loads.map(l => [l.id, l.label]), load, v => set({ colorLoad: v }).then(refresh)));
     }
+    // the level alignment (an M2 experiment, doc/N28): the curve driven by the track's level against the calibration's
+    if (Array.isArray(info.aligns) && info.aligns.length) {
+      const al = info.aligns.some(a => a.id === op.colorAlign) ? op.colorAlign : (info.default_align || 'off');
+      const refs = info.align_refs || {};
+      g.field('Level align (experimental)',
+        `Loud masters drive the tubes harder. Aligned, the tubes are driven as if the track were at the calibration level ` +
+        `(${refs.lufs} LUFS / 99.9 % at ${refs.p999_db} dBFS); only ever less, the output level unchanged.`,
+        ui.select(info.aligns.map(a => [a.id, a.label]), al, v => set({ colorAlign: v }).then(refresh)));
+    }
     const trimMax = info.makeup_trim_max_db || 6;
     const trimText = x => (Math.abs(x) < 0.05 ? 'auto' : (x > 0 ? '+' : '') + x.toFixed(1) + ' dB');
     g.field('Level', 'On top of the automatic loudness match.',
@@ -428,6 +437,17 @@
         pct = p0 + (p1 - p0) * (d - d0) / (d1 - d0);
       }
       out.push(`H2 at this strength: ${pct.toFixed(2)} % (1 kHz sine at -18 dBFS RMS)`);
+    }
+    // the level alignment for the track heard: its measures, the gain and the effective drive
+    const al = c.align;
+    if (al && al.status && al.status !== 'off') {
+      const pct = x => Math.round((+x || 0) * 100) + ' %';
+      const db = (x, unit) => (x == null || !Number.isFinite(+x) ? 'silence' : (+x).toFixed(1) + unit);
+      if (al.status === 'scanning') out.push(`Level align (${al.mode}): scanning the track; unaligned until it is done`);
+      else if (al.status === 'failed') out.push(`Level align (${al.mode}): the track could not be scanned; unaligned`);
+      else if (al.status === 'unavailable') out.push(`Level align (${al.mode}): a live input, nothing to scan; unaligned`);
+      else out.push(`Track ${db(al.lufs, ' LUFS')}, 99.9 % ${db(al.p999_db, ' dBFS')} · align (${al.mode}) ` +
+        `${(+al.gain_db).toFixed(1)} dB · drive ${pct(al.drive)} → ${pct(al.drive_eff)} effective`);
     }
     if (c.reason) out.push('Path: ' + c.reason);
     for (const r of report) if (!r.includes('idle')) out.push('Path: ' + r);

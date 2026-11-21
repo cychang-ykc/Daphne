@@ -1,4 +1,5 @@
 #include "daphne/engine/settings.h"
+#include "daphne/engine/track_levels.h"
 
 #if defined(DAPHNE_COLOR)
 #include "daphne/color/curves.h"
@@ -38,6 +39,8 @@ const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
 const EnumTable<ColorLoad> kColorLoad = {{"resistor-8", ColorLoad::Resistor8}, {"bookshelf-vented", ColorLoad::BookshelfVented},
                                          {"bookshelf-sealed", ColorLoad::BookshelfSealed}};
+const EnumTable<ColorAlign> kColorAlign = {{"off", ColorAlign::Off}, {"loudness", ColorAlign::Loudness}, {"near-peak", ColorAlign::NearPeak},
+                                           {"conservative", ColorAlign::Conservative}};
 
 template <class E>
 const char* to_name(const EnumTable<E>& t, E v) {
@@ -227,7 +230,7 @@ void read_eq(Reader& r, const json& o, EqSettings& s) {
 
 void read_color(Reader& r, const json& o, ColorSettings& s) {
     const std::string p = "color";
-    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "load", "makeup_gain"});
+    r.check_keys(o, p, {"enabled", "model", "preset", "drive", "feedback_db", "bias", "load_ohms", "load", "align", "makeup_gain"});
     r.boolean(o, "enabled", p, s.enabled);
     r.enumeration(o, "model", p, s.model, kColorModel);
     r.enumeration(o, "preset", p, s.preset, kColorPreset);
@@ -263,6 +266,7 @@ void read_color(Reader& r, const json& o, ColorSettings& s) {
     }
     r.integer(o, "load_ohms", p, s.load_ohms, 0, 0, {4, 8, 16});
     r.enumeration(o, "load", p, s.load, kColorLoad);
+    r.enumeration(o, "align", p, s.align, kColorAlign);
     r.auto_or_number(o, "makeup_gain", p, s.makeup_gain_db, -kColorMakeupTrimMaxDb, kColorMakeupTrimMaxDb);
 }
 
@@ -371,12 +375,14 @@ json settings_to_json(const Settings& s) {
           {"bias", s.color.bias_ma ? json(*s.color.bias_ma) : json(to_name(kColorBias, s.color.bias))},
           {"load_ohms", s.color.load_ohms},
           {"load", to_name(kColorLoad, s.color.load)},
+          {"align", to_name(kColorAlign, s.color.align)},
           {"makeup_gain", auto_or(s.color.makeup_gain_db)}}},
     };
 }
 
 const char* color_preset_name(ColorPreset p) { return to_name(kColorPreset, p); }
 const char* color_load_name(ColorLoad l) { return to_name(kColorLoad, l); }
+const char* color_align_name(ColorAlign a) { return to_name(kColorAlign, a); }
 
 ColorBiasRange color_bias_range(ColorPreset p) {
     // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
@@ -493,6 +499,13 @@ nlohmann::json color_info() {
                                    {{"id", "bookshelf-vented"}, {"label", "Bookshelf speaker, vented"}},
                                    {{"id", "bookshelf-sealed"}, {"label", "Bookshelf speaker, sealed"}}})},
             {"default_load", to_name(kColorLoad, ColorSettings{}.load)},
+            // the level alignment (track_levels.h; experimental), and the references it aligns to
+            {"aligns", json::array({{{"id", "off"}, {"label", "Off (as before)"}},
+                                    {{"id", "loudness"}, {"label", "Loudness (integrated LUFS)"}},
+                                    {{"id", "near-peak"}, {"label", "Near-peak (99.9th percentile)"}},
+                                    {{"id", "conservative"}, {"label", "Conservative (the larger cut)"}}})},
+            {"default_align", to_name(kColorAlign, ColorSettings{}.align)},
+            {"align_refs", {{"lufs", kAlignRefLufs}, {"p999_db", kAlignRefP999Db}}},
             {"presets", list}};
 }
 

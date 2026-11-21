@@ -419,6 +419,10 @@ DC_API int dc_state(dc_player* p, char* out, int len) {
         if (pl) {
             // the report is the one of the last start / change; the speed is measured on as it plays
             j["report"]["realtime"] = pl->realtime_factor();
+            // Tube Color's level alignment for the track heard (track_levels.h; an M2 experiment), as it is now
+            const auto ca = pl->color_align_status();
+            j["report"]["color_align"] = {{"status", ca.state}, {"mode", ca.mode}, {"lufs", ca.lufs}, {"p999_db", ca.p999_db},
+                                           {"gain_db", ca.gain_db}, {"drive", ca.drive}, {"drive_eff", ca.drive_eff}};
             j["asio_rates"] = pl->asio_rates();
             j["debug"] = json::parse(pl->debug_json(), nullptr, false);
         }

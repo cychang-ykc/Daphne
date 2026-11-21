@@ -14,8 +14,10 @@
 #include <cstdio>
 #include <deque>
 #include <future>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -28,6 +30,7 @@
 #include "daphne/engine/filters.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/ring_buffer.h"
+#include "daphne/engine/track_levels.h"
 #include "daphne/platform/platform.h"
 #include "change_plan.h"
 #include "common.h"
@@ -173,6 +176,15 @@ struct Player::Impl {
     // the background rebuild can be cancelled when a newer change supersedes it
     std::shared_ptr<std::atomic<bool>> build_cancel;
     bool build_designs = false;        // the background build designs a filter (not only loads it from the cache)
+    // Tube Color's level alignment (track_levels.h): one scan at a time in the background, the decoding track first,
+    // then the next one; the results in the process-wide cache, and the ones looked up here (by path) in `levels`
+    std::future<std::optional<TrackLevels>> level_job;
+    std::shared_ptr<std::atomic<bool>> level_cancel;
+    std::filesystem::path level_path;
+    std::map<std::string, std::optional<TrackLevels>> levels;   // looked up: the measures, or none yet
+    std::set<std::string> level_failed;                        // scanned, nothing came of it
+    mutable std::mutex align_m;
+    ColorAlignStatus align_status;     // for color_align_status (under align_m)
     Throughput throughput;             // the chain's speed against real time (PCM)
     std::atomic<double> rt_factor{0};  // its last factor, for other threads (Player::realtime_factor)
 
@@ -196,6 +208,18 @@ struct Player::Impl {
     const AudioInfo& decoding_info() const { return tl.switches.empty() ? rep.source : tl.switches.back().info; }
     // what plays now, for the change decisions (change_plan.h)
     Playing playing() const { return {s, out, caps(), want, rep.source.rate, cur_path}; }
+
+    // ------------------------------------------------------------------ the level alignment (core.cpp)
+
+    // The track being decoded (the last switched-to one, or the heard one).
+    const std::filesystem::path& decoding_path() const { return tl.switches.empty() ? cur_path : tl.switches.back().path; }
+    // A track's measures when they are known (here or in the cache).
+    const TrackLevels* levels_of(const std::filesystem::path& p);
+    // The gain on the curve's input for a track (linear; 1 while unknown, off, or Tube Color not running).
+    double align_for(const std::filesystem::path& p);
+    // Between chunks: a scan done, the next one started, the chain's alignment for the decoding track, the status.
+    void poll_levels();
+    void stop_levels();
 
     // ------------------------------------------------------------------ core.cpp: the thread
 

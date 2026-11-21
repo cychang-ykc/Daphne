@@ -73,6 +73,10 @@ public:
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).
     // Its output is already inside the device range, so convert_to_device() never sees these.
     int64_t take_clips();
+    // Tube Color's level alignment (track_levels.h): the gain on its curve's input (0 < a <= 1), gliding there, or there
+    // at once (now: before the chain plays). No effect without the stage.
+    void set_color_align(double a, bool now = false);
+    double color_align_target() const;   // where it is going (1 without the stage)
     // Frames Tube Color's limiter turned down since the last call (0 without one; doc/N28: color_limited).
     int64_t take_color_limited();
 

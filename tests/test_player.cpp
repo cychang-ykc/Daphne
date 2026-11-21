@@ -36,6 +36,7 @@
 #include "daphne/engine/live_source.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/settings.h"
+#include "daphne/engine/track_levels.h"
 #include "../core/src/player/crossfader.h"
 #include "../core/src/player/dsd_switch.h"
 #include "../core/src/player/throughput.h"
@@ -1787,6 +1788,51 @@ TEST_CASE("Player: Tube Color's path report follows idle and back", "[player][co
         r.player->apply(s, OutputChoice{});
         REQUIRE(state_is(false));
     }
+    r.player->stop();
+    r.finish();
+    r.player.reset();
+}
+
+// Tube Color's level alignment (track_levels.h; an M2 experiment): the track is scanned in the background while it plays
+// (scanning, then ready), its measures and the gain each mode gives, and the effective drive; the mode changes in place;
+// with Tube Color off the status says off. A 1 kHz sine at amplitude 0.5 in both channels: -6.02 LUFS, 99.9th
+// percentile -6.02 dBFS.
+TEST_CASE("Player: Tube Color's level alignment scans the track and reports it", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    daphne::clear_level_cache();
+    Rig r;
+    r.dev->speed = 1.0;
+    r.sources["a"] = sine(44100, 1000.0, 8.0, 0.5);
+    Settings s;
+    s.color.enabled = true;
+    s.color.drive = 2.0;
+    s.color.align = daphne::ColorAlign::Loudness;
+    REQUIRE(r.start("a", s));
+    const double lufs = 20.0 * std::log10(0.5);
+    auto gain_is = [&](double want, const char* what) {
+        return wait_until(r, [&] {
+            const auto st = r.player->color_align_status();
+            return st.state == "ready" && std::abs(st.gain_db - want) < 0.1 &&
+                   std::abs(st.drive_eff - 2.0 * std::pow(10.0, st.gain_db / 20.0)) < 1e-9;
+        }, what, 5.0);
+    };
+    REQUIRE(gain_is(daphne::kAlignRefLufs - lufs, "loudness: ready"));
+    auto st = r.player->color_align_status();
+    CHECK(st.mode == "loudness");
+    CHECK(st.lufs == Catch::Approx(lufs).margin(0.1));
+    CHECK(st.p999_db == Catch::Approx(lufs).margin(0.05));
+    CHECK(st.drive == 2.0);
+    for (auto [m, want] : {std::pair{daphne::ColorAlign::NearPeak, daphne::kAlignRefP999Db - lufs},
+                           std::pair{daphne::ColorAlign::Conservative, daphne::kAlignRefLufs - lufs}, std::pair{daphne::ColorAlign::Off, 0.0}}) {
+        Settings n = s;
+        n.color.align = m;
+        r.player->apply(n, OutputChoice{});
+        REQUIRE(gain_is(want, daphne::color_align_name(m)));
+    }
+    Settings off = s;
+    off.color.enabled = false;
+    r.player->apply(off, OutputChoice{});
+    REQUIRE(wait_until(r, [&] { return r.player->color_align_status().state == "off"; }, "Tube Color off: off", 5.0));
     r.player->stop();
     r.finish();
     r.player.reset();

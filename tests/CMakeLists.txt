@@ -23,6 +23,7 @@ add_executable(daphne_tests
     test_watchdog.cpp
     test_realtime.cpp
     test_resampler.cpp
+    test_track_levels.cpp
 )
 target_link_libraries(daphne_tests PRIVATE daphne_engine daphne_core catch2_main)
 if(DAPHNE_COLOR)

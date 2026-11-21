@@ -56,6 +56,16 @@ struct PlayCallbacks {
     std::function<void(const std::string&)> on_failed;             // playback stopped with an error (device lost, ...)
 };
 
+// Tube Color's level alignment for the track being heard (track_levels.h; doc/N28, an M2 experiment).
+struct ColorAlignStatus {
+    std::string state = "off";   // off (Tube Color not running) | scanning | ready | failed (the scan gave nothing) |
+                                 // unavailable (a live input: nothing to scan); dc_state: "status"
+    std::string mode = "off";    // the setting (color.align)
+    double lufs = 0.0, p999_db = 0.0;   // the track's measures (state ready)
+    double gain_db = 0.0;        // the gain applied to the curve's input (0 until the scan is done, and with off)
+    double drive = 0.0, drive_eff = 0.0;   // the drive set, and the curve's effective drive (drive x the gain)
+};
+
 // Device choice; the CLI fills it from the settings plus its overrides.
 struct OutputChoice {
     OutputApi api = kDefaultOutputApi;
@@ -149,6 +159,8 @@ public:
     std::vector<int> asio_rates() const;
     // Internal state for logs (JSON).
     std::string debug_json() const;
+    // Tube Color's level alignment now (any thread).
+    ColorAlignStatus color_align_status() const;
 
 private:
     struct Impl;

@@ -586,7 +586,9 @@ public sealed partial class DaphneEngine : IAudioEngine
             string filter = _report.GetProperty("filter").GetString() ?? "";
             string reason = _report.TryGetProperty("reason", out var r) ? r.GetString() : null;
             var parts = filter.Split(" | ").Where(x => x.Contains("Tube Color")).ToArray();
-            return new { playing = true, inChain = chain.Contains("tube color"), reason, report = parts, lastEvent = _colorEvent };
+            // the level alignment for the track heard (an M2 experiment; dc_state's report.color_align, live)
+            object align = _report.TryGetProperty("color_align", out var ca) ? ca.Clone() : null;
+            return new { playing = true, inChain = chain.Contains("tube color"), reason, report = parts, lastEvent = _colorEvent, align };
         }
         catch (Exception) { return new { playing = false, lastEvent = _colorEvent }; }
     }

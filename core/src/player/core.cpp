@@ -17,6 +17,7 @@ public:
     bool poll() override {
         if (!p_.poll_build()) return false;
         p_.poll_warm();
+        p_.poll_levels();
         if (!p_.chain_busy() && p_.queued) {
             auto q = *p_.queued;
             p_.queued.reset();
@@ -504,7 +505,98 @@ bool Player::Impl::service_device() {
     return stream->reopen();
 }
 
+const TrackLevels* Player::Impl::levels_of(const std::filesystem::path& p) {
+    if (p.empty()) return nullptr;
+    const std::string k = platform::path_to_utf8(p);
+    auto it = levels.find(k);
+    if (it == levels.end() || !it->second) {   // the cache (it reads the file's size and time): once, then after a scan
+        if (it == levels.end()) it = levels.emplace(k, cached_levels(p)).first;
+    }
+    return it->second ? &*it->second : nullptr;
+}
+
+double Player::Impl::align_for(const std::filesystem::path& p) {
+    if (!color_active(s) || s.color.align == ColorAlign::Off) return 1.0;
+    const TrackLevels* l = levels_of(p);
+    return l ? std::pow(10.0, color_align_gain_db(s.color.align, *l) / 20.0) : 1.0;
+}
+
+void Player::Impl::poll_levels() {
+    if (level_job.valid() && level_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        std::optional<TrackLevels> r;
+        try {
+            r = level_job.get();
+        } catch (...) {
+        }
+        const std::string k = platform::path_to_utf8(level_path);
+        if (r) {
+            store_levels(level_path, *r);
+            levels[k] = r;
+        } else {
+            level_failed.insert(k);
+        }
+        level_path.clear();
+    }
+    const bool on = color_active(s) && cur != nullptr;
+    // the next scan: the decoding track, then the next one
+    if (on && !level_job.valid()) {
+        for (const auto& p : {decoding_path(), queue.get().first}) {
+            if (p.empty() || is_live_path(p) || levels_of(p) || level_failed.count(platform::path_to_utf8(p))) continue;
+            level_cancel = std::make_shared<std::atomic<bool>>(false);
+            level_path = p;
+            level_job = std::async(std::launch::async, [open = deps.open_decoder, p, flag = level_cancel]() -> std::optional<TrackLevels> {
+                // below playback, as the background builds; not Background: on Windows that is a mode a pool thread
+                // (std::async) must leave before it returns, which PoolThreadScope's Normal does not
+                PoolThreadScope pool;
+                platform::set_thread_priority(platform::Priority::BelowNormal);
+                try {
+                    std::string e;
+                    auto d = open(p, &e);
+                    if (!d) return std::nullopt;
+                    return scan_levels(*d, *flag, d->info().dsd_pcm ? 0.5 : 1.0);   // a DSD file's +6 dB, as the stage sees it
+                } catch (...) {
+                    return std::nullopt;
+                }
+            });
+            break;
+        }
+    }
+    // the chain's alignment, for the track being decoded (gliding in the stage)
+    if (on) {
+        const double a = align_for(decoding_path());
+        if (a != cur->color_align_target()) cur->set_color_align(a);
+    }
+    // the status, for the track being heard
+    ColorAlignStatus st;
+    st.mode = color_align_name(s.color.align);
+    st.drive = s.color.drive;
+    st.drive_eff = s.color.drive;
+    if (on) {
+        if (is_live_path(cur_path)) {
+            st.state = "unavailable";
+        } else if (const TrackLevels* l = levels_of(cur_path)) {
+            st.state = "ready";
+            st.lufs = l->lufs;
+            st.p999_db = l->p999_db;
+            st.gain_db = color_align_gain_db(s.color.align, *l);
+            st.drive_eff = s.color.drive * std::pow(10.0, st.gain_db / 20.0);
+        } else {
+            st.state = level_failed.count(platform::path_to_utf8(cur_path)) ? "failed" : "scanning";
+        }
+    }
+    std::lock_guard<std::mutex> l(align_m);
+    align_status = st;
+}
+
+void Player::Impl::stop_levels() {
+    if (!level_job.valid()) return;
+    if (level_cancel) *level_cancel = true;
+    level_job.wait();
+    level_job = {};
+}
+
 void Player::Impl::finish_playback() {
+    stop_levels();
     queue.join_all();
     if (io.dev && !io.dev->failed() && dsdenc && !ended_flag) {
         // stopped (or failed) before the end: stop quickly, but on silence. DoP: PCM silence (the DAC

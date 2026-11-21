@@ -1019,3 +1019,50 @@ TEST_CASE("color curves: h2-pure, H2 and nothing odd", "[color][curve]") {
         CHECK(20 * std::log10(mag(5) / h1) < -100.0);
     }
 }
+
+// The level alignment (doc/N28, an M2 experiment): a gain a on the curve's input only. At drive 200 % with a = 0.5 the
+// stage is the one at drive 100 % (the response's fade is full at both, the curve at d a = 1), sample for sample; it
+// glides to a new value in kAlignGlideMs, or is there at once; at drive 0 the stage passes the samples as they are.
+TEST_CASE("color stage: the level alignment", "[color]") {
+    const auto* c = daphne::color::preset_curve("set-300b");
+    REQUIRE(c != nullptr);
+    const int rate = 44100, frames = rate / 2;
+    std::mt19937 g(5);
+    std::normal_distribution<double> n(0.0, 0.2);
+    std::vector<double> x(2 * static_cast<size_t>(frames));
+    for (auto& v : x) v = n(g);
+    auto params = [&](double drive, double align) {
+        daphne::color::StageParams p;
+        p.drive = drive;
+        p.curve = c;
+        p.linear = c->linear;
+        p.align = align;
+        return p;
+    };
+    daphne::color::TubeColorStage a(params(2.0, 0.5)), b(params(1.0, 1.0));
+    const auto ya = run_curve(a, x, rate), yb = run_curve(b, x, rate);
+    double worst = 0.0;
+    for (size_t i = 0; i < ya.size(); ++i) worst = std::max(worst, std::abs(ya[i] - yb[i]));
+    CHECK(worst < 1e-12);
+    // gliding, or at once
+    daphne::color::TubeColorStage s(params(1.0, 1.0));
+    s.prepare({rate, 2, 4096});
+    std::vector<double> y(x.size());
+    s.set_align(0.25);
+    CHECK(s.align_target() == 0.25);
+    const int glide = static_cast<int>(std::lround(daphne::color::TubeColorStage::kAlignGlideMs * 1e-3 * rate));
+    s.process(x.data(), glide / 2, y.data());
+    CHECK(s.align() < 1.0);
+    CHECK(s.align() > 0.25);
+    s.process(x.data(), glide, y.data());
+    CHECK(s.align() == 0.25);
+    s.set_align(0.5, true);
+    CHECK(s.align() == 0.5);
+    // drive 0: the samples as they are (the delay compensated), whatever the alignment
+    daphne::color::TubeColorStage z(params(0.0, 0.3));
+    const auto yz = run_curve(z, x, rate);
+    const auto d = static_cast<size_t>(z.content_delay_frames());
+    bool same = true;
+    for (size_t i = 2 * d; i < yz.size(); ++i) same = same && yz[i] == x[i - 2 * d];
+    CHECK(same);
+}

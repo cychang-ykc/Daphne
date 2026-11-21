@@ -75,6 +75,11 @@ std::vector<int> Player::asio_rates() const {
     return impl_->report.asio_rates();
 }
 
+ColorAlignStatus Player::color_align_status() const {
+    std::lock_guard<std::mutex> l(impl_->align_m);
+    return impl_->align_status;
+}
+
 std::string Player::debug_json() const {
     return impl_->report.diag_json();
 }

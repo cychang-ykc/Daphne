@@ -37,6 +37,7 @@
 #include "daphne/engine/filters.h"
 #include "daphne/engine/settings.h"
 #include "daphne/engine/text.h"
+#include "daphne/engine/track_levels.h"
 #include "daphne/platform/platform.h"
 
 namespace {
@@ -83,6 +84,8 @@ void usage() {
               << "  daphne render <in> <out.wav> [--start F] [--dsd-lowpass 24|30|50]\n"
               << "                                          decode to WAV (source bit depth, or float32 otherwise);\n"
               << "                                          --start: seek to frame F first; --dsd-lowpass: DSD -> PCM low-pass\n"
+              << "  daphne levels files...                  Tube Color's level alignment measures (track_levels.h): integrated\n"
+              << "                                          LUFS and the 99.9th percentile of |x| (dBFS), one line each\n"
               << "  daphne settings default [file]          write the default settings (stdout if no file)\n"
               << "  daphne settings check <file>            validate a settings file\n";
 }
@@ -827,6 +830,22 @@ int run(const std::vector<std::string>& a) {
     if (a[0] == "resampler-run") return cmd_resampler_run(rest);
     if (a[0] == "modulator-test") return cmd_modulator_test(rest);
     if (a[0] == "settings") return cmd_settings(rest);
+    if (a[0] == "levels") {   // Tube Color's level alignment measures, as the player's scan takes them
+        int rc = 0;
+        for (const auto& f : rest) {
+            std::string e;
+            auto d = daphne::open_decoder(daphne::platform::path_from_utf8(f), &e);
+            const std::atomic<bool> no{false};
+            const auto l = d ? daphne::scan_levels(*d, no, d->info().dsd_pcm ? 0.5 : 1.0) : std::nullopt;
+            if (!l) {
+                std::cerr << f << ": " << (d ? "nothing to measure" : e) << "\n";
+                rc = 1;
+                continue;
+            }
+            std::printf("%.2f LUFS\t%.2f dBFS\t%s\n", l->lufs, l->p999_db, f.c_str());
+        }
+        return rc;
+    }
     if (a[0] == "render") {
         std::vector<std::string> r = rest;
         int64_t start = 0;

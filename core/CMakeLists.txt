@@ -28,6 +28,7 @@ add_library(daphne_engine STATIC
     src/filters.cpp
     src/sample_format.cpp
     src/settings.cpp
+    src/track_levels.cpp
     src/stages.cpp
 )
 target_include_directories(daphne_engine PUBLIC include)

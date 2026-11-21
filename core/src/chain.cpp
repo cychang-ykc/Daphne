@@ -312,6 +312,22 @@ void DspChain::reset() {
 #endif
 }
 
+void DspChain::set_color_align(double a, bool now) {
+#if defined(DAPHNE_COLOR)
+    if (color_) color_->set_align(a, now);
+#else
+    (void)a, (void)now;
+#endif
+}
+
+double DspChain::color_align_target() const {
+#if defined(DAPHNE_COLOR)
+    return color_ ? color_->align_target() : 1.0;
+#else
+    return 1.0;
+#endif
+}
+
 int64_t DspChain::take_color_limited() {
 #if defined(DAPHNE_COLOR)
     if (!color_lim_) return 0;

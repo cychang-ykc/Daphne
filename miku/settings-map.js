@@ -30,6 +30,7 @@ class DaphneOptions {
     this.colorFeedbackDb = 6;       // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     this.colorTrimDb = 0;           // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
     this.colorLoad = 'bookshelf-vented';   // what it drives: resistor-8 | bookshelf-vented | bookshelf-sealed
+    this.colorAlign = 'off';        // the level alignment (an M2 experiment): off | loudness | near-peak | conservative
     // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved
     this.colorBypass = false;
   }
@@ -37,9 +38,9 @@ class DaphneOptions {
   /** The options as the page reads them; save: as kept in MIKU's settings (no bypass). */
   toJson(save = false) {
     const { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb,
-      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb, colorBypass, colorLoad } = this;
+      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb, colorBypass, colorLoad, colorAlign } = this;
     const j = { upsampler, target, fixedRate, taps, phase, phaseCustom, apodize, doubleDouble, order, osr, dsdPcmLowpass, dsdPcmLimiter, threads, cacheLimitMb,
-      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb, colorLoad };
+      colorEnabled, colorPreset, colorDrive, colorFeedbackDb, colorTrimDb, colorLoad, colorAlign };
     if (!save) j.colorBypass = colorBypass;
     return j;
   }
@@ -70,6 +71,7 @@ class DaphneOptions {
         case 'colorTrimDb': this.colorTrimDb = typeof v === 'number' && Number.isFinite(v) ? Math.round(clamp(v, -6, 6) * 10) / 10 : 0; break;
         case 'colorBypass': this.colorBypass = v === true; break;
         case 'colorLoad': this.colorLoad = ['resistor-8', 'bookshelf-sealed'].includes(v) ? v : 'bookshelf-vented'; break;
+        case 'colorAlign': this.colorAlign = ['loudness', 'near-peak', 'conservative'].includes(v) ? v : 'off'; break;
       }
     }
   }
@@ -93,7 +95,7 @@ function colorOf(o) {
   return {
     enabled: o.colorEnabled, model: 'fixed-point', preset: o.colorPreset,
     drive: o.colorBypass ? 0 : clamp(o.colorDrive, 0, colorDriveMax()),
-    feedback_db: o.colorFeedbackDb, bias: 'standard', load_ohms: 8, load: o.colorLoad,
+    feedback_db: o.colorFeedbackDb, bias: 'standard', load_ohms: 8, load: o.colorLoad, align: o.colorAlign,
     makeup_gain: Math.abs(o.colorTrimDb) < 0.05 ? 'auto' : o.colorTrimDb,
   };
 }

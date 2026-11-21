@@ -435,6 +435,7 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
         {"load_ohms", {4, 8, 16}, {8.0, 0, 2, 32, -8, "8", true, 5e-324}},
         {"makeup_gain", {"auto", 0, -6, 6, 1.5, -0.001, 5e-324}, {6.0001, -7, 12, "AUTO", "3", false}},
         {"load", {"resistor-8", "bookshelf-vented", "bookshelf-sealed"}, {"bookshelf", "Resistor-8", "horn", 8, true}},
+        {"align", {"off", "loudness", "near-peak", "conservative"}, {"peak", "Loudness", "lufs", 1, true}},
     };
     for (auto& f : fields) f.invalid.insert(f.invalid.end(), foreign.begin(), foreign.end());
     const auto defaults = daphne::Settings{};
@@ -481,6 +482,9 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
             if (k == "load")
                 want.load = v == "resistor-8" ? daphne::ColorLoad::Resistor8 : v == "bookshelf-sealed" ? daphne::ColorLoad::BookshelfSealed
                                                                                  : daphne::ColorLoad::BookshelfVented;
+            if (k == "align")
+                want.align = v == "loudness" ? daphne::ColorAlign::Loudness : v == "near-peak" ? daphne::ColorAlign::NearPeak
+                             : v == "conservative" ? daphne::ColorAlign::Conservative : daphne::ColorAlign::Off;
         }
         // the object as given (NaN and infinity included), and as text (where they become null: invalid as well)
         for (int as_text = 0; as_text < 2; ++as_text) {
@@ -503,7 +507,7 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
             rest_default.erase("color");
             const bool ok = errors == expected && c.enabled == want.enabled && c.model == want.model &&
                             c.preset == want.preset && c.drive == want.drive && c.feedback_db == want.feedback_db &&
-                            c.bias == want.bias && same(c.bias_ma, want.bias_ma) && c.load_ohms == want.load_ohms && c.load == want.load &&
+                            c.bias == want.bias && same(c.bias_ma, want.bias_ma) && c.load_ohms == want.load_ohms && c.load == want.load && c.align == want.align &&
                             same(c.makeup_gain_db, want.makeup_gain_db) && rest == rest_default;
             if (!ok) {
                 std::string got_errors;
@@ -533,4 +537,31 @@ TEST_CASE("color settings: the load", "[color]") {
     CHECK(has_error(bad, "color.load"));
     CHECK(bad.settings.color.load == daphne::ColorLoad::BookshelfVented);
     CHECK(bad.settings.color.drive == 1.5);
+}
+
+// The level alignment (track_levels.h; an M2 experiment): its names, off by default, written back; an unknown one is an
+// error that keeps the default; taken in place (not part of the chain's structure); color_info lists the modes and the
+// references.
+TEST_CASE("color settings: the level alignment", "[color]") {
+    CHECK(Settings{}.color.align == daphne::ColorAlign::Off);
+    for (const auto& [name, a] : {std::pair{"off", daphne::ColorAlign::Off}, std::pair{"loudness", daphne::ColorAlign::Loudness},
+                                  std::pair{"near-peak", daphne::ColorAlign::NearPeak}, std::pair{"conservative", daphne::ColorAlign::Conservative}}) {
+        const auto r = load(std::string(R"({"enabled": true, "align": ")") + name + R"("})");
+        CHECK(r.ok());
+        CHECK(r.settings.color.align == a);
+        CHECK(daphne::settings_to_json(r.settings)["color"]["align"] == name);
+        CHECK(std::string(daphne::color_align_name(a)) == name);
+        Settings off = r.settings;
+        off.color.align = daphne::ColorAlign::Off;
+        CHECK(daphne::DspChain::structure_key(off) == daphne::DspChain::structure_key(r.settings));
+    }
+    const auto bad = load(R"({"align": "peak", "drive": 1.5})");
+    CHECK(has_error(bad, "color.align"));
+    CHECK(bad.settings.color.align == daphne::ColorAlign::Off);
+    CHECK(bad.settings.color.drive == 1.5);
+    const auto info = daphne::color_info();
+    REQUIRE(info["aligns"].size() == 4);
+    CHECK(info["default_align"] == "off");
+    CHECK(info["align_refs"]["lufs"] == -14.28);
+    CHECK(info["align_refs"]["p999_db"] == -7.64);
 }
