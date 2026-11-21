@@ -32,7 +32,8 @@ const EnumTable<VolumeMode> kVolumeMode = {
     {"digital", VolumeMode::Digital}, {"fixed", VolumeMode::Fixed}};
 const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}};
 const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {"set-300b", ColorPreset::Set300b},
-                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul}};
+                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul},
+                                             {"set-300b-x", ColorPreset::Set300bX}};
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
 
 template <class E>
@@ -376,7 +377,8 @@ ColorBiasRange color_bias_range(ColorPreset p) {
     // lo = 0.6 x standard; hi = the rating; hot_cap = 90 % of the rated plate dissipation (plus the screen current)
     switch (p) {
         case ColorPreset::Set2a3: return {35.0, 58.9, 59.0, 53.8};     // RCA: 15 W at 251 V
-        case ColorPreset::Set300b: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V
+        case ColorPreset::Set300b:
+        case ColorPreset::Set300bX: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V (X: the same 300B stage)
         case ColorPreset::Set845: return {44.0, 72.5, 79.0, 71.8};     // RCA: 100 W at 1253 V
         case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0, 63.0};   // Philips: 25 W at 399 V, plus 6.7 mA screen current
     }
@@ -423,12 +425,13 @@ nlohmann::json color_info() {
     struct P {
         ColorPreset p;
         const char* label;
-        bool push_pull;
+        bool push_pull, experimental;
     };
-    const P presets[] = {{ColorPreset::Set300b, "300B single-ended", false},
-                         {ColorPreset::Set2a3, "2A3 single-ended", false},
-                         {ColorPreset::Set845, "845 single-ended", false},
-                         {ColorPreset::PpEl34Ul, "EL34 push-pull (ultralinear)", true}};
+    const P presets[] = {{ColorPreset::Set300b, "300B single-ended", false, false},
+                         {ColorPreset::Set300bX, "300B single-ended, CCS driver (experimental)", false, true},
+                         {ColorPreset::Set2a3, "2A3 single-ended", false, false},
+                         {ColorPreset::Set845, "845 single-ended", false, false},
+                         {ColorPreset::PpEl34Ul, "EL34 push-pull (ultralinear)", true, false}};
     json list = json::array();
     for (const auto& e : presets) {
         const auto r = color_bias_range(e.p);
@@ -441,6 +444,7 @@ nlohmann::json color_info() {
                         {"available", false},
 #endif
                         {"push_pull", e.push_pull},
+                        {"experimental", e.experimental},
                         {"bias_ma",
                          {{"lo", r.lo_ma}, {"standard", r.standard_ma}, {"hi", r.hi_ma}, {"cool", color_cool_ma(e.p)},
                           {"hot", hot ? json(*hot) : json(nullptr)}}}});

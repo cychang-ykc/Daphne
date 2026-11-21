@@ -16,7 +16,7 @@ import spice_amps as A  # noqa: E402
 import xyce_hb as X     # noqa: E402
 
 OUT = os.path.join(HERE, "data", "curves")
-RATED_DRIVE = {"set-300b": 4.213, "set-2a3": None, "set-845": None}   # V peak at rated power (data/ref transfer "rated")
+RATED_DRIVE = {"set-300b": 4.213, "set-300b-x": 3.106, "set-2a3": None, "set-845": None}   # set-300b-x: set300b_variants.py   # V peak at rated power (data/ref transfer "rated")
 MULT = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.5, 8.0)
 
 

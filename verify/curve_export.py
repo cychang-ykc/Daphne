@@ -30,7 +30,7 @@ import curve_ladder as L  # noqa: E402
 OUT = os.path.join(HERE, "data", "curves")
 REF = os.path.join(HERE, "data", "ref")
 # N28 candidate B: the reference output power at drive 100 % (-18 dBFS RMS pink noise, RMS 0.126 of full scale)
-P_REF = {"set-300b": 0.279, "set-845": 0.077, "set-2a3": 0.115}
+P_REF = {"set-300b": 0.279, "set-300b-x": 0.279, "set-845": 0.077, "set-2a3": 0.115}   # set-300b-x: the same P_ref
 PINK_RMS = 10 ** (-18 / 20)
 U_MAX = 6.0           # the table: 400 % x 1.41 = 5.64 inside
 N_TABLE = 6001        # 0.002 per step
@@ -66,7 +66,7 @@ def mid_line(vin, z):
 def fit_linear(preset):
     """pre: HP1 at the interstage coupling (computed); post: HP2 + LP2 (+ LP1) fitted to the rest of the response."""
     f, h = response(preset)
-    pre_fc = {"set-300b": 1 / (2 * math.pi * 0.22e-6 * 220e3)}.get(preset, 3.3)
+    pre_fc = {"set-300b": 1 / (2 * math.pi * 0.22e-6 * 220e3), "set-300b-x": 1 / (2 * math.pi * 0.22e-6 * 220e3)}.get(preset, 3.3)
     sel = (f >= 10) & (f <= 200e3)
     fs, hs = f[sel], h[sel]
     s = 2j * np.pi * fs

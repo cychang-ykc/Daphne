@@ -25,7 +25,7 @@ class DaphneOptions {
     this.cacheLimitMb = 1024;      // filter cache limit: 500 | 1024 | 2048 MB
     // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: colorOf)
     this.colorEnabled = false;
-    this.colorPreset = 'set-300b';  // set-300b | set-2a3 | set-845 | pp-el34-ul
+    this.colorPreset = 'set-300b';  // set-300b | set-2a3 | set-845 | pp-el34-ul | set-300b-x (experimental)
     this.colorDrive = 1.0;          // 0 .. the core's drive_max (1.0 = 100 %)
     this.colorFeedbackDb = 6;       // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     this.colorTrimDb = 0;           // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
@@ -73,7 +73,7 @@ class DaphneOptions {
   }
 }
 
-const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul'];
+const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul', 'set-300b-x'];
 
 // Tube Color's controls from the core (daphne-helper color_info, doc/N28); null until the extension has asked
 let colorInfo = null;

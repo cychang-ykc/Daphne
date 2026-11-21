@@ -154,6 +154,17 @@ def set_300b():
     return net
 
 
+def set_300b_x():
+    """set-300b with a constant-current plate load on the 6SN7 (N28, M2 experiment): the driver almost linear, so its H2
+    no longer cancels the 300B's (set300b_variants.py V1). The CCS carries the reference's quiescent current."""
+    net = [l for l in set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6) if not l.startswith("Ra1 ")]
+    net += ["I1 b1 a1 DC 3.865e-3", "Rccs b1 a1 10Meg"]
+    net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
+            *tube_caps("V2", "300B", "a2", "g2s", "k2"), "Rk2 k2 0 1233", "Ck2 k2 0 2.2e-4",
+            "Vb2 b2 0 DC 431"] + opt_se("T", "a2", "b2", 3000.0, 15.0, 0.012, 400e-12, 120.0, preset="set-300b")
+    return ["* set-300b-x"] + net
+
+
 def set_845():
     net = ["* set-845"] + set_driver_6sn7(350.0, 47e3, 1.5e3, "g2", 220e3, 0.22e-6)
     net += ["Rgs2 g2 g2s 1k", R.triode("V2", "300B", "a2", "g2s", "k2"),
@@ -244,7 +255,7 @@ def pp_520(feedback=True, ef86_pt=(0.2, 250.0, 140.0, -2.0), ll=0.005, cw=500e-1
     return net
 
 
-PRESETS = {"set-2a3": set_2a3, "set-300b": set_300b, "set-845": set_845}
+PRESETS = {"set-2a3": set_2a3, "set-300b": set_300b, "set-845": set_845, "set-300b-x": set_300b_x}
 
 
 def measure(args):

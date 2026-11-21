@@ -890,3 +890,42 @@ TEST_CASE("color curves: set-300b in the stage against the circuit", "[color][cu
         CHECK(std::cos(ph) > 0.99);
     }
 }
+
+// M2's experiment (doc/N28): set-300b-x, the 6SN7 on a constant-current load, its H2 no longer cancelled. Against its
+// circuit (data/curves/set-300b-x_check.json) at 1 W and rated power: within 0.8 dB (the static curve's H2 sits 0.3 -
+// 0.6 dB above the circuit's here; the M2 criterion is 1 dB); more H2 than set-300b at the same input.
+TEST_CASE("color curves: set-300b-x in the stage against the circuit", "[color][curve]") {
+    const auto* c = daphne::color::preset_curve("set-300b-x");
+    REQUIRE(c != nullptr);
+    struct Level { double u, h2, h3; };
+    double h2_x = 0.0;
+    for (const auto& lv : {Level{0.3391, -36.5, -52.4}, Level{0.7651, -26.6, -35.6}}) {
+        INFO("u " << lv.u);
+        daphne::color::StageParams p;
+        p.curve = c;
+        p.linear = c->linear;
+        daphne::color::TubeColorStage st(p);
+        const int rate = 44100, frames = 2 * rate;
+        std::vector<double> x(2 * static_cast<size_t>(frames));
+        for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = lv.u * std::sin(2 * std::numbers::pi * 1000.0 * i / rate);
+        const auto y = run_curve(st, x, rate);
+        auto mag = [&](int k) { const auto [a, b] = harmonic_of(y, rate, 1000.0, k, frames - rate / 2, frames); return std::hypot(a, b); };
+        const double h2 = 20 * std::log10(mag(2) / mag(1)), h3 = 20 * std::log10(mag(3) / mag(1));
+        CHECK(h2 == Catch::Approx(lv.h2).margin(0.8));
+        CHECK(h3 == Catch::Approx(lv.h3).margin(0.8));
+        if (lv.u < 0.5) h2_x = h2;
+    }
+    // set-300b at the same input level (u 0.339: its 1 W) has about 6 dB less H2
+    const auto* b = daphne::color::preset_curve("set-300b");
+    REQUIRE(b != nullptr);
+    daphne::color::StageParams p;
+    p.curve = b;
+    p.linear = b->linear;
+    daphne::color::TubeColorStage st(p);
+    const int rate = 44100, frames = 2 * rate;
+    std::vector<double> x(2 * static_cast<size_t>(frames));
+    for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = 0.3391 * std::sin(2 * std::numbers::pi * 1000.0 * i / rate);
+    const auto y = run_curve(st, x, rate);
+    auto mag = [&](int k) { const auto [a, bb] = harmonic_of(y, rate, 1000.0, k, frames - rate / 2, frames); return std::hypot(a, bb); };
+    CHECK(h2_x - 20 * std::log10(mag(2) / mag(1)) > 4.0);
+}

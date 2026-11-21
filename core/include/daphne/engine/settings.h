@@ -21,7 +21,8 @@
 //   "dsd_modulator": { "order": 5 | 8, "osr": 64 | 128 | 256 | 512 | 1024 },
 //   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. },
 //   "color":   { "enabled": false, "model": "fixed-point" | "circuit",
-//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul", "drive": 0 .. kColorDriveMax,
+//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul" | "set-300b-x" (experimental),
+//                "drive": 0 .. kColorDriveMax,
 //                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA, per preset>,
 //                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -6 .. 6 }
 // }
@@ -57,7 +58,9 @@ enum class VolumeMode { Digital, Fixed };
 // Tube Color (doc/N28). fixed-point: the static curve of a preset's amplifier at its operating point (M2). v1 has
 // only this model (the circuit model with dynamic effects is optional, later).
 enum class ColorModel { FixedPoint };
-enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul };
+// Set300bX: M2's experiment (doc/N28), set-300b with a constant-current-loaded driver (more H2); on the integration
+// branch only, removed or kept after listening
+enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX };
 enum class ColorBias { Cool, Standard, Hot };
 
 struct OutputSettings {
@@ -190,9 +193,9 @@ double color_bias_current_ma(const ColorSettings& c);
 // kept; the playback path reports it once).
 bool color_bias_falls_back(const ColorSettings& c);
 inline constexpr double kColorMakeupTrimMaxDb = 6.0;
-// Tube Color's soft limiter on the PCM path (doc/N28): the ceiling (-0.3 dBFS) and its knee (from -2.3 dBFS)
+// Tube Color's soft limiter on the PCM path (doc/N28): the ceiling (-0.3 dBFS) and its knee (from -0.5 dBFS)
 inline constexpr double kColorLimitCeiling = 0.9660508789898133;   // 10^(-0.3/20)
-inline constexpr double kColorLimitKneeDb = 4.0;
+inline constexpr double kColorLimitKneeDb = 0.4;   // (b2, 2026-11-21: 4 dB from -2.3 dBFS compressed loud masters at every drive)
 
 struct Settings {
     int version = 1;
@@ -224,7 +227,7 @@ inline constexpr bool kColorOperatingPointAdjustable = false;
 //    "feedback_db": [...],      pp-el34-ul's feedback steps
 //    "load_ohms": [...],
 //    "operating_point_adjustable": b,   bias and load (M3)
-//    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build),
+//    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build), "experimental": b,
 //                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
 nlohmann::json color_info();
 // The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is

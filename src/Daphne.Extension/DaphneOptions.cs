@@ -28,7 +28,7 @@ public sealed class DaphneOptions
     public int CacheLimitMb { get; set; } = 1024;        // filter cache limit: 500 | 1024 | 2048 MB
     // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: SettingsMap).
     public bool ColorEnabled { get; set; }
-    public string ColorPreset { get; set; } = "set-300b";   // set-300b | set-2a3 | set-845 | pp-el34-ul
+    public string ColorPreset { get; set; } = "set-300b";   // set-300b | set-2a3 | set-845 | pp-el34-ul | set-300b-x (experimental)
     public double ColorDrive { get; set; } = 1.0;            // 0 .. the core's drive_max (1.0 = 100 %)
     public int ColorFeedbackDb { get; set; } = 6;            // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     public double ColorTrimDb { get; set; }                  // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
@@ -36,7 +36,7 @@ public sealed class DaphneOptions
     // what the slider says
     public bool ColorBypass { get; set; }
 
-    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul" };
+    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x" };
 
     /// <summary>The options as the page reads them; <paramref name="save"/>: as kept in MIKU's settings (no bypass).</summary>
     public JsonObject ToJson(bool save = false)

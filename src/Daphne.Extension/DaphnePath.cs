@@ -108,7 +108,7 @@ public sealed partial class DaphneEngine
             "Operating point: standard bias, 8 ohm tap (adjustable from M3)",
             $"Level: {trim}",
             dsdCore ? $"After the DSD modulator's pre-filter, at {Khz(rate)} kHz" : null,
-            chain.Contains("color limiter") ? "Soft limiter after it: ceiling -0.3 dBFS, knee from -2.3 dBFS" + LimitedText() : null,
+            chain.Contains("color limiter") ? "Soft limiter after it: ceiling -0.3 dBFS, knee from -0.5 dBFS" + LimitedText() : null,
             curve) with { pin = new[] { To(Pcm(F64, rate)) } };
     }
 

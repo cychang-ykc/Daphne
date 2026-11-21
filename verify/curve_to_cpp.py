@@ -8,7 +8,7 @@ import json, os
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "data", "curves")
 DST = os.path.join(os.path.dirname(HERE), "color", "src", "preset_curves.inc")
-IDS = {"set-300b": "Set300b", "set-2a3": "Set2a3", "set-845": "Set845", "pp-el34-ul": "PpEl34Ul"}
+IDS = {"set-300b": "Set300b", "set-300b-x": "Set300bX", "set-2a3": "Set2a3", "set-845": "Set845", "pp-el34-ul": "PpEl34Ul"}
 
 
 def main():
