@@ -1440,7 +1440,8 @@ TEST_CASE("Player: a Tube Color preset change is rebuilt and crossfaded, the dri
     if (!preset_runs(daphne::ColorPreset::Set845)) SKIP("set-845's curve is not in this build yet (M2)");
     Rig r;
     r.dev->speed = 1.0;
-    r.sources["sine"] = sine(44100, 1000.0, 2.0);
+    // 6 s: room for the background rebuild on a slow machine (macOS CI took over 1.7 s with a 2 s track, 7b35907)
+    r.sources["sine"] = sine(44100, 1000.0, 6.0);
     Settings s;
     s.color.enabled = true;
     REQUIRE(r.start("sine", s));
