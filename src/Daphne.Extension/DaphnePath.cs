@@ -120,6 +120,16 @@ public sealed partial class DaphneEngine
         return n > 0 && rate > 0 ? $" (turned down {(double)n / rate:0.0} s so far)" : " (not needed so far)";
     }
 
+    /// <summary>The preset can run in this build (dc_color_info: its curve is there; a test build runs every preset).</summary>
+    static bool ColorPresetRuns(JsonElement info, string preset)
+    {
+        if (!info.TryGetProperty("available", out var av) || av.ValueKind != JsonValueKind.True) return false;
+        foreach (var p in info.GetProperty("presets").EnumerateArray())
+            if (p.GetProperty("id").GetString() == preset)
+                return !p.TryGetProperty("available", out var pa) || pa.ValueKind != JsonValueKind.False;
+        return false;
+    }
+
     /// <summary>The card's sections and its notes (warnings).</summary>
     object BuildPath(Track t, JsonElement src, JsonElement dev, List<string> chain, bool isDsd, bool sentDirect, bool nativeDsd, bool dop,
                      int srcRate, int devRate, string mode, string format, string volumeMode, double rg, List<string> notes)
@@ -213,8 +223,8 @@ public sealed partial class DaphneEngine
                 FilterLines(o.Apodize && upsampler)) with { pin = new[] { To(Pcm(F64, rateNow)) } });
         }
         if (chain.Contains("tube color")) proc.Add(ColorRow(chain, pcmRate, rateNow));
-        else if (o.ColorEnabled && DaphneNative.ColorInfo is { } ci && ci.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.False)
-            notes.Add("Tube Color is on, but this build cannot run it yet (before M2): playback is unchanged.");
+        else if (o.ColorEnabled && DaphneNative.ColorInfo is { } ci && !ColorPresetRuns(ci, o.ColorPreset))
+            notes.Add("Tube Color is on, but this amplifier's curve is not in this build yet: playback is unchanged.");
         if (chain.Contains("modulator pre-filter") || chain.Contains("modulator limiter"))
         {
             int modIn = pcmRate % 44100 == 0 ? 705600 : 768000;

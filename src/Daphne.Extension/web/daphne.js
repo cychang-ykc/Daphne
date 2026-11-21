@@ -345,7 +345,10 @@
     g.field('Tube Color', off ? 'Unavailable in this build: Tube Color comes with the tube curves (M2). These settings are kept and do nothing.'
                               : 'Adds the harmonic character of a tube amplifier. Off: playback is exactly as without it.',
       ui.sw(!!op.colorEnabled, v => set({ colorEnabled: v }).then(rerender)));
-    g.field('Amplifier', null, ui.select(presets.map(p => [p.id, p.label]), preset, v => set({ colorPreset: v }).then(rerender)));
+    // a preset whose curve is not in this build yet (M2 brings them one by one): offered, marked, and said below
+    const ready = p => p.available !== false;
+    g.field('Amplifier', cur && !ready(cur) ? "This amplifier's curve is not in this build yet: it plays as Tube Color off." : null,
+      ui.select(presets.map(p => [p.id, p.label + (ready(p) ? '' : ' (not yet)')]), preset, v => set({ colorPreset: v }).then(rerender)));
 
     /** A slider that sends while it moves (at most every 150 ms) and once more where it stops. */
     const slider = (min, max, step, value, text, send) => {
@@ -398,6 +401,8 @@
     const info = Daphne.state.color, op = o(), c = Daphne.state.colorNow;
     if (!info || !info.available) return [op.colorEnabled ? 'On, but unavailable in this build: playback is unchanged' : 'Off'];
     if (!op.colorEnabled) return ['Off: playback is exactly as without it'];
+    const p = (info.presets || []).find(x => x.id === op.colorPreset);
+    if (p && p.available === false) return ["This amplifier's curve is not in this build yet: playback is unchanged"];
     if (!c || !c.playing) return ['On · nothing playing'];
     const out = [];
     const report = Array.isArray(c.report) ? c.report : [];

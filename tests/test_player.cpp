@@ -1071,6 +1071,14 @@ bool color_runs() {
     return daphne::color_active(probe);
 }
 
+// The preset can run in this build: a test build (every preset on the M1 test curve), or its curve exported (M2).
+bool preset_runs(daphne::ColorPreset p) {
+    Settings probe;
+    probe.color.enabled = true;
+    probe.color.preset = p;
+    return daphne::color_active(probe);
+}
+
 // a block: what the player decodes at a time (kChunk source frames), at the converted PCM rate (176.4 kHz)
 constexpr double kBlockSec = 4096.0 / 176400.0;
 
@@ -1401,6 +1409,7 @@ std::vector<double> ch0_int32(const std::vector<uint8_t>& b) {
 // range said once, when it starts to apply.
 TEST_CASE("Player: Tube Color in the path report and the log", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    if (!preset_runs(daphne::ColorPreset::Set845)) SKIP("set-845's curve is not in this build yet (M2)");
     Rig r;
     r.dev->speed = 1.0;
     r.sources["a"] = int24_noise(44100, 2, 44100 * 2, 3);
@@ -1428,6 +1437,7 @@ TEST_CASE("Player: Tube Color in the path report and the log", "[player][color]"
 // and crossfaded in; the drive and the makeup gain change in place (doc/N28).
 TEST_CASE("Player: a Tube Color preset change is rebuilt and crossfaded, the drive applied in place", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    if (!preset_runs(daphne::ColorPreset::Set845)) SKIP("set-845's curve is not in this build yet (M2)");
     Rig r;
     r.dev->speed = 1.0;
     r.sources["sine"] = sine(44100, 1000.0, 2.0);
@@ -1703,6 +1713,8 @@ TEST_CASE("Player: the path report says when Tube Color does nothing", "[player]
 TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     struct Case { const char* name; double drive; bool bass; bool limits; };
+    // (whether full-scale noise at 200 % reaches the limiter's knee depends on the curve: the M1 test curve stays below
+    // it, set-300b's goes just over; either way nothing leaves above the ceiling)
     for (const auto& k : {Case{"drive 100 %, a loud 50 Hz", 1.0, true, true}, Case{"drive 200 %, full-scale noise", 2.0, false, false},
                           Case{"drive 0, a loud 50 Hz", 0.0, true, false}}) {
         INFO(k.name);
@@ -1732,12 +1744,9 @@ TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[
         for (int32_t v : y) peak = std::max(peak, v == INT32_MIN ? INT32_MAX : std::abs(v));
         UNSCOPED_INFO("output peak " << peak / 2147483648.0 << ", color_limited " << rep.color_limited);
         CHECK(rep.clipped == 0);
-        if (k.limits) {
-            CHECK(rep.color_limited > 0);
-            CHECK(static_cast<double>(peak) / 2147483648.0 <= daphne::kColorLimitCeiling + 1.0 / 8388608.0);
-        } else {
-            CHECK(rep.color_limited == 0);
-        }
+        if (k.drive > 0) CHECK(static_cast<double>(peak) / 2147483648.0 <= daphne::kColorLimitCeiling + 1.0 / 8388608.0);
+        if (k.limits) CHECK(rep.color_limited > 0);
+        if (k.drive == 0) CHECK(rep.color_limited == 0);   // idle: the samples as they are (0.99 peaks untouched)
         r.player.reset();
     }
 }

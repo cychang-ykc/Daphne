@@ -806,3 +806,87 @@ TEST_CASE("color chain: the same output whatever the thread count", "[color][cha
 }
 
 #endif
+
+// ---- the presets' own curves (M2, doc/N28): every build with Tube Color ----
+
+#include "daphne/color/curves.h"
+#include "daphne/color/stage.h"
+
+namespace {
+
+std::vector<double> run_curve(daphne::color::TubeColorStage& st, const std::vector<double>& x, int rate) {
+    st.prepare({rate, 2, 4096});
+    std::vector<double> y(x.size());
+    const int frames = static_cast<int>(x.size() / 2);
+    for (int at = 0; at < frames; at += 4096) {
+        const int n = std::min(4096, frames - at);
+        REQUIRE(st.process(x.data() + 2 * static_cast<size_t>(at), n, y.data() + 2 * static_cast<size_t>(at)) == n);
+    }
+    return y;
+}
+
+std::pair<double, double> harmonic_of(const std::vector<double>& y, int rate, double hz, int k, int from, int to) {
+    double c = 0.0, s = 0.0;
+    for (int i = from; i < to; ++i) {
+        const double w = 2 * std::numbers::pi * k * hz * i / rate, v = y[2 * static_cast<size_t>(i)];
+        c += v * std::cos(w);
+        s += v * std::sin(w);
+    }
+    return {2 * c / (to - from), 2 * s / (to - from)};
+}
+
+}  // namespace
+
+// The table as exported (verify/curve_export.py): f(0) = 0, f'(0) = 1, an output that only grows with the input, the
+// grid's own values where the cubic passes, its last value beyond the table (defined, not extrapolated).
+TEST_CASE("color curves: set-300b's table", "[color][curve]") {
+    const auto* c = daphne::color::preset_curve("set-300b");
+    REQUIRE(c != nullptr);
+    CHECK(daphne::color::preset_curve("set-1000") == nullptr);
+    const auto& f = *c;
+    CHECK(std::abs(f(0.0)) < 1e-12);
+    CHECK((f(1e-3) - f(-1e-3)) / 2e-3 == Catch::Approx(1.0).epsilon(1e-3));
+    double prev = f(-c->u_max - 1.0);
+    for (double u = -c->u_max - 1.0; u <= c->u_max + 1.0; u += 1e-3) {
+        CHECK(f(u) >= prev - 1e-12);
+        prev = f(u);
+    }
+    const double h = 2.0 * c->u_max / (c->n - 1);
+    for (int i = 0; i < c->n; i += 97) CHECK(f(-c->u_max + i * h) == Catch::Approx(c->f[i]).margin(1e-12));
+    CHECK(f(c->u_max + 3.0) == c->f[c->n - 1]);
+    CHECK(f(-c->u_max - 3.0) == c->f[0]);
+    // the ranges: rated power inside the grid-current-free part, the data past 400 % x 1.41 (5.64)
+    CHECK(c->u_rated < c->u_no_grid);
+    CHECK(c->u_data > 5.64);
+}
+
+// The stage on set-300b's curve and linear model against the circuit (Xyce, data/curves/set-300b_check.json): a 1 kHz
+// sine at 1 W and at rated power (drive 100 %), H2 and H3 within 0.5 dB of the circuit's; the output in phase with the
+// input (N28: every preset).
+TEST_CASE("color curves: set-300b in the stage against the circuit", "[color][curve]") {
+    const auto* c = daphne::color::preset_curve("set-300b");
+    REQUIRE(c != nullptr);
+    struct Level { double u, h2, h3; };
+    for (const auto& lv : {Level{0.3391, -42.47, -49.72}, Level{0.8606, -27.94, -30.64}}) {
+        INFO("u " << lv.u);
+        daphne::color::StageParams p;
+        p.drive = 1.0;
+        p.curve = c;
+        p.linear = c->linear;
+        daphne::color::TubeColorStage st(p);
+        const int rate = 44100, frames = 2 * rate;
+        std::vector<double> x(2 * static_cast<size_t>(frames));
+        for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = lv.u * std::sin(2 * std::numbers::pi * 1000.0 * i / rate);
+        const auto y = run_curve(st, x, rate);
+        const int from = frames - 44100 / 2, to = frames;   // the last half second (the coupling and DC blocker settled)
+        auto mag = [&](int k) { const auto [a, b] = harmonic_of(y, rate, 1000.0, k, from, to); return std::hypot(a, b); };
+        const double h1 = mag(1);
+        CHECK(20 * std::log10(mag(2) / h1) == Catch::Approx(lv.h2).margin(0.5));
+        CHECK(20 * std::log10(mag(3) / h1) == Catch::Approx(lv.h3).margin(0.5));
+        // in phase: the fundamental along the input's sine (the delay taken out)
+        const int d = st.content_delay_frames();
+        const auto [cs, sn] = harmonic_of(y, rate, 1000.0, 1, from, to);
+        const double ph = std::atan2(cs, sn) + 2 * std::numbers::pi * 1000.0 * d / rate;
+        CHECK(std::cos(ph) > 0.99);
+    }
+}

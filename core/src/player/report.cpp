@@ -5,6 +5,9 @@
 #include "common.h"
 #include "daphne/engine/chain.h"
 #include "daphne/engine/dsd_output.h"
+#if defined(DAPHNE_COLOR)
+#include "daphne/color/tube_color.h"
+#endif
 
 namespace daphne::playback {
 
@@ -54,7 +57,13 @@ std::string Report::filter(const Settings& s, const DsdEncoder* enc) const {
     else if (enc)
         d += " | " + enc->describe();
     // Tube Color (doc/N28): said when it is set but does nothing, so it is not taken for working
-    if (s.color.enabled && !color_active(s)) d += " | Tube Color unavailable (before M2)";
+    if (s.color.enabled && !color_active(s)) {
+#if defined(DAPHNE_COLOR)
+        d += std::string(" | ") + (color::available_any() ? color::kUnavailablePresetReason : color::kUnavailableReason);
+#else
+        d += " | Tube Color unavailable (before M2)";
+#endif
+    }
     else if (color_active(s) && s.color.drive <= 0.0) d += " | Tube Color idle (drive 0)";
     return pre + d;
 }

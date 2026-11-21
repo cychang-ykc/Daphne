@@ -154,6 +154,21 @@ function fieldByTitle(g, title) {
   assert.match(fieldByTitle(g, 'Tube Color').textContent, /Unavailable in this build/);
   console.log('PASS  unavailable: disabled, "unavailable" shown');
 
+  // 3b. a build with set-300b's curve only: another preset is marked and said to play as off
+  const partial = { ...info, curve: 'tubes', presets: info.presets.map(p => ({ ...p, available: p.id === 'set-300b' })) };
+  api = apiFor(partial, { playing: true, inChain: false, reason: '', report: ['Tube Color unavailable for this preset (its curve comes later in M2)'] },
+    { colorEnabled: true, colorPreset: 'set-845', colorDrive: 1 });
+  await ctx.module.init(api);
+  card = new El('card'); ui.section = () => card;
+  api.settings.core(card, ui);
+  g = colorGroup(card);
+  assert.ok(!g.classList.contains('dp-off'));
+  const amp = fieldByTitle(g, 'Amplifier').all().find(e => e.tag === 'select');
+  eq(amp.opts.map(x => x[1]), ['300B single-ended', '2A3 single-ended (not yet)', '845 single-ended (not yet)', 'EL34 push-pull (ultralinear) (not yet)']);
+  assert.match(fieldByTitle(g, 'Amplifier').textContent, /not in this build yet/);
+  assert.match(g.all().find(e => e.classList.contains('dp-color-status')).textContent, /not in this build yet/);
+  console.log('PASS  a preset without its curve: marked, said');
+
   // 4. WASAPI shared: the card shows Tube Color only
   ctx.App.settings.outputMode = 'shared';
   api = apiFor(info, null, { colorEnabled: false });

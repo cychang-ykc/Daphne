@@ -9,6 +9,7 @@ a 1 A AC current injected into the secondary (node o): V(o) is the output impeda
 (checked against a direct AC run with the loudspeaker network in the circuit).
 
   python speaker_load.py            Zout, damping factor, the response change for the loudspeaker models
+  python speaker_load.py --headphones   HD800S against a resistor, the presets and an OTL amplifier (after the above)
 """
 import json
 import math
@@ -127,7 +128,39 @@ def at(f, z, f0):
     return np.interp(math.log(f0), np.log(f), z.real) + 1j * np.interp(math.log(f0), np.log(f), z.imag)
 
 
-if __name__ == "__main__":
+def headphones():
+    """HD800S (N28): a broad 650 ohm resonance at 110 Hz (Stereophile / InnerFidelity) on a 300 or 400 ohm base,
+    against a resistor of the base value: each preset (its Zout from the zout_*.csv files) and an OTL headphone
+    amplifier of 50 / 100 ohm."""
+    fs = np.logspace(1, np.log10(40000), 600)
+    band = (fs >= 20) & (fs <= 20000)
+
+    def hd800s(base, peak=650.0, f0=110.0, q=1.5):
+        w = fs / f0
+        return base + (peak - base) / (1 + 1j * q * (w - 1 / w))
+
+    def zout_of(key):
+        a = np.loadtxt(os.path.join(OUT, f"zout_{key}.csv"), delimiter=",", skiprows=1)
+        return np.interp(np.log(fs), np.log(a[:, 0]), a[:, 1]) + 1j * np.interp(np.log(fs), np.log(a[:, 0]), a[:, 2])
+
+    out = {}
+    for base in (300.0, 400.0):
+        z = hd800s(base)
+        rows = {}
+        srcs = {k: zout_of(k) for k in ("set-300b", "set-2a3", "set-845", "pp-el34-ul_fb6", "pp-el34-ul_fb0", "pp-el34-ul_fb30")}
+        srcs.update({f"OTL {r:.0f} ohm": np.full(fs.shape, r, dtype=complex) for r in (50.0, 100.0)})
+        for k, zo in srcs.items():
+            d = 20 * np.log10(np.abs(z / (z + zo)) / np.abs(base / (base + zo)))
+            d -= np.interp(1000, fs, d)
+            rows[k] = (float(d[band].min()), float(d[band].max()), float(np.interp(110, fs, d)))
+            print(f"base {base:.0f} ohm  {k:<18} {rows[k][0]:+.4f} .. {rows[k][1]:+.4f} dB, at 110 Hz {rows[k][2]:+.4f} dB")
+        out[str(int(base))] = rows
+    json.dump(out, open(os.path.join(OUT, "hd800s.json"), "w"), indent=1)
+
+
+if __name__ == "__main__" and "--headphones" in sys.argv:
+    headphones()
+elif __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     cases = [("set-300b", 6), ("set-2a3", 6), ("set-845", 6)] + [("pp-el34-ul", F) for F in (0, 6, 12, 20, 30)]
     res = {}

@@ -6,9 +6,18 @@
 #include <numbers>
 
 #include "daphne/color/stage.h"
+#include "daphne/color/curves.h"
 #include "daphne/color/test_curve.h"
 
 namespace daphne::color {
+
+bool available(std::string_view preset) { return test_curve() || preset_curve(preset) != nullptr; }
+
+bool available_any() {
+    for (const char* p : {"set-300b", "set-2a3", "set-845", "pp-el34-ul"})
+        if (available(p)) return true;
+    return false;
+}
 
 double auto_makeup_db(double drive) {
     (void)drive;   // M2: the preset's table
@@ -137,16 +146,20 @@ void TubeColorStage::prime() {
 void TubeColorStage::run_frame(const double* x, double* y) {
     const double d = d_;
 #if defined(DAPHNE_COLOR_TEST_CURVE)
-    const TestCurve f;
+    const TestCurve test;
 #endif
+    const PresetCurve* const f = p_.curve;
     for (int c = 0; c < fmt_.channels; ++c) {
         const auto k = static_cast<size_t>(c);
         const double v = pre_.process(x[c], c);
+        double r = 0.0;   // the distortion the curve adds
+        if (!skip_curve_) {
 #if defined(DAPHNE_COLOR_TEST_CURVE)
-        const double r = skip_curve_ ? 0.0 : f(d * v) / d - v;   // the distortion the curve adds
+            r = (f ? (*f)(d * v) : test(d * v)) / d - v;
 #else
-        const double r = 0.0 * d;                                // (no curve before M2 outside test builds)
+            r = f ? (*f)(d * v) / d - v : 0.0;
 #endif
+        }
         const double w = r - dc_x1_[k] + dc_r_ * dc_y1_[k];      // without its DC
         dc_x1_[k] = r;
         dc_y1_[k] = w;

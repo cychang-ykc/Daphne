@@ -1,6 +1,7 @@
 #include "daphne/engine/chain.h"
 
 #if defined(DAPHNE_COLOR)
+#include "daphne/color/curves.h"
 #include "daphne/color/stage.h"
 #include "daphne/color/test_curve.h"
 #endif
@@ -167,7 +168,10 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
         }
         gain_ramp_ = static_cast<int>(std::max(1.0, dsp::Gain::kRampMs * 1e-3 * src.rate)) * color_ratio_;
 #if defined(DAPHNE_COLOR_TEST_CURVE)
-        cp.linear = color::test_linear_model();
+        cp.linear = color::test_linear_model();   // (test builds: every preset on the M1 test curve)
+#else
+        cp.curve = color::preset_curve(color_preset_name(s.color.preset));
+        if (cp.curve) cp.linear = cp.curve->linear;
 #endif
         auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
         color_ = c.get();

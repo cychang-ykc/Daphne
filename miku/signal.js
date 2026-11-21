@@ -54,6 +54,13 @@ function volumeRow(s, volumeMode, dsdFile) {
   }
 }
 
+/** The preset can run in this build (color_info: its curve is there; a test build runs every preset). */
+function presetRuns(info, preset) {
+  if (!info || info.available !== true) return false;
+  const p = (info.presets || []).find(x => x.id === preset);
+  return !!p && p.available !== false;
+}
+
 /**
  * Tube Color's row (doc/N28): the preset and the strength; idle (drive 0, the panel's bypass) passes the samples
  * through unchanged. On the DSD core it sits after the modulator's pre-filter, at its rate.
@@ -156,8 +163,8 @@ function buildPath(ctx) {
     });
   }
   if (chain.includes('tube color')) proc.push(colorRow(o, r, chain, pcmRate, rateNow));
-  else if (o.colorEnabled && SM.getColorInfo() && SM.getColorInfo().available === false)
-    notes.push('Tube Color is on, but this build cannot run it yet (before M2): playback is unchanged.');
+  else if (o.colorEnabled && SM.getColorInfo() && !presetRuns(SM.getColorInfo(), o.colorPreset))
+    notes.push("Tube Color is on, but this amplifier's curve is not in this build yet: playback is unchanged.");
   if (chain.includes('modulator pre-filter') || chain.includes('modulator limiter')) {
     const modIn = pcmRate % 44100 === 0 ? 705600 : 768000;
     const lines = [`前級升頻：${khz(pcmRate)} → ${khz(modIn)} kHz`, ...filterLines(o, o.apodize).filter(x => x), '限幅器：峰值保持在調變器的穩定範圍內'];

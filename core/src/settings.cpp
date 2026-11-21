@@ -369,6 +369,8 @@ json settings_to_json(const Settings& s) {
     };
 }
 
+const char* color_preset_name(ColorPreset p) { return to_name(kColorPreset, p); }
+
 ColorBiasRange color_bias_range(ColorPreset p) {
     // doc/N28: the reference circuits' quiescent current (M0) and the datasheet ratings at their plate voltage
     // lo = 0.6 x standard; hi = the rating; hot_cap = 90 % of the rated plate dissipation (plus the screen current)
@@ -409,7 +411,7 @@ bool color_bias_falls_back(const ColorSettings& c) {
 
 bool color_active(const Settings& s) {
 #if defined(DAPHNE_COLOR)
-    return s.color.enabled && color::available();
+    return s.color.enabled && color::available(to_name(kColorPreset, s.color.preset));
 #else
     (void)s;
     return false;
@@ -433,18 +435,23 @@ nlohmann::json color_info() {
         const auto hot = color_hot_ma(e.p);
         list.push_back({{"id", to_name(kColorPreset, e.p)},
                         {"label", e.label},
+#if defined(DAPHNE_COLOR)
+                        {"available", color::available(to_name(kColorPreset, e.p))},
+#else
+                        {"available", false},
+#endif
                         {"push_pull", e.push_pull},
                         {"bias_ma",
                          {{"lo", r.lo_ma}, {"standard", r.standard_ma}, {"hi", r.hi_ma}, {"cool", color_cool_ma(e.p)},
                           {"hot", hot ? json(*hot) : json(nullptr)}}}});
     }
 #if defined(DAPHNE_COLOR)
-    const bool available = color::available();
+    const bool available = color::available_any();
 #else
     const bool available = false;
 #endif
-#if defined(DAPHNE_COLOR_TEST_CURVE)
-    const char* curve = "test";
+#if defined(DAPHNE_COLOR)
+    const char* curve = color::test_curve() ? "test" : "tubes";
 #else
     const char* curve = "none";
 #endif

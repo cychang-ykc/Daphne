@@ -386,11 +386,23 @@ TEST_CASE("C API: dc_color_info", "[capi]") {
     const int n = dc_color_info(b.data(), static_cast<int>(b.size()));
     REQUIRE(n > 0);
     const auto j = nlohmann::json::parse(std::string(b.data(), static_cast<size_t>(n)));
+    // what can run: every preset in a test build (the M1 test curve), each preset once its curve is in the build (M2)
+    auto runs = [](const std::string& id) {
+        return daphne::color_active(daphne::settings_from_string(R"({"color": {"enabled": true, "preset": ")" + id + "\"}}").settings);
+    };
+    bool any = false;
+    for (const auto& p : j["presets"]) {
+        INFO(p["id"]);
+        CHECK(p["available"].get<bool>() == runs(p["id"].get<std::string>()));
+        any = any || p["available"].get<bool>();
+    }
+    CHECK(j["available"].get<bool>() == any);
 #if defined(DAPHNE_COLOR_TEST_CURVE)
-    CHECK(j["available"] == true);
     CHECK(j["curve"] == "test");
+#elif defined(DAPHNE_COLOR)
+    CHECK(j["curve"] == (any ? "tubes" : "none"));
+    CHECK(j["presets"][0]["available"] == true);   // set-300b: its curve exported first (M2)
 #else
-    CHECK(j["available"] == false);   // before M2: only the test builds can run it
     CHECK(j["curve"] == "none");
 #endif
     CHECK(j["drive_max"].get<double>() == daphne::kColorDriveMax);

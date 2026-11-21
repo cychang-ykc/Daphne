@@ -38,8 +38,11 @@
 
 namespace daphne::color {
 
+struct PresetCurve;
+
 struct StageParams {
     double drive = 1.0;   // 0 .. kColorDriveMax
+    const PresetCurve* curve = nullptr;   // the preset's curve (curves.h); none: the M1 test curve (test builds only)
     LinearModel linear;   // the preset's pre / post sections (empty: none)
     double level = 1.0;   // a fixed gain before the stage, cancelled with the volume (2: a DSD file converted, +6 dB)
     double volume = 1.0;  // the digital volume at the start (linear)

@@ -175,6 +175,8 @@ struct ColorBiasRange {
     double lo_ma, standard_ma, hi_ma, hot_cap_ma;
 };
 ColorBiasRange color_bias_range(ColorPreset p);
+// The preset's settings name ("set-300b").
+const char* color_preset_name(ColorPreset p);
 // The named biases (doc/N28): cool = 0.8 x standard; hot = min(1.1 x standard, hot_cap_ma), offered only where it is
 // at least 5 % above standard (nullopt otherwise: of the four presets only set-300b has it).
 inline constexpr double kColorCoolFactor = 0.8, kColorHotFactor = 1.1, kColorHotMinStep = 0.05;
@@ -213,14 +215,15 @@ bool color_active(const Settings& s);
 inline constexpr bool kColorOperatingPointAdjustable = false;
 
 // What a host needs to draw Tube Color's controls without copying the core's constants (doc/N28, dc_color_info):
-//   {"available": b,            this build can run the stage (else color.enabled true changes nothing)
-//    "curve": "test" | "none",  the curve the stage uses: the M1 test curve (test builds), none (before M2)
+//   {"available": b,            this build can run the stage for some preset (else color.enabled true changes nothing)
+//    "curve": "test" | "tubes" | "none",  the M1 test curve (test builds: every preset), the presets' own curves,
+//                               or none (a build without Tube Color)
 //    "drive_max": x,            the strength slider's limit (kColorDriveMax; 1.0 = 100 %)
 //    "makeup_trim_max_db": x,   makeup_gain's trim range is +- this
 //    "feedback_db": [...],      pp-el34-ul's feedback steps
 //    "load_ohms": [...],
 //    "operating_point_adjustable": b,   bias and load (M3)
-//    "presets": [{"id", "label", "push_pull": b,
+//    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build),
 //                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
 nlohmann::json color_info();
 // The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is

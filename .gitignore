@@ -18,3 +18,4 @@ build-mac-*/
 # verify/digitize_curves.py and verify/plot_points.py, never committed
 verify/data/tubes/**/*.png
 verify/data/test_curve_reach/
+verify/data/curves/*_ladder_*.csv

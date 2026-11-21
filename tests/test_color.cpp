@@ -213,7 +213,7 @@ TEST_CASE("color settings: the chain keys ignore Tube Color unless it is active"
     Settings on_edited = on;
     on_edited.color.drive = 0.3;
     on_edited.color.preset = ColorPreset::Set2a3;
-    if (daphne::color::available()) {
+    if (daphne::color::test_curve()) {
         // a test build: in place, the drive and the makeup gain; a new chain (rebuilt and crossfaded), what the curve
         // and the response are made from
         CHECK(daphne::color_active(on));
@@ -241,9 +241,17 @@ TEST_CASE("color settings: the chain keys ignore Tube Color unless it is active"
         v.color.load_ohms = 4;
         CHECK(key(v) != key(on));
     } else {
-        // a release build: enabled true is the same as off
-        CHECK_FALSE(daphne::color_active(on));
-        CHECK(daphne::DspChain::structure_key(on) == daphne::DspChain::structure_key(off));
+        // a release build: a preset runs once its curve is exported (M2); one without is the same as off
+        auto key = [](const Settings& x) { return daphne::DspChain::structure_key(x); };
+        const bool runs = daphne::color::available("set-300b");
+        CHECK(daphne::color_active(on) == runs);
+        CHECK((key(on) != key(off)) == runs);
+        Settings v = on;
+        v.color.drive = 1.7;
+        v.color.makeup_gain_db = -2.0;
+        CHECK(key(v) == key(on));   // in place
+        CHECK_FALSE(daphne::color::available("set-2a3"));   // (no curve yet: as off)
+        CHECK_FALSE(daphne::color_active(on_edited));
         CHECK(daphne::playback::TrackQueue::chain_key(on_edited, dev) == daphne::playback::TrackQueue::chain_key(off, dev));
     }
 }
