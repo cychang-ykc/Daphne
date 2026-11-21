@@ -1696,6 +1696,52 @@ TEST_CASE("Player: the path report says when Tube Color does nothing", "[player]
     CHECK((rep2.filter.find("unavailable") == std::string::npos) == color_runs());
 }
 
+// The guardrail (doc/N28): nothing clips on an integer device. The stage's own output reaches about full scale / drive
+// (the curve stays below 1, divided by the drive) plus what the DC blocker and the output transformer's low end add
+// after it: at drive 100 % a loud bass goes above full scale, and the soft limiter after the stage turns it down
+// (counted in color_limited); at 200 % full-scale noise stays below it; at drive 0 it does nothing.
+TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    struct Case { const char* name; double drive; bool bass; bool limits; };
+    for (const auto& k : {Case{"drive 100 %, a loud 50 Hz", 1.0, true, true}, Case{"drive 200 %, full-scale noise", 2.0, false, false},
+                          Case{"drive 0, a loud 50 Hz", 0.0, true, false}}) {
+        INFO(k.name);
+        Rig r;
+        if (k.bass) {
+            auto s = std::make_shared<Signal>();
+            const int n = 44100;
+            s->info.rate = 44100, s->info.channels = 2, s->info.bits = 24, s->info.lossless_int = true, s->info.frames = n, s->info.codec = "TEST";
+            s->x.resize(2 * static_cast<size_t>(n));
+            std::mt19937 g(3);
+            for (int i = 0; i < n; ++i) {
+                const double v = 0.93 * std::sin(2 * kPi * 50.0 * i / 44100) + 0.06 * ((static_cast<int32_t>(g() >> 8) - (1 << 23)) / 8388608.0);
+                s->x[2 * static_cast<size_t>(i)] = s->x[2 * static_cast<size_t>(i) + 1] = std::round(v * 8388607.0) / 8388608.0;
+            }
+            r.sources["a"] = s;
+        } else {
+            r.sources["a"] = int24_noise(44100, 2, 44100, 4);
+        }
+        Settings s;
+        s.color.enabled = true;
+        s.color.drive = k.drive;
+        REQUIRE(r.start("a", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        const auto y = r.dev->samples32();
+        int32_t peak = 0;
+        for (int32_t v : y) peak = std::max(peak, v == INT32_MIN ? INT32_MAX : std::abs(v));
+        UNSCOPED_INFO("output peak " << peak / 2147483648.0 << ", color_limited " << rep.color_limited);
+        CHECK(rep.clipped == 0);
+        if (k.limits) {
+            CHECK(rep.color_limited > 0);
+            CHECK(static_cast<double>(peak) / 2147483648.0 <= daphne::kColorLimitCeiling + 1.0 / 8388608.0);
+        } else {
+            CHECK(rep.color_limited == 0);
+        }
+        r.player.reset();
+    }
+}
+
 // Tube Color on at drive 0 (doc/N28): the stage a pure delay the player compensates, the quantizer it keeps passing the
 // samples through: every byte as with Tube Color off, at a rate oversampled 8x and one oversampled 4x.
 TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
@@ -1719,7 +1765,11 @@ TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
         };
         const auto off = play(false), on = play(true);
         REQUIRE(off.size() > static_cast<size_t>(rate) / 2 * 8);
-        CHECK(on == off);
+        size_t first = 0;
+        while (first < std::min(on.size(), off.size()) && on[first] == off[first]) ++first;
+        INFO("sizes " << on.size() << " / " << off.size() << ", first difference at byte " << first << " (frame " << first / 8 << ")");
+        CHECK(on.size() == off.size());
+        CHECK(first == std::min(on.size(), off.size()));
     }
 }
 

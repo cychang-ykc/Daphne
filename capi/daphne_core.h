@@ -100,7 +100,8 @@ DC_API int dc_device_kept(void);
 /* State snapshot as JSON (never waits for a dc_load in progress: "loading" meanwhile, with "design"):
  *   {"state": "idle|loading|playing|paused|ended|failed", "position": s, "duration": s, "track": n, "design": 0..1,
  *    "error": "...", "report": {"source": {...}, "device": {...}, "device_name": "...", "system_rate": n, "bit_perfect": b,
- *    "reason": "...", "filter": "...", "chain": [...], "latency_ms": x, "underruns": n, "clipped": n, "realtime": x}}
+ *    "reason": "...", "filter": "...", "chain": [...], "latency_ms": x, "underruns": n, "clipped": n, "color_limited": n,
+ *    "realtime": x}}  (color_limited: frames Tube Color's soft limiter turned down, doc/N28)
  * "realtime": the processing speed against real time while playing (audio seconds per second of work over the last
  * 2 s; 0 before the first measurement and for DSD files sent directly); below about 1.2 the device plays gaps.
  * "track" counts gapless transitions since dc_load; "asio_rates": PCM rates the open ASIO driver accepts (hosts use

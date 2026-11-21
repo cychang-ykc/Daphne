@@ -172,6 +172,15 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
         auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
         color_ = c.get();
         add("tube color", std::move(c), frames, rate, ch);
+        // PCM: a soft limiter after it (doc/N28): its peaks above full scale (the curve's asymmetry, the DC blocker and
+        // the output transformer's low end after it) are bent down to -0.3 dBFS instead of clipping. The DSD path has
+        // the modulator's limiter. Passes (with its delay) while the stage is idle: drive 0 stays bit-identical.
+        if (s.core != CoreMode::Dsd) {
+            auto l = std::make_unique<dsp::Limiter>(kColorLimitCeiling, 2.0, 80.0, kColorLimitKneeDb);
+            l->set_aligned(true);   // its delay compensated like the stage's (no tail of its own)
+            color_lim_ = l.get();
+            add("color limiter", std::move(l), frames, rate, ch);
+        }
     }
 #endif
     if (s.core == CoreMode::Dsd) add("modulator limiter", modulator_limiter(s.modulator), frames, rate, ch);
@@ -181,7 +190,7 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     pre_transparent_ = std::all_of(st_.begin(), st_.end(), [&](const Stage& x) {
         const dsp::Block* b = x.block.get();
 #if defined(DAPHNE_COLOR)
-        if (b == color_) return true;
+        if (b == color_ || b == color_lim_) return true;
 #endif
         return b == gain_ || b == xf_ || b == peq_ || b->is_identity();
     });
@@ -256,6 +265,8 @@ int DspChain::run_from(size_t first, const double* in, int frames, double* out) 
 #if defined(DAPHNE_COLOR)
         // the quantizer kept for Tube Color passes what the stage left as it was (the whole block), else dithers
         if (quant_follows_color_ && st_[i].block.get() == quant_ && color_) quant_->set_pass_through(color_->untouched());
+        // its limiter likewise: what the stage left as it was goes through (its delay kept)
+        if (st_[i].block.get() == color_lim_ && color_) color_lim_->set_pass_through(color_->untouched());
 #endif
         n = st_[i].block->process(src, n, dst);
         src = dst;
@@ -283,6 +294,20 @@ void DspChain::reset() {
     in_frames_ = 0;
     for (auto& s : st_) s.block->reset();
     clips_taken_ = 0;   // the quantizer's count restarts with it
+#if defined(DAPHNE_COLOR)
+    color_limited_taken_ = 0;
+#endif
+}
+
+int64_t DspChain::take_color_limited() {
+#if defined(DAPHNE_COLOR)
+    if (!color_lim_) return 0;
+    const int64_t n = color_lim_->limited_frames() - color_limited_taken_;
+    color_limited_taken_ = color_lim_->limited_frames();
+    return n;
+#else
+    return 0;
+#endif
 }
 
 int64_t DspChain::take_clips() {
@@ -292,8 +317,16 @@ int64_t DspChain::take_clips() {
     return n;
 }
 
+bool DspChain::identity(const Stage& s) const {
+#if defined(DAPHNE_COLOR)
+    // Tube Color's limiter does nothing to what an idle stage passes (it passes it too)
+    if (s.block.get() == color_lim_ && color_) return color_->is_identity();
+#endif
+    return s.block->is_identity();
+}
+
 bool DspChain::transparent() const {
-    return std::all_of(st_.begin(), st_.end(), [](const Stage& s) { return s.block->is_identity(); });
+    return std::all_of(st_.begin(), st_.end(), [&](const Stage& s) { return identity(s); });
 }
 
 bool DspChain::color_idle() const {
@@ -313,7 +346,7 @@ std::vector<std::string> DspChain::all_stages() const {
 std::vector<std::string> DspChain::stages() const {
     std::vector<std::string> v;
     for (const auto& s : st_)
-        if (!s.block->is_identity()) v.push_back(s.name);
+        if (!identity(s)) v.push_back(s.name);
     return v;
 }
 

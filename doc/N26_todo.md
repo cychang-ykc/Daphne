@@ -238,3 +238,9 @@ M0–M4 照規格書的 milestone 進行（分支 `tube-color-m0` 起）。之�
 - 每個 arch 分開編（`build-mac-arm64/`、`build-mac-x86_64/`，最低 macOS 11.0），因為 MIKU 的安裝包也是每個 arch 一份。打包後刪掉所有絕對路徑的 rpath，檢查 `otool -L` 只剩 `@rpath/` 和系統的函式庫，ad-hoc 簽章（`install_name_tool` 會讓簽章失效；MIKU 的安裝包會再簽一次），在本機 arch 上啟動 helper 確認 hello。
 - `bin/` 只放程式（MIKU 的安裝包會簽 `bin/` 裡的每個檔案）；FFmpeg 的授權（`FFmpeg-COPYING.LGPLv2.1`）與原始碼位置（`FFmpeg-SOURCE.txt`）、nlohmann/json 的 MIT 授權（`nlohmann-json-LICENSE.MIT`，編進了核心與 helper）和 `LICENSE` 一起放在模組根目錄。Windows 的 `build_for_miku.ps1` 也放同樣的四個（FFmpeg 的是 `FFmpeg-LICENSE.txt` 與寫著 BtbN 套件和 FFmpeg commit 的 `FFmpeg-SOURCE.txt`），MikuDeploy 跟著 DLL 一起帶進 MIKU。FFmpeg 換版本時兩邊都重新取得：Mac 以 `FF_VER` 與 configure 選項寫 `daphne-ffmpeg.stamp`，不同就重編（沒有 stamp 的舊編譯結果第一次會重編一次）；Windows 比對 `third_party\ffmpeg\SOURCE.txt` 與 `fetch_ffmpeg.ps1` 的套件檔名。`.gitattributes` 讓 `*.sh` 在每個 checkout 都是 LF：Windows（`core.autocrlf`）checkout 的 CRLF 腳本複製到 Mac 會在 `set -o pipefail` 失敗（`pipefail\r`）。2026-10-26 在 Intel Mac 上實測：沒有 stamp 的舊 FFmpeg 重編（3 分 15 秒），第二次沿用（4.8 秒）；輸出路徑含空白、授權檔四個、rpath 只剩 `@loader_path`、六個檔案的 ad hoc 簽章有效、打包的 helper 回報 abi 5；以一個會失敗的 helper 跑最後的檢查，腳本印出 helper 自己的錯誤（`dyld: Library not loaded`）再結束。
 - 結果（Intel Mac）：每個 arch 約 4 MB；arm64 版全是 arm64、x64 版全是 x86_64；x64 的 helper 回報 `{"abi":3,"e":"hello","version":"daphne 0.1.0"}`。arm64 版要在 Apple Silicon 的 Mac 上試。
+
+## 待查：latency＋flush 的 limiter 在曲目結尾可能多出一段（2026-11-21，Tube Color M2 時發現）
+
+播放器在曲目結尾會先送入 `content_delay()` 長度的零，把最後的內容推出 chain，然後再呼叫 `flush()`。`dsp::Limiter` 的延遲以 latency 回報，`content_delay` 已經包含它，`flush()` 又會吐出 w frames（2 ms 前瞻）。所以 DSD 檔轉 PCM 的 `dsd limiter`、DSD 路徑的 `modulator limiter`，結尾可能多出約 2 ms 的靜音。
+
+Tube Color 的限制器就是因為這樣多出一段（播放測試在 96 kHz 多了一個裝置緩衝），已改用對齊模式（`set_aligned`）。既有的兩個限制器還沒驗證；gapless 在補零之前就接上下一首，應該不受影響。影響：曲目結尾多 2 ms 靜音、報告的長度。驗證方式：DSD 檔轉 PCM 播放，比對送出的 frame 數和預期。這次不處理。

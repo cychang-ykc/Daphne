@@ -77,7 +77,7 @@ json report_json(const daphne::PlayReport& r) {
                 {"bits", r.device.valid_bits}, {"container", r.device.container_bits}, {"text", daphne::describe(r.device)}};
     return {{"source", src},           {"device", dev},       {"device_name", r.device_name}, {"system_rate", r.system_rate}, {"bit_perfect", r.bit_perfect},
             {"reason", r.not_bit_perfect_reason}, {"filter", r.filter}, {"chain", r.chain},  {"latency_ms", r.latency_ms},
-            {"underruns", r.underruns}, {"clipped", r.clipped}, {"realtime", r.realtime_factor}};
+            {"underruns", r.underruns}, {"clipped", r.clipped}, {"color_limited", r.color_limited}, {"realtime", r.realtime_factor}};
 }
 
 void push_event(dc_player* p, json e) {

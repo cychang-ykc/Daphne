@@ -108,7 +108,16 @@ public sealed partial class DaphneEngine
             "Operating point: standard bias, 8 ohm tap (adjustable from M3)",
             $"Level: {trim}",
             dsdCore ? $"After the DSD modulator's pre-filter, at {Khz(rate)} kHz" : null,
+            chain.Contains("color limiter") ? "Soft limiter after it: ceiling -0.3 dBFS, knee from -2.3 dBFS" + LimitedText() : null,
             curve) with { pin = new[] { To(Pcm(F64, rate)) } };
+    }
+
+    /// <summary>How much Tube Color's soft limiter has turned down so far (the report's color_limited, in seconds).</summary>
+    string LimitedText()
+    {
+        long n = _report.TryGetProperty("color_limited", out var cl) && cl.ValueKind == JsonValueKind.Number ? cl.GetInt64() : 0;
+        int rate = _report.GetProperty("device").GetProperty("rate").GetInt32();
+        return n > 0 && rate > 0 ? $" (turned down {(double)n / rate:0.0} s so far)" : " (not needed so far)";
     }
 
     /// <summary>The card's sections and its notes (warnings).</summary>

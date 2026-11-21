@@ -543,7 +543,7 @@ TEST_CASE("color chain: the quantizer kept for Tube Color passes while it is idl
             y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
         }
         const int d = c.content_delay();
-        REQUIRE(d == 223);
+        REQUIRE(d == 223 + 88);   // the stage (oversampled 8x) and its limiter's 2 ms look-ahead at 44.1 kHz
         auto count_diff = [&](int from, int to) {
             int k = 0;
             for (int n = from; n < to; ++n) k += y[2 * static_cast<size_t>(n + d)] != x[2 * static_cast<size_t>(n)];
@@ -598,6 +598,7 @@ namespace {
 struct VolRun {
     std::vector<double> y;   // channel 0, chain output
     int delay = 0;
+    int64_t limited = 0;   // frames Tube Color's limiter turned down (these tests keep below it: the stage alone)
 };
 
 // x (stereo) through a chain with Tube Color at `drive`, the volume at db0 and, from input block `at_block` on, db1
@@ -630,6 +631,7 @@ VolRun run_volume(const std::vector<double>& x, int src_rate, int dev_rate, doub
         const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(4096, frames - at), o.data());
         for (int i = 0; i < n; ++i) r.y.push_back(o[2 * static_cast<size_t>(i)]);
     }
+    r.limited = c.take_color_limited();
     return r;
 }
 
@@ -645,14 +647,17 @@ std::vector<double> two_tones(int rate, double seconds, double amp) {
 }  // namespace
 
 // The curve sees the music at the same level whatever the digital volume: the output at -20 or -60 dB is the output at
-// 0 dB scaled, the distortion included (doc/N28, item 7).
+// 0 dB scaled, the distortion included (doc/N28, item 7). Drive 1.4 on peaks of 0.6: the curve's input reaches 0.84,
+// into its soft limit, while the output stays below the soft limiter after the stage (which works on the level that
+// leaves, so it does not scale with the volume: it is checked to stay idle here, and tested on its own).
 TEST_CASE("color volume: the tube character does not change with the volume", "[color][volume]") {
     for (int dev_rate : {44100, 176400}) {   // oversampled 8x in the stage; upsampled 4x before it (its delay between)
         INFO(dev_rate << " Hz");
-        const auto x = two_tones(44100, 1.0, 0.8);
-        const auto a = run_volume(x, 44100, dev_rate, 1.0, 0.0, 0.0, -1);
+        const auto x = two_tones(44100, 1.0, 0.6);
+        const auto a = run_volume(x, 44100, dev_rate, 1.4, 0.0, 0.0, -1);
+        CHECK(a.limited == 0);
         for (double db : {-20.0, -60.0}) {
-            const auto b = run_volume(x, 44100, dev_rate, 1.0, db, db, -1);
+            const auto b = run_volume(x, 44100, dev_rate, 1.4, db, db, -1);
             const double g = std::pow(10.0, db / 20.0);
             double err = 0.0, peak = 0.0;
             for (size_t i = 0; i < std::min(a.y.size(), b.y.size()); ++i) {
@@ -671,10 +676,11 @@ TEST_CASE("color volume: the tube character does not change with the volume", "[
 TEST_CASE("color volume: a volume change is cancelled in step with the gain stage's ramp", "[color][volume]") {
     for (int dev_rate : {44100, 176400}) {
         INFO(dev_rate << " Hz");
-        const auto x = two_tones(44100, 1.5, 0.8);
+        const auto x = two_tones(44100, 1.5, 0.6);   // (below the soft limiter, as above)
         const int at_block = 8;
-        const auto a = run_volume(x, 44100, dev_rate, 1.0, 0.0, 0.0, -1);
-        const auto b = run_volume(x, 44100, dev_rate, 1.0, 0.0, -20.0, at_block);
+        const auto a = run_volume(x, 44100, dev_rate, 1.4, 0.0, 0.0, -1);
+        const auto b = run_volume(x, 44100, dev_rate, 1.4, 0.0, -20.0, at_block);
+        CHECK(a.limited == 0);
         // the gain as heard at the output: the same chains with Tube Color idle (a pure delay, the same content delay)
         const auto a0 = run_volume(x, 44100, dev_rate, 0.0, 0.0, 0.0, -1);
         const auto b0 = run_volume(x, 44100, dev_rate, 0.0, 0.0, -20.0, at_block);
@@ -724,11 +730,12 @@ TEST_CASE("color volume: below -80 dB the curve is skipped", "[color][volume]") 
 // A DSD file converted to PCM comes 6 dB up (50 % modulation -> 0 dBFS): Tube Color takes it out too, so a DSD file and
 // a PCM file of the same music get the same drive.
 TEST_CASE("color volume: a converted DSD file's +6 dB is cancelled", "[color][volume]") {
-    const auto x = two_tones(176400, 0.5, 0.4);
+    const auto x = two_tones(176400, 0.5, 0.3);   // (the DSD file's output 0.6: below the soft limiter after the stage)
     auto x2 = x;
     for (auto& v : x2) v *= 2.0;
     const auto pcm = run_volume(x, 176400, 176400, 1.0, 0.0, 0.0, -1);
     const auto dsd = run_volume(x2, 176400, 176400, 1.0, 0.0, 0.0, -1, true);
+    CHECK(dsd.limited == 0);
     double err = 0.0, peak = 0.0;
     for (size_t i = 0; i < std::min(pcm.y.size(), dsd.y.size()); ++i) {
         err = std::max(err, std::abs(dsd.y[i] / 2.0 - pcm.y[i]));

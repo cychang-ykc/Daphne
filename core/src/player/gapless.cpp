@@ -88,6 +88,7 @@ int Player::Impl::join_produce() {
         if (a_over) {   // the tail is out: what the new chain made beyond it plays next, then the normal path
             if (j.b.frames() > 0) xf.carry.push(j.b.data(), j.b.frames());
             rep.clipped += j.old->take_clips();
+            rep.color_limited += j.old->take_color_limited();
             j.clear();
             return 0;
         }

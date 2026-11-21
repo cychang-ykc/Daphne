@@ -9,6 +9,7 @@
 #include "../dsp/src/fft.h"
 #include "daphne/dsp/limiter.h"
 #include "daphne/dsp/modulator.h"
+#include "daphne/engine/settings.h"
 
 using daphne::dsp::DsdModulator;
 
@@ -163,4 +164,48 @@ TEST_CASE("Limiter: no sample above the ceiling, bit-exact delay below it", "[li
     for (int i = 12000 + 19200; i < 12000 + 20000; ++i) REQUIRE(std::abs(y[2 * i] - x[2 * (i - w)]) <= 0.006 * std::abs(x[2 * (i - w)]) + 1e-15);
     // ... and once it is within 1e-9 (about 21 time constants, 1.7 s) it snaps to 1: bit for bit again
     for (int i = 12000 + 48000 * 2; i < n; ++i) REQUIRE(y[2 * i] == x[2 * (i - w)]);
+}
+
+// Tube Color's soft limiter (doc/N28): a knee in dB around the ceiling. The gain asked for is continuous and never lets
+// a peak out above the ceiling; below the knee nothing changes; pass-through keeps the delay and is bit-exact.
+TEST_CASE("Limiter: the soft knee", "[limiter]") {
+    const double ceiling = daphne::kColorLimitCeiling, knee = daphne::kColorLimitKneeDb;
+    daphne::dsp::Limiter lim(ceiling, 2.0, 80.0, knee);
+    const double t = 20 * std::log10(ceiling);
+    // the static curve: 1 below the knee, peak * gain <= ceiling everywhere, continuous and monotonic in output
+    double prev_out = 0.0, prev_g = 1.0;
+    for (double x_db = t - 10; x_db <= t + 12; x_db += 0.01) {
+        const double peak = std::pow(10.0, x_db / 20), g = lim.request(peak);
+        INFO(x_db);
+        if (x_db <= t - knee / 2 - 1e-9) CHECK(g == 1.0);
+        CHECK(peak * g <= ceiling * (1 + 1e-12));
+        CHECK(peak * g >= prev_out - 1e-12);          // more in, never less out
+        CHECK(std::abs(g - prev_g) < 2e-3);           // no jump (0.01 dB steps)
+        prev_out = peak * g, prev_g = g;
+    }
+    CHECK(lim.request(std::pow(10.0, (t + knee / 2) / 20)) == Catch::Approx(1.0 / std::pow(10.0, knee / 2 / 20)).epsilon(1e-9));
+    // on a signal: overs bent down below the ceiling; quiet passages bit-exact (delayed)
+    lim.prepare({48000, 2, 4800});
+    const int w = lim.latency_frames(), n = 48000;
+    std::vector<double> x(2 * n), y(2 * n);
+    for (int i = 0; i < n; ++i) {
+        const double a = i < n / 2 ? 0.5 : 1.4;   // a quiet half, then 3 dB above full scale
+        x[2 * i] = x[2 * i + 1] = a * std::sin(2 * 3.141592653589793 * 440.0 * i / 48000.0);
+    }
+    lim.process(x.data(), n, y.data());
+    double over = 0.0;
+    for (double v : y) over = std::max(over, std::abs(v));
+    CHECK(over <= ceiling * (1 + 1e-12));
+    CHECK(lim.limited_frames() > 0);
+    bool exact = true;
+    for (int i = w; i < n / 2 - 200; ++i) exact = exact && y[2 * i] == x[2 * (i - w)];   // before the overs' look-ahead
+    CHECK(exact);
+    // pass-through: the delay stays, the samples are the input's, bit for bit, once the gain has released
+    lim.set_pass_through(true);
+    std::vector<double> z(2 * n);
+    lim.process(x.data(), n, z.data());
+    exact = true;
+    const int back = static_cast<int>(daphne::dsp::Limiter::kPassReleaseMs * 48) + 2 * w;   // the straight release, the window
+    for (int i = back; i < n; ++i) exact = exact && z[2 * i] == x[2 * (i - w)] && z[2 * i + 1] == x[2 * (i - w) + 1];
+    CHECK(exact);
 }

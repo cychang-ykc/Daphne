@@ -35,6 +35,9 @@ class TubeColorStage;
 }  // namespace daphne::color
 
 namespace daphne {
+namespace dsp {
+class Limiter;
+}
 
 class DspChain {
 public:
@@ -70,6 +73,8 @@ public:
     // Samples the final quantizer clamped to full scale since the last call (0 without a quantizer).
     // Its output is already inside the device range, so convert_to_device() never sees these.
     int64_t take_clips();
+    // Frames Tube Color's limiter turned down since the last call (0 without one; doc/N28: color_limited).
+    int64_t take_color_limited();
 
     // Settings fields that update() cannot change in place.
     static std::string structure_key(const Settings& s);
@@ -95,6 +100,7 @@ private:
         std::string name;
         std::unique_ptr<dsp::Block> block;
     };
+    bool identity(const Stage& s) const;   // passes samples through as reports see it (Tube Color's limiter: as its stage)
     void add(std::string name, std::unique_ptr<dsp::Block> b, int& frames, int& rate, int& channels);
     int run_from(size_t first, const double* in, int frames, double* out);
     bool needs_quantizer(const Settings& s) const { return needs_quantizer(s, src_, dev_, pre_transparent_); }
@@ -123,6 +129,8 @@ private:
     dsp::Quantizer* quant_ = nullptr;
 #if defined(DAPHNE_COLOR)
     color::TubeColorStage* color_ = nullptr;   // Tube Color (doc/N28), when in the chain
+    dsp::Limiter* color_lim_ = nullptr;        // its soft limiter (PCM path), passing while the stage is idle
+    int64_t color_limited_taken_ = 0;
 #endif
     int64_t clips_taken_ = 0;
 };

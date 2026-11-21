@@ -322,6 +322,7 @@ TEST_CASE("color stage: where it sits in the chain, and only while active", "[co
     CHECK(at(v, "tube color") > at(v, "resampler"));
     CHECK(at(v, "tube color") > at(v, "eq"));
     CHECK(at(v, "tube color") < at(v, "quantizer"));
+    CHECK(at(v, "color limiter") == at(v, "tube color") + 1);   // its soft limiter right after it (PCM)
     // at the source rate (no resampler)
     v = all_stages(on, src_info(44100, 24), same_rate);
     REQUIRE(at(v, "tube color") >= 0);
@@ -332,14 +333,17 @@ TEST_CASE("color stage: where it sits in the chain, and only while active", "[co
     INFO(nlohmann::json(v).dump());
     REQUIRE(at(v, "tube color") >= 0);
     CHECK(at(v, "tube color") == at(v, "modulator pre-filter") + 1);
-    CHECK(at(v, "modulator limiter") == at(v, "tube color") + 1);
+    CHECK(at(v, "modulator limiter") == at(v, "tube color") + 1);   // the modulator's limiter, not a second one
+    CHECK(at(v, "color limiter") < 0);
     // a DSD file converted to PCM: before the DSD limiter
     v = all_stages(file_on, dsd_file, pcm);
     REQUIRE(at(v, "tube color") >= 0);
     CHECK(at(v, "tube color") < at(v, "dsd limiter"));
+    CHECK(at(v, "color limiter") == at(v, "tube color") + 1);
     // otherwise the chain is the one without it
     auto without = [](std::vector<std::string> x) {
         x.erase(std::remove(x.begin(), x.end(), "tube color"), x.end());
+        x.erase(std::remove(x.begin(), x.end(), "color limiter"), x.end());
         return x;
     };
     CHECK(without(all_stages(on, src_info(44100, 24), pcm)) == all_stages(off, src_info(44100, 24), pcm));

@@ -241,6 +241,7 @@ void Player::Impl::finish_fade() {
     // the next chain becomes current; what it has produced beyond the mixed part plays next
     tl.abs_out += xf.delay_shift;
     rep.clipped += cur->take_clips();   // its last mixed block
+    rep.color_limited += cur->take_color_limited();
     cur = xf.finish();
     throughput.reset();
     rep.chain = cur->stages();
@@ -403,6 +404,7 @@ bool Player::Impl::produce() {
     } else {
         rep.clipped += convert_to_device(dsp.data(), static_cast<size_t>(n) * dch, rep.device, io.bytes.data());
         rep.clipped += cur->take_clips() + (xf.next ? xf.next->take_clips() : 0);   // clamped by the final quantizer
+        rep.color_limited += cur->take_color_limited() + (xf.next ? xf.next->take_color_limited() : 0);
         io.pend = static_cast<size_t>(n) * io.block;
     }
     work += Throughput::Clock::now() - t2;

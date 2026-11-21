@@ -75,6 +75,8 @@ function colorRow(o, r, chain, pcmRate, rateNow) {
       'Operating point: standard bias, 8 ohm tap (adjustable from M3)',
       `Level: ${trim}`,
       dsdCore ? `After the DSD modulator's pre-filter, at ${khz(rate)} kHz` : null,
+      chain.includes('color limiter') ? 'Soft limiter after it: ceiling -0.3 dBFS, knee from -2.3 dBFS' +
+        ((+r.color_limited || 0) > 0 && r.device && r.device.rate > 0 ? ` (turned down ${((+r.color_limited) / r.device.rate).toFixed(1)} s so far)` : ' (not needed so far)') : null,
       info && info.curve === 'test' ? 'Curve: the M1 test curve (a polynomial, not a tube): for trying the controls only' : null),
     pin: [to(pcm(F64, rate))],
   };

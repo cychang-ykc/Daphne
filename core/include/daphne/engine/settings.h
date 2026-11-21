@@ -187,6 +187,9 @@ double color_bias_current_ma(const ColorSettings& c);
 // kept; the playback path reports it once).
 bool color_bias_falls_back(const ColorSettings& c);
 inline constexpr double kColorMakeupTrimMaxDb = 6.0;
+// Tube Color's soft limiter on the PCM path (doc/N28): the ceiling (-0.3 dBFS) and its knee (from -2.3 dBFS)
+inline constexpr double kColorLimitCeiling = 0.9660508789898133;   // 10^(-0.3/20)
+inline constexpr double kColorLimitKneeDb = 4.0;
 
 struct Settings {
     int version = 1;
