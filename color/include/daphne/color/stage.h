@@ -47,7 +47,7 @@ struct StageParams {
     double level = 1.0;   // a fixed gain before the stage, cancelled with the volume (2: a DSD file converted, +6 dB)
     double volume = 1.0;  // the digital volume at the start (linear)
     double trim_db = 0.0; // the makeup gain's manual trim on top of the automatic one (color.makeup_gain: -6 .. 6 dB)
-    std::vector<Section> load;   // the loudspeaker load's sections (curves.h PresetLoad), after post, faded as a whole
+    std::vector<Section> load{};   // the loudspeaker load's sections (curves.h PresetLoad), after post, faded as a whole
     double load_gain_db = 0.0;   // its makeup, faded in with it
 };
 
