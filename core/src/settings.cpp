@@ -34,13 +34,10 @@ const EnumTable<VolumeMode> kVolumeMode = {
     {"digital", VolumeMode::Digital}, {"fixed", VolumeMode::Fixed}};
 const EnumTable<ColorModel> kColorModel = {{"fixed-point", ColorModel::FixedPoint}};
 const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {"set-300b", ColorPreset::Set300b},
-                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul},
-                                             {"set-300b-x", ColorPreset::Set300bX}, {"h2-pure", ColorPreset::H2Pure}};
+                                             {"set-845", ColorPreset::Set845}, {"pp-el34-ul", ColorPreset::PpEl34Ul}};
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
-const EnumTable<ColorLoad> kColorLoad = {{"resistor-8", ColorLoad::Resistor8}, {"bookshelf-vented", ColorLoad::BookshelfVented},
-                                         {"bookshelf-sealed", ColorLoad::BookshelfSealed},
-                                         {"bookshelf-vented-smooth", ColorLoad::BookshelfVentedSmooth},
-                                         {"bookshelf-sealed-smooth", ColorLoad::BookshelfSealedSmooth}};
+const EnumTable<ColorLoad> kColorLoad = {{"resistor-8", ColorLoad::Resistor8},
+                                         {"bookshelf-vented-smooth", ColorLoad::BookshelfVentedSmooth}};
 const EnumTable<ColorAlign> kColorAlign = {{"off", ColorAlign::Off}, {"loudness", ColorAlign::Loudness}, {"near-peak", ColorAlign::NearPeak},
                                            {"conservative", ColorAlign::Conservative}};
 
@@ -391,9 +388,7 @@ ColorBiasRange color_bias_range(ColorPreset p) {
     // lo = 0.6 x standard; hi = the rating; hot_cap = 90 % of the rated plate dissipation (plus the screen current)
     switch (p) {
         case ColorPreset::Set2a3: return {35.0, 58.9, 59.0, 53.8};     // RCA: 15 W at 251 V
-        case ColorPreset::Set300b:
-        case ColorPreset::Set300bX:
-        case ColorPreset::H2Pure: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V (X: the same 300B stage)
+        case ColorPreset::Set300b: return {36.0, 59.8, 100.0, 92.5};   // WE: 100 mA maximum plate current; 36 W at 350 V
         case ColorPreset::Set845: return {44.0, 72.5, 79.0, 71.8};     // RCA: 100 W at 1253 V
         case ColorPreset::PpEl34Ul: return {39.0, 65.1, 69.0, 63.0};   // Philips: 25 W at 399 V, plus 6.7 mA screen current
     }
@@ -435,33 +430,17 @@ bool color_active(const Settings& s) {
 #endif
 }
 
-// the strength's H2 the panel shows (h2-pure), from its curve's data; null for the others
-json h2_table(ColorPreset p) {
-#if defined(DAPHNE_COLOR)
-    if (const auto* c = color::preset_curve(to_name(kColorPreset, p)); c && c->h2) {
-        json t = json::array();
-        for (int i = 0; i < c->h2_n; ++i) t.push_back({c->h2[2 * i], c->h2[2 * i + 1]});
-        return t;
-    }
-#else
-    (void)p;
-#endif
-    return nullptr;
-}
-
 nlohmann::json color_info() {
     // the panel's order: the default first
     struct P {
         ColorPreset p;
         const char* label;
-        bool push_pull, experimental;
+        bool push_pull;
     };
-    const P presets[] = {{ColorPreset::Set300b, "300B single-ended", false, false},
-                         {ColorPreset::Set300bX, "300B single-ended, CCS driver (experimental)", false, true},
-                         {ColorPreset::H2Pure, "Pure H2 (experimental)", false, true},
-                         {ColorPreset::Set2a3, "2A3 single-ended", false, false},
-                         {ColorPreset::Set845, "845 single-ended", false, false},
-                         {ColorPreset::PpEl34Ul, "EL34 push-pull (ultralinear)", true, false}};
+    // v1: set-300b only (doc/N28, 2026-11-22). The others come one at a time in later versions:
+    //   {ColorPreset::Set2a3, "2A3 single-ended", false}, {ColorPreset::Set845, "845 single-ended", false},
+    //   {ColorPreset::PpEl34Ul, "EL34 push-pull (ultralinear)", true}
+    const P presets[] = {{ColorPreset::Set300b, "300B single-ended", false}};
     json list = json::array();
     for (const auto& e : presets) {
         const auto r = color_bias_range(e.p);
@@ -474,8 +453,6 @@ nlohmann::json color_info() {
                         {"available", false},
 #endif
                         {"push_pull", e.push_pull},
-                        {"experimental", e.experimental},
-                        {"h2_table", h2_table(e.p)},
                         {"bias_ma",
                          {{"lo", r.lo_ma}, {"standard", r.standard_ma}, {"hi", r.hi_ma}, {"cool", color_cool_ma(e.p)},
                           {"hot", hot ? json(*hot) : json(nullptr)}}}});
@@ -497,17 +474,14 @@ nlohmann::json color_info() {
             {"feedback_db", {0, 6, 12, 20, 30}},
             {"load_ohms", {4, 8, 16}},
             {"operating_point_adjustable", kColorOperatingPointAdjustable},
-            {"loads", json::array({{{"id", "resistor-8"}, {"label", "8 ohm resistor"}},
-                                   {{"id", "bookshelf-vented"}, {"label", "Bookshelf speaker, vented"}},
-                                   {{"id", "bookshelf-sealed"}, {"label", "Bookshelf speaker, sealed"}},
-                                   {{"id", "bookshelf-vented-smooth"}, {"label", "Bookshelf speaker, vented, smooth (its tilt, no resonance)"}},
-                                   {{"id", "bookshelf-sealed-smooth"}, {"label", "Bookshelf speaker, sealed, smooth (its tilt, no resonance)"}}})},
+            {"loads", json::array({{{"id", "bookshelf-vented-smooth"}, {"label", "Bookshelf speaker (its tilt, no resonance)"}},
+                                   {{"id", "resistor-8"}, {"label", "8 ohm resistor (the amplifier alone)"}}})},
             {"default_load", to_name(kColorLoad, ColorSettings{}.load)},
             // the level alignment (track_levels.h; experimental), and the references it aligns to
-            {"aligns", json::array({{{"id", "off"}, {"label", "Off (as before)"}},
+            {"aligns", json::array({{{"id", "conservative"}, {"label", "Conservative (the larger cut; default)"}},
                                     {{"id", "loudness"}, {"label", "Loudness (integrated LUFS)"}},
                                     {{"id", "near-peak"}, {"label", "Near-peak (99.9th percentile)"}},
-                                    {{"id", "conservative"}, {"label", "Conservative (the larger cut)"}}})},
+                                    {{"id", "off"}, {"label", "Off"}}})},
             {"default_align", to_name(kColorAlign, ColorSettings{}.align)},
             {"align_refs", {{"lufs", kAlignRefLufs}, {"p999_db", kAlignRefP999Db}}},
             {"presets", list}};

@@ -345,10 +345,14 @@
     g.field('Tube Color', off ? 'Unavailable in this build: Tube Color comes with the tube curves (M2). These settings are kept and do nothing.'
                               : 'Adds the harmonic character of a tube amplifier. Off: playback is exactly as without it.',
       ui.sw(!!op.colorEnabled, v => set({ colorEnabled: v }).then(rerender)));
-    // a preset whose curve is not in this build yet (M2 brings them one by one): offered, marked, and said below
-    const ready = p => p.available !== false;
-    g.field('Amplifier', cur && !ready(cur) ? "This amplifier's curve is not in this build yet: it plays as Tube Color off." : null,
-      ui.select(presets.map(p => [p.id, p.label + (ready(p) ? '' : ' (not yet)')]), preset, v => set({ colorPreset: v }).then(rerender)));
+    // the amplifiers the core offers (v1: 300B alone, doc/N28). One: said as text, not a menu of one; more (later
+    // versions add them one at a time): a menu
+    if (presets.length <= 1) {
+      g.field('Amplifier', 'More amplifiers come in later versions, one at a time.',
+        h('span', { class: 'dp-color-amp' }, cur ? cur.label : '300B single-ended'));
+    } else {
+      g.field('Amplifier', null, ui.select(presets.map(p => [p.id, p.label]), preset, v => set({ colorPreset: v }).then(rerender)));
+    }
 
     /** A slider that sends while it moves (at most every 150 ms) and once more where it stops. */
     const slider = (min, max, step, value, text, send) => {
@@ -364,6 +368,7 @@
     const pct = Math.min(max, Math.round((op.colorDrive == null ? 1 : op.colorDrive) * 100));
     g.field('Strength', '100 % = the amplifier as calibrated, 0 = no effect. Changes glide, without a gap.',
       slider(0, max, 1, pct, x => x + ' %', x => set({ colorDrive: x / 100 }).then(refresh)));
+    // the push-pull amplifier's feedback (v1 has no push-pull amplifier: never shown; the setting is kept)
     if (cur && cur.push_pull) {
       const steps = (info.feedback_db || []).map(d => [d, d === 30 ? '30 dB (Mullard 5-20)' : d === 6 ? '6 dB (default)' : d === 0 ? '0 dB (none)' : d + ' dB']);
       g.field('Feedback', 'The push-pull amplifier\'s negative feedback: more feedback, less distortion.',
@@ -375,11 +380,12 @@
       g.field('Load', "What the amplifier drives: its output impedance against the loudspeaker's shapes the response.",
         ui.select(info.loads.map(l => [l.id, l.label]), load, v => set({ colorLoad: v }).then(refresh)));
     }
-    // the level alignment (an M2 experiment, doc/N28): the curve driven by the track's level against the calibration's
+    // the level alignment (doc/N28): the curve driven by the track's level against the calibration's; conservative by
+    // default. On the panel for the listening; M4 moves it under "Advanced"
     if (Array.isArray(info.aligns) && info.aligns.length) {
-      const al = info.aligns.some(a => a.id === op.colorAlign) ? op.colorAlign : (info.default_align || 'off');
+      const al = info.aligns.some(a => a.id === op.colorAlign) ? op.colorAlign : (info.default_align || 'conservative');
       const refs = info.align_refs || {};
-      g.field('Level align (experimental)',
+      g.field('Level align',
         `Loud masters drive the tubes harder. Aligned, the tubes are driven as if the track were at the calibration level ` +
         `(${refs.lufs} LUFS / 99.9 % at ${refs.p999_db} dBFS); only ever less, the output level unchanged.`,
         ui.select(info.aligns.map(a => [a.id, a.label]), al, v => set({ colorAlign: v }).then(refresh)));
@@ -425,19 +431,6 @@
     if (report.some(x => x.includes('idle'))) out.push(op.colorBypass ? 'Bypassed: the stage idles (drive 0), samples unchanged' : 'Idle (strength 0): samples unchanged');
     else if (!c.inChain) out.push('Not in the playback chain');
     else out.push('Active');
-    // h2-pure: the strength's H2 (the core's table: a 1 kHz sine at -18 dBFS RMS), for the listening notes
-    if (p && Array.isArray(p.h2_table) && p.h2_table.length) {
-      const d = op.colorBypass ? 0 : (op.colorDrive == null ? 1 : op.colorDrive), t = p.h2_table;
-      let pct = 0;
-      if (d >= t[t.length - 1][0]) pct = t[t.length - 1][1];
-      else if (d > 0) {
-        let i = 0;
-        while (i + 1 < t.length && t[i + 1][0] < d) i++;
-        const [d0, p0] = i === 0 && d < t[0][0] ? [0, 0] : t[i], [d1, p1] = i === 0 && d < t[0][0] ? t[0] : t[i + 1];
-        pct = p0 + (p1 - p0) * (d - d0) / (d1 - d0);
-      }
-      out.push(`H2 at this strength: ${pct.toFixed(2)} % (1 kHz sine at -18 dBFS RMS)`);
-    }
     // the level alignment for the track heard: its measures, the gain and the effective drive
     const al = c.align;
     if (al && al.status && al.status !== 'off') {

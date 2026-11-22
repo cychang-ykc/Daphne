@@ -72,12 +72,13 @@ const ui = {
 };
 const info = {
   available: true, curve: 'test', drive_max: 2, makeup_trim_max_db: 6, feedback_db: [0, 6, 12, 20, 30], load_ohms: [4, 8, 16],
-  operating_point_adjustable: false, default_load: 'bookshelf-vented',
-  loads: [{ id: 'resistor-8', label: '8 ohm resistor' }, { id: 'bookshelf-vented', label: 'Bookshelf speaker, vented' },
-          { id: 'bookshelf-sealed', label: 'Bookshelf speaker, sealed' }],
-  presets: [{ id: 'set-300b', label: '300B single-ended', push_pull: false }, { id: 'set-2a3', label: '2A3 single-ended', push_pull: false },
-            { id: 'set-845', label: '845 single-ended', push_pull: false }, { id: 'pp-el34-ul', label: 'EL34 push-pull (ultralinear)', push_pull: true }],
+  operating_point_adjustable: false, default_load: 'bookshelf-vented-smooth',
+  loads: [{ id: 'bookshelf-vented-smooth', label: 'Bookshelf speaker (its tilt, no resonance)' }, { id: 'resistor-8', label: '8 ohm resistor (the amplifier alone)' }],
+  presets: [{ id: 'set-300b', label: '300B single-ended', push_pull: false }],   // v1 (doc/N28)
 };
+// a later version's core, with more amplifiers (the menu, the push-pull feedback)
+const laterInfo = { ...info, presets: [...info.presets, { id: 'set-845', label: '845 single-ended', push_pull: false },
+                                       { id: 'pp-el34-ul', label: 'EL34 push-pull (ultralinear)', push_pull: true }] };
 const eq = (a, b) => assert.strictEqual(JSON.stringify(a), JSON.stringify(b));
 const tick = () => new Promise(r => setImmediate(r));
 
@@ -130,17 +131,21 @@ function fieldByTitle(g, title) {
   assert.strictEqual(lvl.min, -6); assert.strictEqual(lvl.max, 6); assert.strictEqual(lvl.step, 0.5);
   lvl.value = -2.5; lvl.onchange(); await tick();
   eq(calls[0], ['set', { colorTrimDb: -2.5 }]);
+  // one amplifier (v1): said as text, no menu of one
+  assert.ok(!fieldByTitle(g, 'Amplifier').all().some(e => e.tag === 'select'), 'no menu for one amplifier');
+  assert.match(fieldByTitle(g, 'Amplifier').textContent, /300B single-ended/);
+  assert.match(fieldByTitle(g, 'Amplifier').textContent, /later versions/);
   // the load menu: the core's loads, the default where none is set; a choice is sent as colorLoad
   const loadSel = fieldByTitle(g, 'Load').all().find(e => e.tag === 'select');
-  eq(loadSel.opts.map(x => x[0]), ['resistor-8', 'bookshelf-vented', 'bookshelf-sealed']);
-  assert.strictEqual(loadSel.value, 'bookshelf-vented');
+  eq(loadSel.opts.map(x => x[0]), ['bookshelf-vented-smooth', 'resistor-8']);
+  assert.strictEqual(loadSel.value, 'bookshelf-vented-smooth');
   calls.length = 0;
   loadSel.value = 'resistor-8'; loadSel.onchange(); await tick();
   eq(calls[0], ['set', { colorLoad: 'resistor-8' }]);
   console.log('PASS  available: fields, slider throttling, bypass, level, load, status');
 
-  // 2. push-pull: the feedback field
-  api = apiFor(info, { playing: false, lastEvent: null }, { colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1, colorFeedbackDb: 30, colorTrimDb: 0 });
+  // 2. a later version with a push-pull amplifier: the amplifier menu and the feedback field (hidden in v1)
+  api = apiFor(laterInfo, { playing: false, lastEvent: null }, { colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1, colorFeedbackDb: 30, colorTrimDb: 0 });
   await ctx.module.init(api);
   card = new El('card'); ui.section = () => card;
   api.settings.core(card, ui);
@@ -148,6 +153,8 @@ function fieldByTitle(g, title) {
   const fb = fieldByTitle(g, 'Feedback').all().find(e => e.tag === 'select');
   eq(fb.opts.map(x => x[0]), [0, 6, 12, 20, 30]);
   assert.strictEqual(fb.value, 30);
+  eq(fieldByTitle(g, 'Amplifier').all().find(e => e.tag === 'select').opts.map(x => x[1]),
+     ['300B single-ended', '845 single-ended', 'EL34 push-pull (ultralinear)']);   // no "(not yet)" marks
   assert.match(g.all().find(e => e.classList.contains('dp-color-status')).textContent, /nothing playing/);
   console.log('PASS  push-pull: feedback steps from the core');
 
@@ -164,21 +171,6 @@ function fieldByTitle(g, title) {
   assert.match(g.all().find(e => e.classList.contains('dp-color-status')).textContent, /unavailable in this build/);
   assert.match(fieldByTitle(g, 'Tube Color').textContent, /Unavailable in this build/);
   console.log('PASS  unavailable: disabled, "unavailable" shown');
-
-  // 3b. a build with set-300b's curve only: another preset is marked and said to play as off
-  const partial = { ...info, curve: 'tubes', presets: info.presets.map(p => ({ ...p, available: p.id === 'set-300b' })) };
-  api = apiFor(partial, { playing: true, inChain: false, reason: '', report: ['Tube Color unavailable for this preset (its curve comes later in M2)'] },
-    { colorEnabled: true, colorPreset: 'set-845', colorDrive: 1 });
-  await ctx.module.init(api);
-  card = new El('card'); ui.section = () => card;
-  api.settings.core(card, ui);
-  g = colorGroup(card);
-  assert.ok(!g.classList.contains('dp-off'));
-  const amp = fieldByTitle(g, 'Amplifier').all().find(e => e.tag === 'select');
-  eq(amp.opts.map(x => x[1]), ['300B single-ended', '2A3 single-ended (not yet)', '845 single-ended (not yet)', 'EL34 push-pull (ultralinear) (not yet)']);
-  assert.match(fieldByTitle(g, 'Amplifier').textContent, /not in this build yet/);
-  assert.match(g.all().find(e => e.classList.contains('dp-color-status')).textContent, /not in this build yet/);
-  console.log('PASS  a preset without its curve: marked, said');
 
   // 3c. the status line follows the core in and out of idle on the page's refresh (doc/N28)
   intervals.length = 0;
@@ -199,34 +191,20 @@ function fieldByTitle(g, title) {
   }
   console.log('PASS  the status line: idle -> running -> idle -> running');
 
-  // 3d. h2-pure: the strength's H2 from the core's table, interpolated at the slider's drive (0 when bypassed)
-  const h2info = { ...info, presets: [...info.presets, { id: 'h2-pure', label: 'Pure H2 (experimental)', push_pull: false, experimental: true,
-    h2_table: [[0.05, 0.125], [1.0, 2.5], [2.0, 4.96], [4.0, 9.7]] }] };
-  for (const [drive, bypass, want] of [[1.0, false, '2.50'], [1.5, false, '3.73'], [0.025, false, '0.06'], [4.0, false, '9.70'], [2.0, true, '0.00']]) {
-    api = apiFor(h2info, { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null },
-      { colorEnabled: true, colorPreset: 'h2-pure', colorDrive: drive, colorBypass: bypass });
-    await ctx.module.init(api);
-    card = new El('card'); ui.section = () => card;
-    api.settings.core(card, ui);
-    const st = colorGroup(card).all().find(e => e.classList.contains('dp-color-status')).textContent;
-    assert.ok(st.includes(`H2 at this strength: ${want} %`), `drive ${drive}${bypass ? ' bypassed' : ''}: ${st}`);
-  }
-  console.log("PASS  h2-pure: the strength's H2 in the status line");
-
   // 3e. the level alignment (an M2 experiment): the menu from the core's modes (off where none is set), a choice sent as
   // colorAlign; the status line with the track's measures, the gain and the effective drive, or that it is scanning
-  const alInfo = { ...info, default_align: 'off', align_refs: { lufs: -14.28, p999_db: -0.81 },
-    aligns: [{ id: 'off', label: 'Off (as before)' }, { id: 'loudness', label: 'Loudness (integrated LUFS)' },
-             { id: 'near-peak', label: 'Near-peak (99.9th percentile)' }, { id: 'conservative', label: 'Conservative (the larger cut)' }] };
+  const alInfo = { ...info, default_align: 'conservative', align_refs: { lufs: -14.28, p999_db: -0.81 },
+    aligns: [{ id: 'conservative', label: 'Conservative (the larger cut; default)' }, { id: 'loudness', label: 'Loudness (integrated LUFS)' },
+             { id: 'near-peak', label: 'Near-peak (99.9th percentile)' }, { id: 'off', label: 'Off' }] };
   const alStatus = align => ({ playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null, align });
   api = apiFor(alInfo, alStatus({ status: 'ready', mode: 'loudness', lufs: -4.1, p999_db: -1.24, gain_db: -10.18, drive: 2, drive_eff: 0.6204 }),
-    { colorEnabled: true, colorPreset: 'h2-pure', colorDrive: 2, colorAlign: 'loudness' });
+    { colorEnabled: true, colorPreset: 'set-300b', colorDrive: 2, colorAlign: 'loudness' });
   await ctx.module.init(api);
   card = new El('card'); ui.section = () => card;
   api.settings.core(card, ui);
   g = colorGroup(card);
-  const alSel = fieldByTitle(g, 'Level align (experimental)').all().find(e => e.tag === 'select');
-  eq(alSel.opts.map(x => x[0]), ['off', 'loudness', 'near-peak', 'conservative']);
+  const alSel = fieldByTitle(g, 'Level align').all().find(e => e.tag === 'select');
+  eq(alSel.opts.map(x => x[0]), ['conservative', 'loudness', 'near-peak', 'off']);
   assert.strictEqual(alSel.value, 'loudness');
   let alLine = g.all().find(e => e.classList.contains('dp-color-status')).textContent;
   assert.ok(alLine.includes('Track -4.1 LUFS, 99.9 % -1.2 dBFS · align (loudness) -10.2 dB · drive 200 % → 62 % effective'), alLine);
@@ -243,7 +221,7 @@ function fieldByTitle(g, title) {
     g = colorGroup(card);
     alLine = g.all().find(e => e.classList.contains('dp-color-status')).textContent;
     assert.ok(alLine.includes(want), `${st.status}: ${alLine}`);
-    if (st.status === 'ready') assert.strictEqual(fieldByTitle(g, 'Level align (experimental)').all().find(e => e.tag === 'select').value, 'off');
+    if (st.status === 'ready') assert.strictEqual(fieldByTitle(g, 'Level align').all().find(e => e.tag === 'select').value, 'conservative');
   }
   console.log('PASS  the level alignment: menu and status line');
 

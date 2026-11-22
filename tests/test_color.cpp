@@ -48,7 +48,7 @@ TEST_CASE("color settings: defaults, off", "[color]") {
     CHECK_FALSE(s.color.bias_ma.has_value());
     CHECK(s.color.load_ohms == 8);
     CHECK_FALSE(s.color.makeup_gain_db.has_value());
-    CHECK(daphne::kColorDriveMax == 4.0);   // 400 % (doc/N28, 2026-11-21)
+    CHECK(daphne::kColorDriveMax == 2.0);   // 200 % (doc/N28, 2026-11-22)
     CHECK_FALSE(daphne::color_active(s));
 }
 
@@ -106,7 +106,8 @@ TEST_CASE("color settings: invalid values are errors and keep the default", "[co
     CHECK(unknown.ok());
     REQUIRE(unknown.diagnostics.size() == 1);
     CHECK(unknown.diagnostics[0].path == "color.warmth");
-    CHECK(load(R"({"drive": 4.0})").ok());   // the limit itself is allowed
+    CHECK(load(R"({"drive": 2.0})").ok());   // the limit itself is allowed
+    CHECK(has_error(load(R"({"drive": 2.01})"), "color.drive"));
     CHECK(load(R"({"drive": 0})").ok());
     CHECK(load(R"({"makeup_gain": 6})").ok());
     CHECK(load(R"({"makeup_gain": -6})").ok());
@@ -428,14 +429,14 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
         {"enabled", {true, false}, {0, 1, "true", "false", 5e-324}},
         {"model", {"fixed-point"}, {"circuit", "Fixed-Point", "fixed-point ", 0, true, 5e-324}},
         {"preset", {"set-2a3", "set-300b", "set-845", "pp-el34-ul"}, {"set-300B", "300b", "pp-el34", 1, false, 5e-324}},
-        {"drive", {0, 0.0, 1, 0.01, 1.35, 2.0, 3, daphne::kColorDriveMax, 5e-324},
-         {-0.01, -1, daphne::kColorDriveMax + 1e-9, 4.5, 400, "1.0", true}},
+        {"drive", {0, 0.0, 1, 0.01, 1.35, 2.0, daphne::kColorDriveMax, 5e-324},
+         {-0.01, -1, daphne::kColorDriveMax + 1e-9, 3, 4.5, 400, "1.0", true}},
         {"feedback_db", {0, 6, 12, 20, 30}, {6.0, 7, -6, 31, 2147483654LL, "6", false, 5e-324}},
         {"bias", {"cool", "standard", "hot", 35.0, 59.8, 72.5, 100, 36}, {34.99, 100.01, 0, -60, "Hot", "warm", true, 5e-324}},
         {"load_ohms", {4, 8, 16}, {8.0, 0, 2, 32, -8, "8", true, 5e-324}},
         {"makeup_gain", {"auto", 0, -6, 6, 1.5, -0.001, 5e-324}, {6.0001, -7, 12, "AUTO", "3", false}},
-        {"load", {"resistor-8", "bookshelf-vented", "bookshelf-sealed", "bookshelf-vented-smooth", "bookshelf-sealed-smooth"},
-         {"bookshelf", "Resistor-8", "horn", "smooth", 8, true}},
+        {"load", {"resistor-8", "bookshelf-vented-smooth"},
+         {"bookshelf", "Resistor-8", "horn", "smooth", "bookshelf-vented", "bookshelf-sealed", "bookshelf-sealed-smooth", 8, true}},
         {"align", {"off", "loudness", "near-peak", "conservative"}, {"peak", "Loudness", "lufs", 1, true}},
     };
     for (auto& f : fields) f.invalid.insert(f.invalid.end(), foreign.begin(), foreign.end());
@@ -481,14 +482,10 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
             if (k == "load_ohms") want.load_ohms = v.get<int>();
             if (k == "makeup_gain" && v.is_number()) want.makeup_gain_db = v.get<double>();
             if (k == "load")
-                want.load = v == "resistor-8"                ? daphne::ColorLoad::Resistor8
-                            : v == "bookshelf-sealed"        ? daphne::ColorLoad::BookshelfSealed
-                            : v == "bookshelf-vented-smooth" ? daphne::ColorLoad::BookshelfVentedSmooth
-                            : v == "bookshelf-sealed-smooth" ? daphne::ColorLoad::BookshelfSealedSmooth
-                                                             : daphne::ColorLoad::BookshelfVented;
+                want.load = v == "resistor-8" ? daphne::ColorLoad::Resistor8 : daphne::ColorLoad::BookshelfVentedSmooth;
             if (k == "align")
                 want.align = v == "loudness" ? daphne::ColorAlign::Loudness : v == "near-peak" ? daphne::ColorAlign::NearPeak
-                             : v == "conservative" ? daphne::ColorAlign::Conservative : daphne::ColorAlign::Off;
+                             : v == "off" ? daphne::ColorAlign::Off : daphne::ColorAlign::Conservative;
         }
         // the object as given (NaN and infinity included), and as text (where they become null: invalid as well)
         for (int as_text = 0; as_text < 2; ++as_text) {
@@ -525,31 +522,32 @@ TEST_CASE("color settings: random objects, every invalid field falls back alone"
     SUCCEED("seed " << seed << ", " << rounds << " rounds");
 }
 
-// The loudspeaker load (doc/N28): its names, the default (vented), written back; an unknown one is an error that keeps
-// the default and the other fields.
+// The loudspeaker load (doc/N28): its names, the default (the smooth loudspeaker), written back; the loads removed after
+// the listening (vented, sealed, sealed-smooth: they rang) and an unknown one are errors that keep the default and the
+// other fields.
 TEST_CASE("color settings: the load", "[color]") {
-    CHECK(Settings{}.color.load == daphne::ColorLoad::BookshelfVented);
-    for (const auto& [name, l] : {std::pair{"resistor-8", daphne::ColorLoad::Resistor8}, std::pair{"bookshelf-vented", daphne::ColorLoad::BookshelfVented},
-                                  std::pair{"bookshelf-sealed", daphne::ColorLoad::BookshelfSealed},
-                                  std::pair{"bookshelf-vented-smooth", daphne::ColorLoad::BookshelfVentedSmooth},
-                                  std::pair{"bookshelf-sealed-smooth", daphne::ColorLoad::BookshelfSealedSmooth}}) {
+    CHECK(Settings{}.color.load == daphne::ColorLoad::BookshelfVentedSmooth);
+    for (const auto& [name, l] : {std::pair{"resistor-8", daphne::ColorLoad::Resistor8},
+                                  std::pair{"bookshelf-vented-smooth", daphne::ColorLoad::BookshelfVentedSmooth}}) {
         const auto r = load(std::string(R"({"load": ")") + name + R"("})");
         CHECK(r.ok());
         CHECK(r.settings.color.load == l);
         CHECK(daphne::settings_to_json(r.settings)["color"]["load"] == name);
         CHECK(std::string(daphne::color_load_name(l)) == name);
     }
-    const auto bad = load(R"({"load": "horn", "drive": 1.5})");
-    CHECK(has_error(bad, "color.load"));
-    CHECK(bad.settings.color.load == daphne::ColorLoad::BookshelfVented);
-    CHECK(bad.settings.color.drive == 1.5);
+    for (const char* gone : {"horn", "bookshelf-vented", "bookshelf-sealed", "bookshelf-sealed-smooth"}) {
+        const auto bad = load(std::string(R"({"load": ")") + gone + R"(", "drive": 1.5})");
+        CHECK(has_error(bad, "color.load"));
+        CHECK(bad.settings.color.load == daphne::ColorLoad::BookshelfVentedSmooth);
+        CHECK(bad.settings.color.drive == 1.5);
+    }
 }
 
 // The level alignment (track_levels.h; an M2 experiment): its names, off by default, written back; an unknown one is an
 // error that keeps the default; taken in place (not part of the chain's structure); color_info lists the modes and the
 // references.
 TEST_CASE("color settings: the level alignment", "[color]") {
-    CHECK(Settings{}.color.align == daphne::ColorAlign::Off);
+    CHECK(Settings{}.color.align == daphne::ColorAlign::Conservative);   // the default (2026-11-22)
     for (const auto& [name, a] : {std::pair{"off", daphne::ColorAlign::Off}, std::pair{"loudness", daphne::ColorAlign::Loudness},
                                   std::pair{"near-peak", daphne::ColorAlign::NearPeak}, std::pair{"conservative", daphne::ColorAlign::Conservative}}) {
         const auto r = load(std::string(R"({"enabled": true, "align": ")") + name + R"("})");
@@ -563,11 +561,11 @@ TEST_CASE("color settings: the level alignment", "[color]") {
     }
     const auto bad = load(R"({"align": "peak", "drive": 1.5})");
     CHECK(has_error(bad, "color.align"));
-    CHECK(bad.settings.color.align == daphne::ColorAlign::Off);
+    CHECK(bad.settings.color.align == daphne::ColorAlign::Conservative);
     CHECK(bad.settings.color.drive == 1.5);
     const auto info = daphne::color_info();
     REQUIRE(info["aligns"].size() == 4);
-    CHECK(info["default_align"] == "off");
+    CHECK(info["default_align"] == "conservative");
     CHECK(info["align_refs"]["lufs"] == -14.28);
     CHECK(info["align_refs"]["p999_db"] == -0.81);
 }

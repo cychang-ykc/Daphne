@@ -78,7 +78,8 @@ void usage() {
               << "  daphne play [--settings file] [--device id|index] [--shared|--exclusive|--asio [driver]]\n"
               << "              [--start S] [--length S] [--next file] [--watch] [--script t:cmd,...] files...\n"
               << "  daphne render-dsp <in> <out.wav> [--settings file] [--channels N] [--bits 16|24|32] [--float]\n"
-              << "                                          the whole chain offline (dsd core: the DoP stream)\n"
+              << "                    [--color-align-db G]  the whole chain offline (dsd core: the DoP stream); G: Tube Color's\n"
+              << "                                          level alignment for the file (dB <= 0; the player scans for it)\n"
               << "  daphne decode-test [--md5] files...     decode files; FLAC is checked against its STREAMINFO MD5;\n"
               << "                                          --md5 prints the MD5 of the decoded stream as s32le\n"
               << "  daphne render <in> <out.wav> [--start F] [--dsd-lowpass 24|30|50]\n"
@@ -712,9 +713,11 @@ int cmd_render_dsp(std::vector<std::string> args) {
     if (!load_settings_arg(args, s)) return 1;
     int channels = 0, bits = 24;
     bool as_float = false;
+    double align_db = 0.0;   // Tube Color's level alignment, as the player sets it for a track (dB, <= 0)
     std::vector<std::string> files;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--channels" && i + 1 < args.size()) channels = std::stoi(args[++i]);
+        else if (args[i] == "--color-align-db" && i + 1 < args.size()) align_db = std::stod(args[++i]);
         else if (args[i] == "--bits" && i + 1 < args.size()) bits = std::stoi(args[++i]);
         else if (args[i] == "--float") as_float = true;
         else files.push_back(args[i]);
@@ -757,6 +760,7 @@ int cmd_render_dsp(std::vector<std::string> args) {
         std::cerr << "error: " << err << "\n";
         return 1;
     }
+    chain.set_color_align(std::pow(10.0, std::min(0.0, align_db) / 20.0), true);
     std::string stages;
     for (const auto& st : chain.stages()) stages += (stages.empty() ? "" : " -> ") + st;
     std::cout << in.codec << " " << in.rate << " Hz " << in.channels << " ch -> " << daphne::describe(dev) << "\n"

@@ -13,6 +13,7 @@
 //               static curve cannot follow the bias shift grid current makes (N28)
 
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "daphne/color/linear.h"
@@ -26,9 +27,6 @@ struct PresetCurve {
     double u_max;
     LinearModel linear;
     double u_rated, u_no_grid, u_data;
-    // the strength's H2 for a 1 kHz sine at -18 dBFS RMS (h2-pure: the panel shows it), h2_n pairs of drive, percent
-    const double* h2 = nullptr;
-    int h2_n = 0;
 
     double operator()(double u) const {
         const double p = (u + u_max) * (n - 1) / (2.0 * u_max);
@@ -57,10 +55,21 @@ const PresetCurve* preset_curve(std::string_view id);
 struct PresetLoad {
     const char* preset;
     int feedback_db;      // -1: not a push-pull preset
-    const char* load;     // the settings' name ("bookshelf-vented")
+    const char* load;     // the settings' name ("bookshelf-vented-smooth")
     std::vector<Section> sections;
     double makeup_db;
 };
 const PresetLoad* preset_load(std::string_view preset, int feedback_db, std::string_view load);
+
+// The automatic makeup gain (doc/N28, verify/makeup_table.py): for a preset and a load, the loudness the drive takes
+// away, (drive, dB) pairs over 0 .. kColorDriveMax: the median over the six test tracks of the loudness before the
+// limiter against the original, with the level alignment's default (conservative), by the slider's drive. Nullptr
+// where none is measured (0 dB).
+struct DriveMakeup {
+    const char* preset;
+    const char* load;
+    std::vector<std::pair<double, double>> table;
+};
+const DriveMakeup* drive_makeup(std::string_view preset, std::string_view load);
 
 }  // namespace daphne::color

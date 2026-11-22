@@ -55,11 +55,15 @@ struct StageParams {
     std::vector<Section> load{};   // the loudspeaker load's sections (curves.h PresetLoad), after post, faded as a whole
     double load_gain_db = 0.0;   // its makeup, faded in with it
     double align = 1.0;   // the level alignment's gain on the curve's input at the start (0 < a <= 1)
+    // the automatic makeup (curves.h DriveMakeup): (drive, dB) by the slider's drive; empty: 0 dB
+    std::vector<std::pair<double, double>> makeup{};
 };
 
-// The automatic makeup gain (dB) for a drive: keeps the loudness within 0.5 dB as the drive changes (doc/N28). M2 fills it
-// from each preset's loudness measurements (verify/loudness.py); the M1 test curve needs none (0 dB).
-double auto_makeup_db(double drive);
+// The automatic makeup gain (dB) for a drive from a preset's table (linear between its points, 0 at drive 0, its last
+// value beyond it; an empty table: 0 dB): keeps the loudness as the drive changes (doc/N28). Indexed by the slider's
+// drive, not the effective one: the table is the median of the six tracks each at its own alignment (conservative), so
+// a track the alignment turns down is made up as the others at that slider position.
+double auto_makeup_db(const std::vector<std::pair<double, double>>& table, double drive);
 
 class TubeColorStage final : public dsp::Block {
 public:

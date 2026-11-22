@@ -1,14 +1,18 @@
 """M2 (N28): data/curves/<preset>.json -> color/src/preset_curves.inc, the presets' curves and linear models the
-engine is built with (generated; edit the export, not the file).
+engine is built with (generated; edit the export, not the file), the loudspeaker load (data/loads/loads.json: the
+loads the engine offers) and the drive's makeup tables (data/curves/<preset>_makeup.json, verify/makeup_table.py).
 
-  python curve_to_cpp.py            every preset with an export in data/curves/
+v1 builds set-300b only (2026-11-22): the other exports (set-300b-x, h2-pure: M2's experiments) stay as data.
+
+  python curve_to_cpp.py
 """
 import json, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "data", "curves")
 DST = os.path.join(os.path.dirname(HERE), "color", "src", "preset_curves.inc")
-IDS = {"set-300b": "Set300b", "set-300b-x": "Set300bX", "h2-pure": "H2Pure", "set-2a3": "Set2a3", "set-845": "Set845", "pp-el34-ul": "PpEl34Ul"}
+IDS = {"set-300b": "Set300b"}                 # the presets the engine offers (later: set-2a3, set-845, pp-el34-ul)
+LOADS = ("bookshelf-vented-smooth",)         # the loads with sections (resistor-8 has none)
 
 
 def main():
@@ -29,14 +33,9 @@ def main():
         def secs(lst):
             return ", ".join(f"{{Section::Kind::{s['kind']}, {s['f']:.17g}, {s['q']:.17g}}}" for s in lst)
         c = d["calibration"]
-        h2 = d.get("h2_table")
-        if h2:   # the strength's H2 (h2-pure): drive, percent
-            out.append(f"inline constexpr double k_{name}_h2[{2 * len(h2['drive_pct'])}] = {{" +
-                       ", ".join(f"{a:.6g}, {b:.6g}" for a, b in h2["drive_pct"]) + "};")
         out.append(f"inline const PresetCurve k_{name} = {{\"{pid}\", k_{name}_f, {len(vals)}, {d['u_max']:.17g},")
         out.append(f"    LinearModel{{{{{secs(d['linear']['pre'])}}}, {{{secs(d['linear']['post'])}}}}},")
-        out.append(f"    {c['u_rated']:.17g}, {c['u_no_grid']:.17g}, {c['u_data']:.17g}, "
-                   f"{f'k_{name}_h2' if h2 else 'nullptr'}, {len(h2['drive_pct']) if h2 else 0}}};")
+        out.append(f"    {c['u_rated']:.17g}, {c['u_no_grid']:.17g}, {c['u_data']:.17g}}};")
         out.append("")
         entries.append(f"&k_{name}")
     out.append(f"inline const PresetCurve* const k_preset_curves[] = {{{', '.join(entries) if entries else 'nullptr'}}};")
@@ -45,13 +44,26 @@ def main():
     out.append("")
     out.append("inline const PresetLoad k_preset_loads[] = {")
     loads = json.load(open(os.path.join(HERE, "data", "loads", "loads.json")))
-    loads["h2-pure"] = loads["set-300b"]   # h2-pure: set-300b's linear model and output impedance, its loads too
     for key, per in loads.items():
         preset, _, fb = key.partition(":")
+        if preset not in IDS:
+            continue
         for load, e in per.items():
+            if load not in LOADS:
+                continue
             secs = ", ".join(f"{{Section::Kind::{s['kind']}, {s['f']:.17g}, {s['q']:.17g}, {s['c'][0]:.17g}, {s['c'][1]:.17g}, {s['c'][2]:.17g}}}"
                              for s in e["sections"])
             out.append(f'    {{"{preset}", {int(fb) if fb else -1}, "{load}", {{{secs}}}, {e.get("makeup_db", 0.0):.17g}}},')
+    out.append("};")
+    # the drive's makeup per preset and load: (drive, dB)
+    out.append("")
+    out.append("inline const std::vector<DriveMakeup> k_drive_makeups = {")
+    for pid in IDS:
+        p = os.path.join(SRC, f"{pid}_makeup.json")
+        if not os.path.exists(p):
+            continue
+        for load, rows in json.load(open(p))["tables"].items():
+            out.append(f'    {{"{pid}", "{load}", {{' + ", ".join(f"{{{d:.6g}, {g:.6g}}}" for d, g in rows) + "}},")
     out.append("};")
     open(DST, "w", encoding="utf-8", newline="\n").write("\n".join(out) + "\n")
     print(f"{DST}: {', '.join(e[3:] for e in entries)}")

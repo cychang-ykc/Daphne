@@ -14,14 +14,18 @@ namespace daphne::color {
 bool available(std::string_view preset) { return test_curve() || preset_curve(preset) != nullptr; }
 
 bool available_any() {
-    for (const char* p : {"set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x", "h2-pure"})
+    for (const char* p : {"set-300b", "set-2a3", "set-845", "pp-el34-ul"})
         if (available(p)) return true;
     return false;
 }
 
-double auto_makeup_db(double drive) {
-    (void)drive;   // M2: the preset's table
-    return 0.0;
+double auto_makeup_db(const std::vector<std::pair<double, double>>& t, double drive) {
+    if (t.empty() || drive <= 0.0) return 0.0;
+    if (drive <= t.front().first) return t.front().second * drive / t.front().first;   // from 0 dB at drive 0
+    for (size_t i = 1; i < t.size(); ++i)
+        if (drive <= t[i].first)
+            return t[i - 1].second + (t[i].second - t[i - 1].second) * (drive - t[i - 1].first) / (t[i].first - t[i - 1].first);
+    return t.back().second;
 }
 
 TubeColorStage::TubeColorStage(StageParams p) : p_(std::move(p)), target_(std::max(0.0, p_.drive)) {
@@ -244,7 +248,7 @@ int TubeColorStage::process(const double* in, int frames, double* out) {
             if ((trim_step_ > 0 && trim_ >= trim_target_) || (trim_step_ < 0 && trim_ <= trim_target_)) trim_ = trim_target_;
         }
         // the makeup gain: the drive's automatic one and the trim, on what the processing path makes
-        const double makeup = std::pow(10.0, (auto_makeup_db(d_ * align_) + p_.load_gain_db * mix_m_) / 20.0) * trim_;
+        const double makeup = std::pow(10.0, (auto_makeup_db(p_.makeup, d_) + p_.load_gain_db * mix_m_) / 20.0) * trim_;
         const double g_in = skip_curve_ ? 1.0 : 1.0 / (v_in * p_.level), g_out = (skip_curve_ ? 1.0 : v_out * p_.level) * makeup;
         if (w_ <= 0.0) {   // idle: the delay path alone
             primed_ = false;

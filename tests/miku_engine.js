@@ -52,25 +52,27 @@ function colorMapping() {
   SM.setColorInfo({ available: true, drive_max: 2.0, presets: [] });
   const o = new SM.DaphneOptions();
   let c = SM.build({}, { outputMode: 'coreaudio-exclusive' }, o, null).color;
-  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, load: 'bookshelf-vented', align: 'off', makeup_gain: 'auto' });
+  assert.deepStrictEqual(c, { enabled: false, model: 'fixed-point', preset: 'set-300b', drive: 1, feedback_db: 6, bias: 'standard', load_ohms: 8, load: 'bookshelf-vented-smooth', align: 'conservative', makeup_gain: 'auto' });
   o.merge({ colorLoad: 'resistor-8' });
   assert.strictEqual(SM.colorOf(o).load, 'resistor-8');
-  o.merge({ colorLoad: 'horn' });
-  assert.strictEqual(SM.colorOf(o).load, 'bookshelf-vented');   // an unknown load: the default
-  for (const l of ['bookshelf-vented-smooth', 'bookshelf-sealed-smooth', 'bookshelf-sealed']) {
+  // an unknown load, and the ones removed after the listening (they rang, doc/N28): the default
+  for (const l of ['horn', 'bookshelf-vented', 'bookshelf-sealed', 'bookshelf-sealed-smooth']) {
+    o.merge({ colorLoad: 'resistor-8' });
     o.merge({ colorLoad: l });
-    assert.strictEqual(SM.colorOf(o).load, l);
+    assert.strictEqual(SM.colorOf(o).load, 'bookshelf-vented-smooth', l);
   }
-  // the level alignment (an M2 experiment): its modes, an unknown one off
-  for (const m of ['loudness', 'near-peak', 'conservative', 'off']) {
+  // the level alignment: its modes, an unknown one the default (conservative)
+  for (const m of ['loudness', 'near-peak', 'off', 'conservative']) {
     o.merge({ colorAlign: m });
     assert.strictEqual(SM.colorOf(o).align, m);
   }
+  o.merge({ colorAlign: 'off' });
   o.merge({ colorAlign: 'peak' });
-  assert.strictEqual(SM.colorOf(o).align, 'off');
+  assert.strictEqual(SM.colorOf(o).align, 'conservative');
+  // v1 offers set-300b only: another preset (kept in the settings format for later versions) reads as set-300b here
   o.merge({ colorEnabled: true, colorPreset: 'pp-el34-ul', colorDrive: 1.35, colorFeedbackDb: 7, colorTrimDb: 1.54 });
   assert.strictEqual(o.colorFeedbackDb, 6);   // 7 is no step: its default, the others as given
-  assert.strictEqual(o.colorPreset, 'pp-el34-ul');
+  assert.strictEqual(o.colorPreset, 'set-300b');
   assert.strictEqual(o.colorTrimDb, 1.5);
   c = SM.colorOf(o);
   assert.strictEqual(c.drive, 1.35);

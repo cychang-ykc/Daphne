@@ -181,6 +181,8 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
                 cp.load_gain_db = l->makeup_db;
             }
         }
+        // the drive's automatic makeup for this preset and load (doc/N28)
+        if (const auto* m = color::drive_makeup(color_preset_name(s.color.preset), color_load_name(s.color.load))) cp.makeup = m->table;
 #endif
         auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
         color_ = c.get();

@@ -80,11 +80,8 @@ function colorRow(o, r, chain, pcmRate, rateNow) {
       `Preset: ${label}` + (pp ? ` · feedback ${o.colorFeedbackDb} dB` : ''),
       idle ? `Bypass: drive 0, the samples pass unchanged (the slider stays at ${pct})` : `Drive: ${pct}`,
       'Operating point: standard bias, 8 ohm tap (adjustable from M3)',
-      'Load: ' + ({ 'resistor-8': '8 ohm resistor', 'bookshelf-sealed': 'bookshelf speaker, sealed',
-                   'bookshelf-vented-smooth': 'bookshelf speaker, vented, smooth', 'bookshelf-sealed-smooth': 'bookshelf speaker, sealed, smooth' }[o.colorLoad] ||
-                 'bookshelf speaker, vented') +
-        (o.colorLoad === 'resistor-8' ? '' : String(o.colorLoad).endsWith('-smooth') ? " (its tilt against the amplifier's output impedance, no resonance)"
-                                                                                       : " (its impedance against the amplifier's output impedance)"),
+      'Load: ' + (o.colorLoad === 'resistor-8' ? '8 ohm resistor (the amplifier alone)'
+                                               : "bookshelf speaker (its impedance against the amplifier's output impedance: the tilt, no resonance)"),
       `Level: ${trim}`,
       dsdCore ? `After the DSD modulator's pre-filter, at ${khz(rate)} kHz` : null,
       chain.includes('color limiter') ? 'Soft limiter after it: ceiling -0.3 dBFS, knee from -0.5 dBFS' +

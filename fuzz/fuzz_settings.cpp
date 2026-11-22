@@ -25,8 +25,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     require(std::isfinite(c.drive) && c.drive >= 0.0 && c.drive <= daphne::kColorDriveMax);
     require(c.feedback_db == 0 || c.feedback_db == 6 || c.feedback_db == 12 || c.feedback_db == 20 || c.feedback_db == 30);
     require(c.load_ohms == 4 || c.load_ohms == 8 || c.load_ohms == 16);
-    require(c.load == daphne::ColorLoad::Resistor8 || c.load == daphne::ColorLoad::BookshelfVented || c.load == daphne::ColorLoad::BookshelfSealed ||
-            c.load == daphne::ColorLoad::BookshelfVentedSmooth || c.load == daphne::ColorLoad::BookshelfSealedSmooth);
+    require(c.load == daphne::ColorLoad::Resistor8 || c.load == daphne::ColorLoad::BookshelfVentedSmooth);
     require(c.align == daphne::ColorAlign::Off || c.align == daphne::ColorAlign::Loudness || c.align == daphne::ColorAlign::NearPeak ||
             c.align == daphne::ColorAlign::Conservative);
     // a bias current: within the range of some preset (the union of their ranges)

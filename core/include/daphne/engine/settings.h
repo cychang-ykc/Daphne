@@ -21,7 +21,7 @@
 //   "dsd_modulator": { "order": 5 | 8, "osr": 64 | 128 | 256 | 512 | 1024 },
 //   "design":  { "threads": 0 .. 256, "cache_limit_mb": 0 .. },
 //   "color":   { "enabled": false, "model": "fixed-point" | "circuit",
-//                "preset": "set-2a3" | "set-300b" | "set-845" | "pp-el34-ul" | "set-300b-x" | "h2-pure" (experimental),
+//                "preset": "set-300b" (v1; "set-2a3" | "set-845" | "pp-el34-ul" read as well, for the versions after it),
 //                "drive": 0 .. kColorDriveMax,
 //                "feedback_db": 0 | 6 | 12 | 20 | 30, "bias": "cool" | "standard" | "hot" | <mA, per preset>,
 //                "load_ohms": 4 | 8 | 16, "makeup_gain": "auto" | -6 .. 6 }
@@ -58,15 +58,16 @@ enum class VolumeMode { Digital, Fixed };
 // Tube Color (doc/N28). fixed-point: the static curve of a preset's amplifier at its operating point (M2). v1 has
 // only this model (the circuit model with dynamic effects is optional, later).
 enum class ColorModel { FixedPoint };
-// Set300bX: M2's experiment (doc/N28), set-300b with a constant-current-loaded driver (more H2); on the integration
-// branch only, removed or kept after listening
-// H2Pure: M2's experiment (doc/N28), second harmonic and nothing odd, on set-300b's linear model and loads
-enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX, H2Pure };
+// v1 offers set-300b only (doc/N28, 2026-11-22); the others stay in the settings format (read and checked) and come one
+// at a time in later versions, each after the same listening as 300B. M2's experiments (set-300b-x, h2-pure) are gone
+// from the engine (their data and the listening's conclusions are in N28).
+enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul };
 enum class ColorBias { Cool, Standard, Hot };
-// What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance (a
-// two-way stand-mount, vented or sealed). load_ohms is the output transformer's tap (M3); this is what it drives.
-// The smooth ones: the vented / sealed load's overall tilt only, no resonance (verify/load_smooth.py, doc/N28)
-enum class ColorLoad { Resistor8, BookshelfVented, BookshelfSealed, BookshelfVentedSmooth, BookshelfSealedSmooth };
+// What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data (the amplifier alone, the cleanest), or
+// a vented two-way stand-mount loudspeaker's impedance against the amplifier's output impedance, smoothed: its overall
+// tilt only, no resonance (verify/load_smooth.py; the unsmoothed vented and sealed loads rang, N28). load_ohms is the
+// output transformer's tap (M3); this is what it drives.
+enum class ColorLoad { Resistor8, BookshelfVentedSmooth };
 // The level alignment (track_levels.h; an M2 experiment): off | loudness | near-peak | conservative
 enum class ColorAlign { Off, Loudness, NearPeak, Conservative };
 
@@ -158,9 +159,9 @@ struct DesignSettings {
 };
 
 // The upper limit of the strength slider (drive 1.0 = 100 %, the preset's calibration). One constant (the panel reads
-// it through color_info). 4.0 (400 %) from M2's listening on (2026-11-21): on the tube-color integration branch it is
-// open for listening; before the branch is merged into main, 400 % must pass every quality check (doc/N28).
-inline constexpr double kColorDriveMax = 4.0;
+// it through color_info). 2.0 (200 %): back from M2's 400 % after the listening (2026-11-22, doc/N28); the quality
+// checks are at 200 %.
+inline constexpr double kColorDriveMax = 2.0;
 
 // Tube Color (doc/N28). enabled false (the default): not in the chain, playback exactly as without it. Before M2,
 // only test builds can run it (daphne::color::available()); elsewhere enabled true changes nothing either.
@@ -175,11 +176,10 @@ struct ColorSettings {
     // in the current preset's range (color_bias_range), else the standard bias does (color_bias_current_ma).
     std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
-    ColorLoad load = ColorLoad::BookshelfVented;   // "resistor-8" | "bookshelf-vented" | "bookshelf-sealed" |
-                                                   // "bookshelf-vented-smooth" | "bookshelf-sealed-smooth"
-    // the curve's input aligned by the track's level (track_levels.h; experimental): "off" | "loudness" | "near-peak" |
-    // "conservative"; taken in place
-    ColorAlign align = ColorAlign::Off;
+    ColorLoad load = ColorLoad::BookshelfVentedSmooth;   // "bookshelf-vented-smooth" | "resistor-8"
+    // the curve's input aligned by the track's level (track_levels.h): "conservative" (the default, 2026-11-22) |
+    // "loudness" | "near-peak" | "off"; taken in place
+    ColorAlign align = ColorAlign::Conservative;
     // nullopt = "auto" (loudness kept within 0.5 dB); else a trim of -6 .. 6 dB on top of auto
     std::optional<double> makeup_gain_db;
 };
@@ -193,7 +193,7 @@ struct ColorBiasRange {
 ColorBiasRange color_bias_range(ColorPreset p);
 // The preset's settings name ("set-300b").
 const char* color_preset_name(ColorPreset p);
-// The load's settings name ("bookshelf-vented").
+// The load's settings name ("bookshelf-vented-smooth").
 const char* color_load_name(ColorLoad l);
 // The alignment's settings name ("near-peak").
 const char* color_align_name(ColorAlign a);
@@ -244,8 +244,7 @@ inline constexpr bool kColorOperatingPointAdjustable = false;
 //    "load_ohms": [...],
 //    "operating_point_adjustable": b,   bias and load (M3)
 //    "loads": [{"id", "label"}, ...], "default_load": id,
-//    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build), "experimental": b,
-//                 "h2_table": [[drive, percent], ...] (h2-pure: the strength's H2 for a 1 kHz sine at -18 dBFS RMS),
+//    "presets": [{"id", "label", "push_pull": b, "available": b (its curve is in this build),   (v1: set-300b only)
 //                 "bias_ma": {"lo", "standard", "hi", "cool", "hot" (null where the preset offers none)}}, ...]}
 nlohmann::json color_info();
 // The settings as far as the chain's structure and the prepared chains go: Tube Color's fields are cleared when it is

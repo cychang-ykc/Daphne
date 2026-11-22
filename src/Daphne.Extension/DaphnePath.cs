@@ -115,11 +115,8 @@ public sealed partial class DaphneEngine
 
     static string LoadLabel(string id) => id switch
     {
-        "resistor-8" => "8 ohm resistor",
-        "bookshelf-sealed" => "bookshelf speaker, sealed (its impedance against the amplifier's output impedance)",
-        "bookshelf-vented-smooth" => "bookshelf speaker, vented, smooth (its tilt against the amplifier's output impedance, no resonance)",
-        "bookshelf-sealed-smooth" => "bookshelf speaker, sealed, smooth (its tilt against the amplifier's output impedance, no resonance)",
-        _ => "bookshelf speaker, vented (its impedance against the amplifier's output impedance)",
+        "resistor-8" => "8 ohm resistor (the amplifier alone)",
+        _ => "bookshelf speaker (its impedance against the amplifier's output impedance: the tilt, no resonance)",
     };
 
     /// <summary>How much Tube Color's soft limiter has turned down so far (the report's color_limited, in seconds).</summary>

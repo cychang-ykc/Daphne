@@ -28,18 +28,18 @@ public sealed class DaphneOptions
     public int CacheLimitMb { get; set; } = 1024;        // filter cache limit: 500 | 1024 | 2048 MB
     // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: SettingsMap).
     public bool ColorEnabled { get; set; }
-    public string ColorPreset { get; set; } = "set-300b";   // set-300b | set-2a3 | set-845 | pp-el34-ul | set-300b-x (experimental)
+    public string ColorPreset { get; set; } = "set-300b";   // v1: set-300b only (doc/N28)
     public double ColorDrive { get; set; } = 1.0;            // 0 .. the core's drive_max (1.0 = 100 %)
     public int ColorFeedbackDb { get; set; } = 6;            // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     public double ColorTrimDb { get; set; }                  // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
-    public string ColorLoad { get; set; } = "bookshelf-vented";   // what it drives: resistor-8 | bookshelf-vented | bookshelf-sealed
+    public string ColorLoad { get; set; } = "bookshelf-vented-smooth";   // what it drives: bookshelf-vented-smooth | resistor-8
     // the level alignment (an M2 experiment): off | loudness | near-peak | conservative
-    public string ColorAlign { get; set; } = "off";
+    public string ColorAlign { get; set; } = "conservative";
     // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved: a new session plays
     // what the slider says
     public bool ColorBypass { get; set; }
 
-    public static readonly string[] ColorPresets = { "set-300b", "set-2a3", "set-845", "pp-el34-ul", "set-300b-x", "h2-pure" };
+    public static readonly string[] ColorPresets = { "set-300b" };   // v1 (the others come in later versions)
 
     /// <summary>The options as the page reads them; <paramref name="save"/>: as kept in MIKU's settings (no bypass).</summary>
     public JsonObject ToJson(bool save = false)
@@ -82,12 +82,12 @@ public sealed class DaphneOptions
                 case "colorEnabled": ColorEnabled = v.ValueKind == JsonValueKind.True; break;
                 case "colorPreset": ColorPreset = Array.IndexOf(ColorPresets, v.GetString()) >= 0 ? v.GetString() : "set-300b"; break;
                 // the core's own limit applies when the settings are built (DaphneNative.ColorDriveMax)
-                case "colorDrive": ColorDrive = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Clamp(v.GetDouble(), 0, 4) : 1.0; break;
+                case "colorDrive": ColorDrive = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Clamp(v.GetDouble(), 0, 2) : 1.0; break;
                 case "colorFeedbackDb": ColorFeedbackDb = v.ValueKind == JsonValueKind.Number && v.GetInt32() is 0 or 6 or 12 or 20 or 30 ? v.GetInt32() : 6; break;
                 case "colorTrimDb": ColorTrimDb = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Round(Math.Clamp(v.GetDouble(), -6, 6), 1) : 0; break;
                 case "colorBypass": ColorBypass = v.ValueKind == JsonValueKind.True; break;
-                case "colorLoad": ColorLoad = v.ValueKind == JsonValueKind.String && v.GetString() is "resistor-8" or "bookshelf-sealed" or "bookshelf-vented-smooth" or "bookshelf-sealed-smooth" ? v.GetString() : "bookshelf-vented"; break;
-                case "colorAlign": ColorAlign = v.ValueKind == JsonValueKind.String && v.GetString() is "loudness" or "near-peak" or "conservative" ? v.GetString() : "off"; break;
+                case "colorLoad": ColorLoad = v.ValueKind == JsonValueKind.String && v.GetString() is "resistor-8" ? "resistor-8" : "bookshelf-vented-smooth"; break;
+                case "colorAlign": ColorAlign = v.ValueKind == JsonValueKind.String && v.GetString() is "loudness" or "near-peak" or "off" ? v.GetString() : "conservative"; break;
             }
         }
     }

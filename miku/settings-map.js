@@ -25,12 +25,12 @@ class DaphneOptions {
     this.cacheLimitMb = 1024;      // filter cache limit: 500 | 1024 | 2048 MB
     // Tube Color (doc/N28). Bias and load are the presets' reference ones until M3 (standard, 8 ohm: colorOf)
     this.colorEnabled = false;
-    this.colorPreset = 'set-300b';  // set-300b | set-2a3 | set-845 | pp-el34-ul | set-300b-x (experimental)
+    this.colorPreset = 'set-300b';  // v1: set-300b only (doc/N28)
     this.colorDrive = 1.0;          // 0 .. the core's drive_max (1.0 = 100 %)
     this.colorFeedbackDb = 6;       // pp-el34-ul: 0 | 6 | 12 | 20 | 30
     this.colorTrimDb = 0;           // makeup_gain's trim, -6 .. 6 dB on top of auto (0: auto)
-    this.colorLoad = 'bookshelf-vented';   // what it drives: resistor-8 | bookshelf-vented | bookshelf-sealed
-    this.colorAlign = 'off';        // the level alignment (an M2 experiment): off | loudness | near-peak | conservative
+    this.colorLoad = 'bookshelf-vented-smooth';   // what it drives: bookshelf-vented-smooth | resistor-8
+    this.colorAlign = 'conservative';   // the level alignment: conservative | loudness | near-peak | off
     // the panel's bypass (A/B): the stage idles at drive 0, the slider keeps its value. Not saved
     this.colorBypass = false;
   }
@@ -66,18 +66,18 @@ class DaphneOptions {
         case 'colorEnabled': this.colorEnabled = v === true; break;
         case 'colorPreset': this.colorPreset = COLOR_PRESETS.includes(v) ? v : 'set-300b'; break;
         // the core's own limit applies when the settings are built (colorDriveMax)
-        case 'colorDrive': this.colorDrive = typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 4) : 1.0; break;
+        case 'colorDrive': this.colorDrive = typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 2) : 1.0; break;
         case 'colorFeedbackDb': this.colorFeedbackDb = [0, 6, 12, 20, 30].includes(v) ? v : 6; break;
         case 'colorTrimDb': this.colorTrimDb = typeof v === 'number' && Number.isFinite(v) ? Math.round(clamp(v, -6, 6) * 10) / 10 : 0; break;
         case 'colorBypass': this.colorBypass = v === true; break;
-        case 'colorLoad': this.colorLoad = ['resistor-8', 'bookshelf-sealed', 'bookshelf-vented-smooth', 'bookshelf-sealed-smooth'].includes(v) ? v : 'bookshelf-vented'; break;
-        case 'colorAlign': this.colorAlign = ['loudness', 'near-peak', 'conservative'].includes(v) ? v : 'off'; break;
+        case 'colorLoad': this.colorLoad = v === 'resistor-8' ? v : 'bookshelf-vented-smooth'; break;
+        case 'colorAlign': this.colorAlign = ['loudness', 'near-peak', 'off'].includes(v) ? v : 'conservative'; break;
       }
     }
   }
 }
 
-const COLOR_PRESETS = ['set-300b', 'set-2a3', 'set-845', 'pp-el34-ul', 'set-300b-x', 'h2-pure'];
+const COLOR_PRESETS = ['set-300b'];   // v1 (the others come in later versions)
 
 // Tube Color's controls from the core (daphne-helper color_info, doc/N28); null until the extension has asked
 let colorInfo = null;
