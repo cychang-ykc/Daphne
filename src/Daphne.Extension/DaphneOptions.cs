@@ -86,7 +86,7 @@ public sealed class DaphneOptions
                 case "colorFeedbackDb": ColorFeedbackDb = v.ValueKind == JsonValueKind.Number && v.GetInt32() is 0 or 6 or 12 or 20 or 30 ? v.GetInt32() : 6; break;
                 case "colorTrimDb": ColorTrimDb = v.ValueKind == JsonValueKind.Number && double.IsFinite(v.GetDouble()) ? Math.Round(Math.Clamp(v.GetDouble(), -6, 6), 1) : 0; break;
                 case "colorBypass": ColorBypass = v.ValueKind == JsonValueKind.True; break;
-                case "colorLoad": ColorLoad = v.GetString() is "resistor-8" or "bookshelf-sealed" ? v.GetString() : "bookshelf-vented"; break;
+                case "colorLoad": ColorLoad = v.ValueKind == JsonValueKind.String && v.GetString() is "resistor-8" or "bookshelf-sealed" or "bookshelf-vented-smooth" or "bookshelf-sealed-smooth" ? v.GetString() : "bookshelf-vented"; break;
                 case "colorAlign": ColorAlign = v.ValueKind == JsonValueKind.String && v.GetString() is "loudness" or "near-peak" or "conservative" ? v.GetString() : "off"; break;
             }
         }

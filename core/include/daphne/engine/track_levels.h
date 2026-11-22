@@ -10,8 +10,11 @@
 //             the absolute (-70 LUFS) and relative (-10 LU) gates; every channel weighted 1
 //   p999_db   the 99.9th percentile of |x| over every sample of every channel (dBFS; 0.01 dB steps): near the peaks
 // Both at the level the curve sees (a DSD file converted to PCM: its +6 dB taken out by the caller, scale).
-// The references are the calibration signal's (-18 dBFS RMS pink noise, 20 Hz - 20 kHz, in both channels):
-// verify/drive_loudness.py.
+// The references: the loudness is the drive's calibration signal's (-18 dBFS RMS pink noise, 20 Hz - 20 kHz, in both
+// channels; verify/drive_loudness.py). The 99.9th percentile is the median of the six test tracks' (whole tracks,
+// 2026-11-21: -3.59 / -3.50 / -1.32 / -0.30 / -0.10 / -0.10 dBFS): the pink noise's peaks sit far below music's (its
+// -7.64 dBFS would turn every track down, classical music by 4 dB, and drive 100 % would no longer be the calibrated
+// amplifier); against the median an ordinary master is hardly turned down, only one louder than usual (doc/N28).
 
 #include <atomic>
 #include <cstdint>
@@ -30,7 +33,7 @@ struct TrackLevels {
 };
 
 inline constexpr double kAlignRefLufs = -14.28;    // the calibration pink noise's integrated loudness
-inline constexpr double kAlignRefP999Db = -7.64;   // its 99.9th percentile of |x|
+inline constexpr double kAlignRefP999Db = -0.81;   // the median of the six test tracks' 99.9th percentile of |x|
 
 // The gain (dB, <= 0) on the curve's input for a track: off 0; loudness kAlignRefLufs - lufs; near-peak
 // kAlignRefP999Db - p999_db; conservative the lower of the two; each at most 0.

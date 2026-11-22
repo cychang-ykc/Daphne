@@ -83,16 +83,16 @@ TEST_CASE("track levels: the 99.9th percentile, chunks, silence", "[levels]") {
 // The gain: only ever down, each mode its measure against the calibration's, conservative the lower; a track as loud
 // as the calibration signal (or quieter) is not turned down.
 TEST_CASE("track levels: the alignment's gain", "[levels]") {
-    const TrackLevels loud{-4.1, -1.0}, quiet{-16.0, -9.0}, crest{-14.3, -2.0};
+    const TrackLevels loud{-4.1, -0.1}, quiet{-16.0, -3.5}, crest{-14.3, -0.2};
     CHECK(daphne::color_align_gain_db(ColorAlign::Off, loud) == 0.0);
     CHECK(daphne::color_align_gain_db(ColorAlign::Loudness, loud) == Catch::Approx(daphne::kAlignRefLufs + 4.1));
-    CHECK(daphne::color_align_gain_db(ColorAlign::NearPeak, loud) == Catch::Approx(daphne::kAlignRefP999Db + 1.0));
+    CHECK(daphne::color_align_gain_db(ColorAlign::NearPeak, loud) == Catch::Approx(daphne::kAlignRefP999Db + 0.1));
     CHECK(daphne::color_align_gain_db(ColorAlign::Conservative, loud) == Catch::Approx(daphne::kAlignRefLufs + 4.1));
     for (auto m : {ColorAlign::Off, ColorAlign::Loudness, ColorAlign::NearPeak, ColorAlign::Conservative})
         CHECK(daphne::color_align_gain_db(m, quiet) == 0.0);
     // as loud as the calibration, its peaks higher: near-peak (and conservative) turn it down, loudness hardly
     CHECK(daphne::color_align_gain_db(ColorAlign::Loudness, crest) == Catch::Approx(0.0).margin(0.05));
-    CHECK(daphne::color_align_gain_db(ColorAlign::Conservative, crest) == Catch::Approx(daphne::kAlignRefP999Db + 2.0));
+    CHECK(daphne::color_align_gain_db(ColorAlign::Conservative, crest) == Catch::Approx(daphne::kAlignRefP999Db + 0.2));
     CHECK(daphne::color_align_gain_db(ColorAlign::Loudness, TrackLevels{-HUGE_VAL, -HUGE_VAL}) == 0.0);
 }
 

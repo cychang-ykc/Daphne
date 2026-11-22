@@ -65,7 +65,8 @@ enum class ColorPreset { Set2a3, Set300b, Set845, PpEl34Ul, Set300bX, H2Pure };
 enum class ColorBias { Cool, Standard, Hot };
 // What the amplifier drives (doc/N28): the 8 ohm resistor of the reference data, or a loudspeaker's impedance (a
 // two-way stand-mount, vented or sealed). load_ohms is the output transformer's tap (M3); this is what it drives.
-enum class ColorLoad { Resistor8, BookshelfVented, BookshelfSealed };
+// The smooth ones: the vented / sealed load's overall tilt only, no resonance (verify/load_smooth.py, doc/N28)
+enum class ColorLoad { Resistor8, BookshelfVented, BookshelfSealed, BookshelfVentedSmooth, BookshelfSealedSmooth };
 // The level alignment (track_levels.h; an M2 experiment): off | loudness | near-peak | conservative
 enum class ColorAlign { Off, Loudness, NearPeak, Conservative };
 
@@ -174,7 +175,8 @@ struct ColorSettings {
     // in the current preset's range (color_bias_range), else the standard bias does (color_bias_current_ma).
     std::optional<double> bias_ma;
     int load_ohms = 8;                   // the output tap: 4 | 8 | 16
-    ColorLoad load = ColorLoad::BookshelfVented;   // "resistor-8" | "bookshelf-vented" | "bookshelf-sealed"
+    ColorLoad load = ColorLoad::BookshelfVented;   // "resistor-8" | "bookshelf-vented" | "bookshelf-sealed" |
+                                                   // "bookshelf-vented-smooth" | "bookshelf-sealed-smooth"
     // the curve's input aligned by the track's level (track_levels.h; experimental): "off" | "loudness" | "near-peak" |
     // "conservative"; taken in place
     ColorAlign align = ColorAlign::Off;

@@ -38,7 +38,9 @@ const EnumTable<ColorPreset> kColorPreset = {{"set-2a3", ColorPreset::Set2a3}, {
                                              {"set-300b-x", ColorPreset::Set300bX}, {"h2-pure", ColorPreset::H2Pure}};
 const EnumTable<ColorBias> kColorBias = {{"cool", ColorBias::Cool}, {"standard", ColorBias::Standard}, {"hot", ColorBias::Hot}};
 const EnumTable<ColorLoad> kColorLoad = {{"resistor-8", ColorLoad::Resistor8}, {"bookshelf-vented", ColorLoad::BookshelfVented},
-                                         {"bookshelf-sealed", ColorLoad::BookshelfSealed}};
+                                         {"bookshelf-sealed", ColorLoad::BookshelfSealed},
+                                         {"bookshelf-vented-smooth", ColorLoad::BookshelfVentedSmooth},
+                                         {"bookshelf-sealed-smooth", ColorLoad::BookshelfSealedSmooth}};
 const EnumTable<ColorAlign> kColorAlign = {{"off", ColorAlign::Off}, {"loudness", ColorAlign::Loudness}, {"near-peak", ColorAlign::NearPeak},
                                            {"conservative", ColorAlign::Conservative}};
 
@@ -497,7 +499,9 @@ nlohmann::json color_info() {
             {"operating_point_adjustable", kColorOperatingPointAdjustable},
             {"loads", json::array({{{"id", "resistor-8"}, {"label", "8 ohm resistor"}},
                                    {{"id", "bookshelf-vented"}, {"label", "Bookshelf speaker, vented"}},
-                                   {{"id", "bookshelf-sealed"}, {"label", "Bookshelf speaker, sealed"}}})},
+                                   {{"id", "bookshelf-sealed"}, {"label", "Bookshelf speaker, sealed"}},
+                                   {{"id", "bookshelf-vented-smooth"}, {"label", "Bookshelf speaker, vented, smooth (its tilt, no resonance)"}},
+                                   {{"id", "bookshelf-sealed-smooth"}, {"label", "Bookshelf speaker, sealed, smooth (its tilt, no resonance)"}}})},
             {"default_load", to_name(kColorLoad, ColorSettings{}.load)},
             // the level alignment (track_levels.h; experimental), and the references it aligns to
             {"aligns", json::array({{{"id", "off"}, {"label", "Off (as before)"}},

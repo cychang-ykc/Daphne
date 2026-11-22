@@ -57,6 +57,10 @@ function colorMapping() {
   assert.strictEqual(SM.colorOf(o).load, 'resistor-8');
   o.merge({ colorLoad: 'horn' });
   assert.strictEqual(SM.colorOf(o).load, 'bookshelf-vented');   // an unknown load: the default
+  for (const l of ['bookshelf-vented-smooth', 'bookshelf-sealed-smooth', 'bookshelf-sealed']) {
+    o.merge({ colorLoad: l });
+    assert.strictEqual(SM.colorOf(o).load, l);
+  }
   // the level alignment (an M2 experiment): its modes, an unknown one off
   for (const m of ['loudness', 'near-peak', 'conservative', 'off']) {
     o.merge({ colorAlign: m });

@@ -215,7 +215,7 @@ function fieldByTitle(g, title) {
 
   // 3e. the level alignment (an M2 experiment): the menu from the core's modes (off where none is set), a choice sent as
   // colorAlign; the status line with the track's measures, the gain and the effective drive, or that it is scanning
-  const alInfo = { ...info, default_align: 'off', align_refs: { lufs: -14.28, p999_db: -7.64 },
+  const alInfo = { ...info, default_align: 'off', align_refs: { lufs: -14.28, p999_db: -0.81 },
     aligns: [{ id: 'off', label: 'Off (as before)' }, { id: 'loudness', label: 'Loudness (integrated LUFS)' },
              { id: 'near-peak', label: 'Near-peak (99.9th percentile)' }, { id: 'conservative', label: 'Conservative (the larger cut)' }] };
   const alStatus = align => ({ playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null, align });

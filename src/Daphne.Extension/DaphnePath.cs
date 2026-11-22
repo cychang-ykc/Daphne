@@ -117,6 +117,8 @@ public sealed partial class DaphneEngine
     {
         "resistor-8" => "8 ohm resistor",
         "bookshelf-sealed" => "bookshelf speaker, sealed (its impedance against the amplifier's output impedance)",
+        "bookshelf-vented-smooth" => "bookshelf speaker, vented, smooth (its tilt against the amplifier's output impedance, no resonance)",
+        "bookshelf-sealed-smooth" => "bookshelf speaker, sealed, smooth (its tilt against the amplifier's output impedance, no resonance)",
         _ => "bookshelf speaker, vented (its impedance against the amplifier's output impedance)",
     };
 

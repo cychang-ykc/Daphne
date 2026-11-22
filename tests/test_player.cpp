@@ -1795,20 +1795,20 @@ TEST_CASE("Player: Tube Color's path report follows idle and back", "[player][co
 
 // Tube Color's level alignment (track_levels.h; an M2 experiment): the track is scanned in the background while it plays
 // (scanning, then ready), its measures and the gain each mode gives, and the effective drive; the mode changes in place;
-// with Tube Color off the status says off. A 1 kHz sine at amplitude 0.5 in both channels: -6.02 LUFS, 99.9th
-// percentile -6.02 dBFS.
+// with Tube Color off the status says off. A 1 kHz sine at amplitude 0.95 in both channels: -0.45 LUFS, 99.9th
+// percentile -0.45 dBFS (above the near-peak reference: turned down by each mode).
 TEST_CASE("Player: Tube Color's level alignment scans the track and reports it", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     daphne::clear_level_cache();
     Rig r;
     r.dev->speed = 1.0;
-    r.sources["a"] = sine(44100, 1000.0, 8.0, 0.5);
+    r.sources["a"] = sine(44100, 1000.0, 8.0, 0.95);
     Settings s;
     s.color.enabled = true;
     s.color.drive = 2.0;
     s.color.align = daphne::ColorAlign::Loudness;
     REQUIRE(r.start("a", s));
-    const double lufs = 20.0 * std::log10(0.5);
+    const double lufs = 20.0 * std::log10(0.95);
     auto gain_is = [&](double want, const char* what) {
         return wait_until(r, [&] {
             const auto st = r.player->color_align_status();

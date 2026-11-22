@@ -1066,3 +1066,36 @@ TEST_CASE("color stage: the level alignment", "[color]") {
     for (size_t i = 2 * d; i < yz.size(); ++i) same = same && yz[i] == x[i - 2 * d];
     CHECK(same);
 }
+
+// The smooth loads (doc/N28, verify/load_smooth.py): the vented / sealed load's overall tilt with no resonance, for every
+// preset with a curve. Every pole pair of Q 0.5 .. 0.7 (they set how long it rings), every zero pair of Q <= 1, and the
+// same tilt as the load itself: within 2 dB of it from 30 Hz to 16 kHz (what the smoothing takes out is the resonances'
+// few dB, narrower than an octave: the vented box's port notch at 50 Hz, -2.6 dB, is the largest).
+TEST_CASE("color load: the smooth loads, their Q and their tilt", "[color][load]") {
+    using daphne::color::Section;
+    for (const char* preset : {"set-300b", "set-300b-x", "h2-pure"}) {
+        for (const char* base : {"bookshelf-vented", "bookshelf-sealed"}) {
+            const std::string smooth = std::string(base) + "-smooth";
+            INFO(preset << ", " << smooth);
+            const auto* l = daphne::color::preset_load(preset, -1, smooth.c_str());
+            const auto* r = daphne::color::preset_load(preset, -1, base);
+            REQUIRE(l != nullptr);
+            REQUIRE(r != nullptr);
+            for (const auto& s : l->sections) {
+                REQUIRE(s.kind == Section::Kind::General2);
+                CHECK(s.q >= 0.5 - 1e-6);
+                CHECK(s.q <= 0.7 + 1e-6);
+                const double zq = std::sqrt(std::abs(s.c0 * s.c2)) / s.c1;   // the zeros' Q
+                CHECK(zq <= 1.02);
+            }
+            daphne::color::SectionChain a, b;
+            a.prepare(l->sections, 352800, 1);
+            b.prepare(r->sections, 352800, 1);
+            for (double hz : {30.0, 50.0, 100.0, 250.0, 1000.0, 2500.0, 8000.0, 16000.0}) {
+                INFO(hz << " Hz");
+                CHECK(std::abs(20 * std::log10(std::abs(a.response(hz)) / std::abs(b.response(hz)))) < 2.0);
+            }
+        }
+    }
+}
+

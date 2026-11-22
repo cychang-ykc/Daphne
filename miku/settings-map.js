@@ -70,7 +70,7 @@ class DaphneOptions {
         case 'colorFeedbackDb': this.colorFeedbackDb = [0, 6, 12, 20, 30].includes(v) ? v : 6; break;
         case 'colorTrimDb': this.colorTrimDb = typeof v === 'number' && Number.isFinite(v) ? Math.round(clamp(v, -6, 6) * 10) / 10 : 0; break;
         case 'colorBypass': this.colorBypass = v === true; break;
-        case 'colorLoad': this.colorLoad = ['resistor-8', 'bookshelf-sealed'].includes(v) ? v : 'bookshelf-vented'; break;
+        case 'colorLoad': this.colorLoad = ['resistor-8', 'bookshelf-sealed', 'bookshelf-vented-smooth', 'bookshelf-sealed-smooth'].includes(v) ? v : 'bookshelf-vented'; break;
         case 'colorAlign': this.colorAlign = ['loudness', 'near-peak', 'conservative'].includes(v) ? v : 'off'; break;
       }
     }
