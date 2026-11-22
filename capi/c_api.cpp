@@ -16,6 +16,7 @@
 #include "daphne/engine/devices.h"
 #include "daphne/engine/filters.h"
 #include "daphne/engine/live_source.h"
+#include "daphne/engine/chain.h"
 #include "daphne/engine/player.h"
 #include "daphne/engine/sample_format.h"
 #include "daphne/engine/settings.h"
@@ -154,7 +155,7 @@ extern "C" {
 // 3: dc_keep_device, dc_release_device, dc_device_kept
 // 4: dc_cancel; dc_stop cancels a load in progress (DC_ERR_CANCELLED); dc_state "loading"
 // 5: dc_load returns DC_ERR_INTERNAL for a failure inside the engine (before: DC_ERR_FILE)
-DC_API int dc_abi_version(void) { return 6; }
+DC_API int dc_abi_version(void) { return 7; }
 DC_API const char* dc_version(void) { return "daphne 0.1.0"; }
 
 DC_API dc_player* dc_create(void) {
@@ -527,6 +528,17 @@ DC_API void dc_internal_player_deps(const daphne::PlayerDeps* deps) {
 DC_API int dc_color_info(char* out, int len) {
     try {
         return put_json(out, len, daphne::color_info().dump());
+    } catch (...) {
+        return DC_ERR_INTERNAL;
+    }
+}
+
+DC_API int dc_color_preview(const char* settings_json, double drive, char* out, int len) {
+    try {
+        daphne::Settings s;
+        std::string msg;
+        parse(settings_json, s, msg);   // a field in error keeps its default, as dc_load takes it
+        return put_json(out, len, daphne::color_preview(s, drive).dump());
     } catch (...) {
         return DC_ERR_INTERNAL;
     }

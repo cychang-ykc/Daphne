@@ -430,6 +430,12 @@ bool color_active(const Settings& s) {
 #endif
 }
 
+double color_reserve_db(const Settings& s) {
+    if (!color_active(s)) return 0.0;
+    const double attenuation = s.volume.mode == VolumeMode::Digital ? std::max(0.0, -s.volume.db) : 0.0;
+    return std::max(0.0, kColorHeadroomDb - attenuation);
+}
+
 nlohmann::json color_info() {
     // the panel's order: the default first
     struct P {

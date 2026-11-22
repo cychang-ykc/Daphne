@@ -1217,6 +1217,7 @@ TEST_CASE("Player: a DSD file with Tube Color is remodulated at its own rate", "
 }
 
 // DSD -> PCM is x2 (+6.02 dB, 50 % modulation -> 0 dBFS), the modulator x0.5: remodulated, a DSD file keeps its level
+// (less Tube Color's reserve, settings.h kColorHeadroomDb: at digital volume 0 dB the whole of it)
 TEST_CASE("Player: a remodulated DSD file keeps its level", "[player][dsd][color]") {
     Settings probe;
     probe.color.enabled = true;
@@ -1240,7 +1241,8 @@ TEST_CASE("Player: a remodulated DSD file keeps its level", "[player][dsd][color
     const double a_out = dsd_amplitude(out_bits, hz, 2822400 / 10 * 4, n);   // after the 20 ms fade-in and the lead-in
     const double db = 20.0 * std::log10(a_out / a_in);
     UNSCOPED_INFO("1102.5 Hz in the DSD stream: in " << a_in << ", out " << a_out << " (" << db << " dB)");
-    CHECK(std::abs(db) < 0.01);
+    CHECK(daphne::color_reserve_db(s) == daphne::kColorHeadroomDb);
+    CHECK(std::abs(db + daphne::kColorHeadroomDb) < 0.01);
     r.player.reset();
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -1479,6 +1481,7 @@ TEST_CASE("Player: Tube Color's drive crossing 0 stays aligned where the stage i
     s.color.enabled = true;
     s.color.load = daphne::ColorLoad::Resistor8;   // (the alignment, against a flat response: the load is tested on its own)
     s.color.drive = 0.5;
+    s.headroom_db = daphne::kColorHeadroomDb;   // the reserve offset: the gain stage at 0 dB (only the stage is measured)
     Settings z = s;
     z.color.drive = 0.0;
     REQUIRE(r.start("pink", s));
@@ -1698,7 +1701,7 @@ TEST_CASE("Player: the path report says when Tube Color does nothing", "[player]
     INFO(rep.filter << " | " << rep.not_bit_perfect_reason);
     if (color_runs()) {
         CHECK(rep.filter.find("Tube Color idle (drive 0)") != std::string::npos);
-        CHECK(rep.bit_perfect);   // a 24-bit source: nothing changes its samples
+        CHECK_FALSE(rep.bit_perfect);   // Tube Color's reserve turns the output down, bypass too (settings.h)
     } else {
         CHECK(rep.filter.find("Tube Color unavailable (before M2)") != std::string::npos);
     }
@@ -1715,7 +1718,9 @@ TEST_CASE("Player: the path report says when Tube Color does nothing", "[player]
 // The guardrail (doc/N28): nothing clips on an integer device. The stage's own output reaches about full scale / drive
 // (the curve stays below 1, divided by the drive) plus what the DC blocker and the output transformer's low end add
 // after it: at drive 100 % a loud bass goes above full scale, and the soft limiter after the stage turns it down
-// (counted in color_limited); at 200 % full-scale noise stays below it; at drive 0 it does nothing.
+// (counted in color_limited); at 200 % full-scale noise stays below it; at drive 0 it does nothing. Tube Color's reserve
+// (settings.h, 3.2 dB) keeps the stage's output below the limiter's knee for music; the case that needs the limiter
+// is pushed there by a source 12 dB hot (a ReplayGain of +12 dB: the curve sees it, it is not cancelled).
 TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
     struct Case { const char* name; double drive; bool bass; bool limits; };
@@ -1742,6 +1747,7 @@ TEST_CASE("Player: Tube Color's soft limiter keeps the output from clipping", "[
         Settings s;
         s.color.enabled = true;
         s.color.drive = k.drive;
+        if (k.limits) s.headroom_db = 12.0;   // the source 12 dB hot: past the reserve, into the limiter
         REQUIRE(r.start("a", s));
         const auto rep = r.finish();
         CHECK(r.ended);
@@ -1839,8 +1845,10 @@ TEST_CASE("Player: Tube Color's level alignment scans the track and reports it",
 }
 
 // Tube Color on at drive 0 (doc/N28): the stage a pure delay the player compensates, the quantizer it keeps passing the
-// samples through: every byte as with Tube Color off, at a rate oversampled 8x and one oversampled 4x.
-TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
+// samples through: every byte as with Tube Color off, at a rate oversampled 8x and one oversampled 4x. Tube Color's
+// reserve (settings.h) turns the output down while it is on; here offset by +1.5 dB of headroom, so that the gain stage
+// is at 0 dB and only the stage and the quantizer are compared. (Off, nothing changes: the reserve is 0.)
+TEST_CASE("Player: Tube Color at drive 0 is bit-perfect, its reserve offset", "[player][color]") {
     if (!color_runs()) SKIP("a release build: Tube Color cannot run here (covered above)");
     for (int rate : {44100, 96000}) {
         INFO(rate << " Hz");
@@ -1850,6 +1858,7 @@ TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
             Settings s;
             s.color.enabled = color;
             s.color.drive = 0.0;
+            if (color) s.headroom_db = daphne::kColorHeadroomDb;
             REQUIRE(r.start("a", s));
             const auto rep = r.finish();
             CHECK(r.ended);
@@ -1868,6 +1877,36 @@ TEST_CASE("Player: Tube Color at drive 0 is bit-perfect", "[player][color]") {
         CHECK(first == std::min(on.size(), off.size()));
     }
 }
+
+// Tube Color's reserve (settings.h, doc/N28): on, at drive 0 (bypass) and digital volume 0 dB, the output is the input
+// kColorHeadroomDb lower (the least-squares gain against Tube Color off; the dither is far below the noise), not
+// bit-perfect; off, bit-perfect at 0 dB.
+TEST_CASE("Player: Tube Color's reserve turns bypass down alike", "[player][color]") {
+    if (!color_runs()) SKIP("a release build: Tube Color cannot run here");
+    auto play = [&](bool color, std::vector<int32_t>* out) {
+        Rig r;
+        r.sources["a"] = int24_noise(44100, 2, 44100 / 2, 11);
+        Settings s;
+        s.color.enabled = color;
+        s.color.drive = 0.0;
+        REQUIRE(r.start("a", s));
+        const auto rep = r.finish();
+        *out = r.dev->samples32();
+        r.player.reset();
+        return rep;
+    };
+    std::vector<int32_t> on, off;
+    const auto rep_on = play(true, &on);
+    const auto rep_off = play(false, &off);
+    CHECK_FALSE(rep_on.bit_perfect);
+    CHECK(rep_off.bit_perfect);
+    REQUIRE(on.size() == off.size());
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < on.size(); ++i) num += static_cast<double>(on[i]) * off[i], den += static_cast<double>(off[i]) * off[i];
+    REQUIRE(den > 0.0);
+    CHECK(20 * std::log10(num / den) == Catch::Approx(-daphne::kColorHeadroomDb).margin(0.01));
+}
+
 
 namespace {
 
@@ -2160,6 +2199,8 @@ TEST_CASE("Player: the remodulation is Daphne's own DSD -> PCM -> DSD path, limi
     CHECK(std::find(a.begin(), a.end(), std::string("modulator limiter")) != a.end());
     auto without = b;
     without.erase(std::remove(without.begin(), without.end(), std::string("tube color")), without.end());
+    CHECK(std::find(without.begin(), without.end(), std::string("volume")) != without.end());   // Tube Color's reserve
+    without.erase(std::remove(without.begin(), without.end(), std::string("volume")), without.end());
     CHECK(without == a);
     std::error_code ec;
     std::filesystem::remove(path, ec);

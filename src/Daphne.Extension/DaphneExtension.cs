@@ -58,6 +58,15 @@ public sealed class DaphneExtension : IMikuExtension, IAudioCoreProvider
         {
             case "state":
                 return State();
+            case "colorPreview":
+            {
+                // the Tube Color panel's pictures (doc/N28): the core measures a stage of its own, off the UI thread
+                double drive = a.ValueKind == JsonValueKind.Object && a.TryGetProperty("drive", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetDouble() : _opts.ColorDrive;
+                var color = DaphneOptions.Color(_opts);
+                color["enabled"] = true;
+                string settings = new System.Text.Json.Nodes.JsonObject { ["color"] = color }.ToJsonString();
+                return await Task.Run(() => DaphneNative.ColorPreview(settings, drive));
+            }
             case "openCache":
             {
                 // the filter cache folder in Explorer (created if it isn't there yet)

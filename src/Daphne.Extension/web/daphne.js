@@ -364,7 +364,7 @@
       r.onchange = () => { pending = +r.value; clearTimeout(timer); flush(); };
       return [r, t];
     };
-    const max = Math.round((info.drive_max || 4) * 100);
+    const max = Math.round((info.drive_max || 2) * 100);
     const pct = Math.min(max, Math.round((op.colorDrive == null ? 1 : op.colorDrive) * 100));
     g.field('Strength', '100 % = the amplifier as calibrated, 0 = no effect. Changes glide, without a gap.',
       slider(0, max, 1, pct, x => x + ' %', x => set({ colorDrive: x / 100 }).then(refresh)));
@@ -403,7 +403,9 @@
     // the playback path as the core reports it
     const line = h('div', { class: 'dp-result dp-color-status' });
     g.add(line);
+    const charts = colorCharts(g);
     const draw = () => {
+      charts.update();
       const lines = colorStatus();
       line.replaceChildren(...lines.map(x => h('div', null, x)));
     };
@@ -415,6 +417,95 @@
       g.box.classList.add('dp-off');
       for (const el of g.box.querySelectorAll('input, select, button')) el.disabled = true;
     }
+  }
+
+  /**
+   * Tube Color's settings as two pictures (doc/N28): the harmonics H2..H7 of a 1 kHz sine at the calibration level, and
+   * the response (amplifier and load) against bypass. The core measures a stage of its own (rpc colorPreview ->
+   * dc_color_preview): the pictures are what plays, no formula here. At the calibration level, or at this track's
+   * effective drive (the level alignment). Asked again when what they show changes, at most every 250 ms.
+   */
+  function colorCharts(g) {
+    const box = h('div', { class: 'dp-color-charts' });
+    g.add(box);
+    let mode = 'cal', key = null, timer = null, last = null;
+    const want = () => {
+      const op = o(), al = Daphne.state.colorNow && Daphne.state.colorNow.align;
+      const set = op.colorDrive == null ? 1 : op.colorDrive;
+      const track = mode === 'track' && al && al.status === 'ready' && Number.isFinite(+al.drive_eff);
+      return { drive: track ? +al.drive_eff : set, set, track, bypass: !!op.colorBypass,
+               key: [op.colorPreset, op.colorLoad, op.colorTrimDb || 0, track ? +al.drive_eff : set, mode].join('|') };
+    };
+    const ask = () => {
+      timer = null;
+      const w = want();
+      Daphne.api.rpc('colorPreview', { drive: w.drive }).then(p => { if (p) { last = { p, w }; render(); } }).catch(() => {});
+    };
+    const render = () => {
+      const tabs = h('div', { class: 'dp-chart-tabs' },
+        ...[['cal', 'Calibration level'], ['track', 'This track']].map(([m, t]) =>
+          h('button', { class: 'dp-btn' + (mode === m ? ' dp-on' : ''), onclick: () => { mode = m; update(); render(); } }, t)));
+      if (!last || !last.p.available) { box.replaceChildren(tabs); return; }
+      const { p, w } = last;
+      const al = Daphne.state.colorNow && Daphne.state.colorNow.align;
+      const cond = `1 kHz sine at the calibration level (-18 dBFS RMS) · drive ${Math.round(w.set * 100)} %` +
+        (w.track ? ` · this track: ${Math.round(w.drive * 100)} % effective (level align)` :
+         mode === 'track' ? (al && al.status === 'scanning' ? ' · this track: still scanning' : ' · this track: no alignment measured') : '') +
+        (w.bypass ? ' · bypassed now: the pictures show the strength set' : '');
+      box.replaceChildren(tabs,
+        h('div', { class: 'dp-chart', html: harmonicsSvg(p.harmonics || []) }),
+        h('div', { class: 'dp-chart', html: responseSvg(p.response || { hz: [], db: [] }) }),
+        h('div', { class: 'dp-result dp-chart-note' }, cond),
+        h('div', { class: 'dp-result dp-chart-note' },
+          'Real music is many tones at once: they also mix into sum and difference tones (intermodulation), which one tone\'s harmonics do not show.'));
+    };
+    const update = () => {
+      const w = want();
+      if (w.key === key) return;
+      key = w.key;
+      if (!timer) timer = setTimeout(ask, 250);
+    };
+    render();
+    return { update, render };
+  }
+
+  const svgNum = x => Math.round(x * 10) / 10;
+  /** H2..H7 as bars, dB against the fundamental (0 at the top, -100 at the bottom), each with its dB and percent. */
+  function harmonicsSvg(hs) {
+    const W = 320, H = 150, L = 34, T = 22, B = 18, plot = H - T - B, bw = (W - L - 8) / Math.max(1, hs.length);
+    const y = db => T + plot * Math.min(1, Math.max(0, -db / 100));
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Harmonics H2 to H7">`;
+    for (const g of [0, -20, -40, -60, -80, -100])
+      s += `<line x1="${L}" x2="${W - 4}" y1="${svgNum(y(g))}" y2="${svgNum(y(g))}" stroke="currentColor" stroke-opacity="0.15"/>` +
+           `<text x="${L - 4}" y="${svgNum(y(g) + 3)}" font-size="9" text-anchor="end" fill="currentColor" fill-opacity="0.6">${g}</text>`;
+    hs.forEach((x, i) => {
+      const db = Math.max(-100, +x.db), cx = L + bw * i + bw / 2, top = y(db);
+      const pct = +x.pct, pt = pct >= 1 ? pct.toFixed(1) : pct >= 0.1 ? pct.toFixed(2) : pct >= 0.001 ? pct.toFixed(3) : '<0.001';
+      s += `<rect class="dp-bar" x="${svgNum(cx - bw * 0.3)}" y="${svgNum(top)}" width="${svgNum(bw * 0.6)}" height="${svgNum(T + plot - top)}" fill="#E58FB7"/>` +
+           `<text x="${svgNum(cx)}" y="${svgNum(top - 9)}" font-size="8.5" text-anchor="middle" fill="currentColor">${Math.round(+x.db)} dB</text>` +
+           `<text x="${svgNum(cx)}" y="${svgNum(top - 1)}" font-size="8" text-anchor="middle" fill="currentColor" fill-opacity="0.7">${pt} %</text>` +
+           `<text x="${svgNum(cx)}" y="${H - 5}" font-size="9" text-anchor="middle" fill="currentColor">H${x.n}</text>`;
+    });
+    return s + '</svg>';
+  }
+
+  /** The response, 20 Hz - 20 kHz on a log axis, dB against bypass (the dashed line at 0). */
+  function responseSvg(r) {
+    const W = 320, H = 150, L = 34, R = 6, T = 10, B = 18, pw = W - L - R, ph = H - T - B;
+    const ys = (r.db || []).filter(Number.isFinite);
+    const span = Math.max(2, Math.ceil(Math.max(0, ...ys.map(Math.abs)) + 0.5));
+    const x = f => L + pw * Math.log(f / 20) / Math.log(1000), y = db => T + ph * (0.5 - db / (2 * span));
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Response against bypass">`;
+    for (const f of [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000])
+      s += `<line x1="${svgNum(x(f))}" x2="${svgNum(x(f))}" y1="${T}" y2="${T + ph}" stroke="currentColor" stroke-opacity="0.12"/>`;
+    for (const [f, t] of [[20, '20'], [100, '100'], [1000, '1k'], [10000, '10k'], [20000, '20k']])
+      s += `<text x="${svgNum(x(f))}" y="${H - 5}" font-size="9" text-anchor="middle" fill="currentColor" fill-opacity="0.6">${t}</text>`;
+    for (const d of [span, span / 2, 0, -span / 2, -span])
+      s += `<text x="${L - 4}" y="${svgNum(y(d) + 3)}" font-size="9" text-anchor="end" fill="currentColor" fill-opacity="0.6">${d > 0 ? '+' : ''}${svgNum(d)}</text>`;
+    s += `<line class="dp-bypass" x1="${L}" x2="${W - R}" y1="${svgNum(y(0))}" y2="${svgNum(y(0))}" stroke="currentColor" stroke-opacity="0.5" stroke-dasharray="4 3"/>` +
+         `<text x="${W - R - 2}" y="${svgNum(y(0) - 3)}" font-size="8.5" text-anchor="end" fill="currentColor" fill-opacity="0.6">bypass</text>`;
+    const pts = (r.hz || []).map((f, i) => `${svgNum(x(f))},${svgNum(y(r.db[i]))}`).join(' ');
+    return s + `<polyline class="dp-response" points="${pts}" fill="none" stroke="#E58FB7" stroke-width="1.8"/></svg>`;
   }
 
   /** The panel's status lines: Tube Color on the playing chain (the core's reason, its path report, the last event). */

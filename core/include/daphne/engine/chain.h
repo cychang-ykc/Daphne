@@ -39,6 +39,15 @@ namespace dsp {
 class Limiter;
 }
 
+// Tube Color's settings as two pictures (doc/N28): an own stage (never the playing one) from the settings at `drive`,
+// at 48 kHz: H2 .. H7 of a 1 kHz sine at the calibration level (-18 dBFS RMS), dB and percent against the
+// fundamental; and the response (amplifier and load, the makeup included) from 20 Hz to 20 kHz in 121 points, dB
+// against bypass, from a small impulse (-60 dBFS: the curve linear there). Some ms of work: call it off the playback
+// thread. {"available": false} where Tube Color cannot run.
+//   {"available": true, "preset", "load", "drive", "signal": {"hz", "dbfs_rms"}, "harmonics": [{"n", "db", "pct"}],
+//    "response": {"hz": [...], "db": [...]}}
+nlohmann::json color_preview(const Settings& s, double drive);
+
 class DspChain {
 public:
     DspChain();

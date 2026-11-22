@@ -114,6 +114,13 @@ module.exports = {
     switch (method) {
       case 'state':
         return state();
+      case 'colorPreview': {
+        // the Tube Color panel's pictures (doc/N28): the core measures a stage of its own (the helper's color_preview)
+        const drive = a && typeof a.drive === 'number' ? a.drive : opts.colorDrive;
+        const r = await withHelper(c => c.request('color_preview', { settings: { color: { ...SM.colorOf(opts), enabled: true } }, drive }, 5000))
+          .catch(() => null);
+        return r && r.ok ? r.preview : null;
+      }
       case 'openCache': {
         // the filter cache folder in Finder (created if it isn't there yet)
         const dir = await cacheDir();

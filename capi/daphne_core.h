@@ -41,7 +41,8 @@ typedef struct dc_player dc_player;
  * 4: dc_cancel, a dc_stop that cancels a dc_load in progress (DC_ERR_CANCELLED), dc_state's "loading".
  * 5: dc_load returns DC_ERR_INTERNAL when the engine fails inside (before: DC_ERR_FILE); DC_ERR_INTERNAL itself came
  *    with ABI 4 without a version of its own.
- * 6: dc_color_info. */
+ * 6: dc_color_info.
+ * 7: dc_color_preview; dc_state's report.color_align. */
 DC_API int dc_abi_version(void);
 DC_API const char* dc_version(void);
 
@@ -138,6 +139,11 @@ DC_API long long dc_filter_cache_prune(const char* settings, int limit_mb);
  * their labels and bias ranges, the feedback steps, whether bias and load are adjustable yet (settings.h color_info).
  * Returns the length, or DC_ERR_BUFFER. */
 DC_API int dc_color_info(char* json, int len);
+/* Tube Color's settings as two pictures (chain.h color_preview): the harmonics of a 1 kHz sine at the calibration level
+ * and the response against bypass, from an own stage at `drive` (the playing chain untouched; some ms: call it off the
+ * host's UI thread). settings_json: the settings (their color object counts). Returns the length, DC_ERR_SETTINGS,
+ * or DC_ERR_BUFFER. (ABI 7) */
+DC_API int dc_color_preview(const char* settings_json, double drive, char* json, int len);
 
 /* Output devices as JSON: {"wasapi": [{"id","name","default"}], "asio": [{"name","clsid"}],
  * "coreaudio": [{"uid","name","default","rate","channels","rates","transport","hog_pid"}]} (each list empty on the

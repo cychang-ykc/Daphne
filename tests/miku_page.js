@@ -49,6 +49,15 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 
+// what dc_color_preview answers, made up: H2 grows with the drive, the response a gentle tilt
+let previewAvailable = true;
+function preview(drive) {
+  if (!previewAvailable) return { available: false };
+  return { available: true, preset: 'set-300b', load: 'bookshelf-vented-smooth', drive, signal: { hz: 1000, dbfs_rms: -18 },
+    harmonics: [2, 3, 4, 5, 6, 7].map(n => ({ n, db: -49 - 12 * (n - 2) + 20 * Math.log10(Math.max(drive, 1e-3)), pct: 100 * Math.pow(10, (-49 - 12 * (n - 2)) / 20) })),
+    response: { hz: [20, 100, 1000, 10000, 20000], db: [-0.8, -0.6, 0, -2.4, -3.6] } };
+}
+
 function apiFor(info, colorNow, options) {
   state = { options, color: info, colorNow };
   const settings = {};
@@ -57,6 +66,7 @@ function apiFor(info, colorNow, options) {
     rpc: async (m, a) => {
       calls.push([m, a]);
       if (m === 'set') Object.assign(state.options, a);
+      if (m === 'colorPreview') return preview(a.drive);   // the core's pictures (dc_color_preview)
       return JSON.parse(JSON.stringify(state));
     },
     on: () => {}, signalPath: () => {}, addSettings: (where, f) => { settings[where] = f; },
@@ -110,6 +120,7 @@ function fieldByTitle(g, title) {
   assert.match(status.textContent, /Bypassed: the stage idles/);
   assert.match(status.textContent, /Path: DSP active \(Tube Color\)/);
   // drag the slider: sends at most every 150 ms, then where it stops
+  timers.length = 0;   // (the pictures' first request: tested below)
   calls.length = 0;
   strength.value = 150; strength.oninput(); strength.value = 160; strength.oninput();
   assert.strictEqual(calls.length, 0);
@@ -234,4 +245,51 @@ function fieldByTitle(g, title) {
   assert.notStrictEqual(card.style.display, 'none');
   assert.ok(colorGroup(card));
   console.log('PASS  shared mode: Tube Color still offered');
+
+  // 5. the pictures (doc/N28): asked from the core (colorPreview) at the slider's drive, H2..H7 as six bars and the
+  // response as a line against the dashed bypass; the condition said, intermodulation said; "This track" asks at the
+  // track's effective drive; a burst of changes asks once (250 ms); a core without the preview shows no pictures
+  const chartsOf = c => colorGroup(c).all().find(e => e.classList.contains('dp-color-charts'));
+  timers.length = 0; calls.length = 0;
+  const trackNow = { playing: true, inChain: true, reason: 'DSP active (Tube Color)', report: [], lastEvent: null,
+    align: { status: 'ready', mode: 'conservative', lufs: -4.1, p999_db: -0.3, gain_db: -10.18, drive: 1.0, drive_eff: 0.31 } };
+  api = apiFor(info, trackNow, { colorEnabled: true, colorPreset: 'set-300b', colorDrive: 1.0, colorLoad: 'bookshelf-vented-smooth' });
+  await ctx.module.init(api);
+  card = new El('card'); ui.section = () => card;
+  api.settings.core(card, ui);
+  assert.strictEqual(timers.length, 1, 'one request scheduled');
+  timers.shift()(); await tick(); await tick();
+  eq(calls.filter(c => c[0] === 'colorPreview'), [['colorPreview', { drive: 1 }]]);
+  let box = chartsOf(card);
+  const svgs = box.all().filter(e => e.classList.contains('dp-chart')).map(e => e.html);
+  assert.strictEqual(svgs.length, 2);
+  assert.strictEqual((svgs[0].match(/class="dp-bar"/g) || []).length, 6, 'six bars');
+  assert.match(svgs[0], />H2</); assert.match(svgs[0], />H7</); assert.match(svgs[0], /-49 dB/);
+  assert.match(svgs[1], /class="dp-response"/); assert.match(svgs[1], /class="dp-bypass"/);
+  assert.match(box.textContent, /1 kHz sine at the calibration level \(-18 dBFS RMS\) · drive 100 %/);
+  assert.match(box.textContent, /intermodulation/);
+  // "This track": the effective drive
+  calls.length = 0;
+  const tabs = box.all().filter(e => e.tag === 'button');
+  eq(tabs.map(b => b.textContent), ['Calibration level', 'This track']);
+  tabs[1].onclick();
+  assert.strictEqual(timers.length, 1);
+  timers.shift()(); await tick(); await tick();
+  eq(calls.filter(c => c[0] === 'colorPreview'), [['colorPreview', { drive: 0.31 }]]);
+  assert.match(chartsOf(card).textContent, /this track: 31 % effective/);
+  // a burst of refreshes with nothing changed asks nothing; a change asks once
+  calls.length = 0;
+  for (const f of intervals) f();
+  await tick();
+  assert.strictEqual(timers.length, 0, 'nothing changed: no request');
+  // a core without the preview: the tabs, no pictures
+  previewAvailable = false;
+  api = apiFor(info, trackNow, { colorEnabled: true, colorPreset: 'set-300b', colorDrive: 1.2 });
+  await ctx.module.init(api);
+  card = new El('card'); ui.section = () => card;
+  api.settings.core(card, ui);
+  timers.shift()(); await tick(); await tick();
+  assert.strictEqual(chartsOf(card).all().filter(e => e.classList.contains('dp-chart')).length, 0);
+  previewAvailable = true;
+  console.log('PASS  the pictures: from the core, six bars and the response, this track, throttled');
 })().catch(e => { console.error('FAIL ', e.stack || e.message); process.exit(1); });

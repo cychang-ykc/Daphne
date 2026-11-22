@@ -163,6 +163,18 @@ struct DesignSettings {
 // checks are at 200 %.
 inline constexpr double kColorDriveMax = 2.0;
 
+// Tube Color's automatic room below full scale (doc/N28, 2026-11-23; in place of "set the digital volume to -3 dB"): the
+// output is turned down by color_reserve_db so that its peaks stay under the soft limiter's knee (-0.5 dBFS). The room
+// needed: the largest true peak of the six test tracks over drive 0 .. 200 %, before the limiter, plus 0.5 dB
+// (verify/headroom_study.py). Only what the digital volume does not already give: reserve = max(0, kColorHeadroomDb -
+// the digital volume's attenuation). While Tube Color is active, at any drive: bypass (drive 0) is turned down alike,
+// so that A/B compares at one level; drive 0 is then no longer bit-identical. Off (enabled false), nothing changes:
+// bit-perfect as ever. It rides on the gain stage (ramped as the volume is) and on the volume the stage cancels, so the
+// curve sees the music at the same level and only the output is lower.
+inline constexpr double kColorHeadroomDb = 3.2;
+struct Settings;
+double color_reserve_db(const Settings& s);
+
 // Tube Color (doc/N28). enabled false (the default): not in the chain, playback exactly as without it. Before M2,
 // only test builds can run it (daphne::color::available()); elsewhere enabled true changes nothing either.
 struct ColorSettings {

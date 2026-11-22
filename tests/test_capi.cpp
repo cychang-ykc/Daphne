@@ -378,6 +378,28 @@ TEST_CASE("C API: dc_filter_cache_dir_utf8 returns the folder in UTF-8", "[capi]
 }
 
 // Tube Color's controls for a host's panel (doc/N28): the core's own limits and presets, so a host copies no constant
+// dc_color_preview (ABI 7, doc/N28): the panel's pictures; a small buffer is DC_ERR_BUFFER; available where Tube Color
+// runs, with six harmonics and a response; {"available": false} elsewhere.
+TEST_CASE("C API: dc_color_preview", "[capi]") {
+    CHECK(dc_abi_version() >= 7);
+    char small[8];
+    CHECK(dc_color_preview(R"({"color": {"enabled": true}})", 1.0, small, sizeof small) == DC_ERR_BUFFER);
+    std::vector<char> b(1 << 16);
+    const int n = dc_color_preview(R"({"color": {"enabled": true, "drive": 0.5}})", 1.0, b.data(), static_cast<int>(b.size()));
+    REQUIRE(n > 0);
+    const auto j = nlohmann::json::parse(std::string(b.data(), static_cast<size_t>(n)));
+    daphne::Settings probe;
+    probe.color.enabled = true;
+    if (daphne::color_active(probe)) {
+        CHECK(j["available"] == true);
+        CHECK(j["drive"] == 1.0);   // the drive asked for, not the settings'
+        CHECK(j["harmonics"].size() == 6);
+        CHECK(j["response"]["hz"].size() == j["response"]["db"].size());
+    } else {
+        CHECK(j["available"] == false);
+    }
+}
+
 TEST_CASE("C API: dc_color_info", "[capi]") {
     CHECK(dc_abi_version() >= 6);
     char small[8];

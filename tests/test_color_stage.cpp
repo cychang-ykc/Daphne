@@ -493,6 +493,7 @@ TEST_CASE("color stage: crossing 0 in place, aligned, idle bit for bit", "[color
 
 // The final quantizer on an integer device with a source that fits it (where it is left out without Tube Color): kept,
 // passing through while the stage is idle. drive 0 -> 50 % -> 0: the input bit for bit, dithered, the input bit for bit.
+// (Tube Color's reserve offset by +1.5 dB of headroom: the gain stage at 0 dB, the stage and the quantizer alone.)
 TEST_CASE("color chain: the quantizer kept for Tube Color passes while it is idle", "[color][chain]") {
     for (int bits : {24, 16}) {
         INFO(bits << "-bit output, a " << bits << "-bit source");
@@ -506,6 +507,7 @@ TEST_CASE("color chain: the quantizer kept for Tube Color passes while it is idl
         daphne::Settings s;
         s.color.enabled = true;
         s.color.drive = 0.0;
+        s.headroom_db = daphne::kColorHeadroomDb;
         daphne::DspChain c;
         std::string e;
         REQUIRE(c.build(s, src, dev, 4096, &e));
@@ -658,7 +660,10 @@ TEST_CASE("color volume: the tube character does not change with the volume", "[
         CHECK(a.limited == 0);
         for (double db : {-20.0, -60.0}) {
             const auto b = run_volume(x, 44100, dev_rate, 1.4, db, db, -1);
-            const double g = std::pow(10.0, db / 20.0);
+            // the output's gain against 0 dB's: the volume, and Tube Color's reserve (settings.h) at 0 dB that the
+            // volume here already gives
+            const double r0 = daphne::kColorHeadroomDb, r = std::max(0.0, daphne::kColorHeadroomDb + db);
+            const double g = std::pow(10.0, (db - r + r0) / 20.0);
             double err = 0.0, peak = 0.0;
             for (size_t i = 0; i < std::min(a.y.size(), b.y.size()); ++i) {
                 err = std::max(err, std::abs(b.y[i] / g - a.y[i]));
@@ -1012,3 +1017,118 @@ TEST_CASE("color stage: the level alignment", "[color]") {
     CHECK(same);
 }
 
+// Tube Color's reserve (settings.h, doc/N28): max(0, kColorHeadroomDb - the digital volume's attenuation) while it is on,
+// 0 off; ReplayGain's headroom does not count. On the chain at drive 0 on a float device: the output is the input times
+// the volume and the reserve, and a volume change moves the two together without a step (a constant input: the output
+// level ramps; 0 -> -0.5 dB of volume leaves the total where it was, -kColorHeadroomDb).
+TEST_CASE("color chain: the reserve, by the digital volume, without a step", "[color][chain]") {
+    daphne::Settings s;
+    CHECK(daphne::color_reserve_db(s) == 0.0);   // off
+    s.color.enabled = true;
+    if (!daphne::color_active(s)) SKIP("Tube Color cannot run in this build");
+    const double h = daphne::kColorHeadroomDb;
+    CHECK(daphne::color_reserve_db(s) == h);   // (the default volume mode: fixed, the host's)
+    s.volume.mode = daphne::VolumeMode::Digital;
+    CHECK(daphne::color_reserve_db(s) == h);
+    s.volume.db = -1.0;
+    CHECK(daphne::color_reserve_db(s) == Catch::Approx(h - 1.0));
+    s.volume.db = -(h + 0.8);
+    CHECK(daphne::color_reserve_db(s) == 0.0);
+    s.volume.mode = daphne::VolumeMode::Fixed;   // the host's volume: nothing to count on
+    CHECK(daphne::color_reserve_db(s) == h);
+    s.volume.mode = daphne::VolumeMode::Digital;
+    s.volume.db = 0.0;
+    s.headroom_db = -6.0;   // ReplayGain: not the volume
+    CHECK(daphne::color_reserve_db(s) == h);
+    s.headroom_db = 0.0;
+    s.color.drive = 0.0;
+    daphne::AudioInfo src;
+    src.rate = 44100, src.channels = 2, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 44100, dev.channels = 2, dev.type = daphne::SampleType::Float32, dev.container_bits = dev.valid_bits = 32;
+    daphne::DspChain c;
+    std::string e;
+    REQUIRE(c.build(s, src, dev, 4096, &e));
+    const int block = 4096, frames = 40 * block;
+    std::vector<double> x(2 * static_cast<size_t>(frames), 0.5), y, o(static_cast<size_t>(c.max_output_frames()) * 2);
+    for (int at = 0; at < frames; at += block) {
+        if (at == 10 * block || at == 20 * block || at == 30 * block) {
+            daphne::Settings v = s;
+            v.volume.db = at == 10 * block ? -0.5 : at == 20 * block ? -(h + 0.8) : 0.0;
+            REQUIRE(c.update(v));
+        }
+        const int n = c.process(x.data() + 2 * static_cast<size_t>(at), block, o.data());
+        y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
+    }
+    auto db_at = [&](int frame) { return 20 * std::log10(y[2 * static_cast<size_t>(frame)] / 0.5); };
+    CHECK(db_at(8 * block) == Catch::Approx(-h).margin(1e-9));          // volume 0: the reserve
+    CHECK(db_at(18 * block) == Catch::Approx(-h).margin(1e-9));         // -0.5 dB of volume, the rest reserve
+    CHECK(db_at(28 * block) == Catch::Approx(-(h + 0.8)).margin(1e-9)); // more than the room: the volume, no reserve
+    CHECK(db_at(38 * block) == Catch::Approx(-h).margin(1e-9));         // back
+    double step = 0.0;
+    for (int n = 4 * block; n + 1 < static_cast<int>(y.size() / 2); ++n) step = std::max(step, std::abs(db_at(n + 1) - db_at(n)));
+    INFO("the largest change from one frame to the next " << step << " dB");
+    CHECK(step < 0.01);   // ramped (the gain stage's ramp), never a step
+}
+
+
+// The panel's pictures (doc/N28, chain.h color_preview): what the chain plays. Against a chain built from the same
+// settings (48 kHz, a float device, the digital volume at -kColorHeadroomDb: no reserve, the volume cancelled around the
+// curve, so it sees what the preview's stage sees): the harmonics of a 1 kHz sine at -18 dBFS RMS within 0.05 dB, and
+// the response at three of the preview's frequencies within 0.05 dB (the volume added back; small tones: the curve
+// linear). At drive 0: no harmonics, a flat response.
+TEST_CASE("color preview: the harmonics and the response the chain plays", "[color][preview]") {
+    daphne::Settings s;
+    s.color.enabled = true;
+    if (!daphne::color_active(s)) SKIP("Tube Color cannot run in this build");
+    s.color.drive = 1.0;
+    const auto p = daphne::color_preview(s, 1.0);
+    REQUIRE(p["available"] == true);
+    REQUIRE(p["harmonics"].size() == 6);
+    const auto& hz = p["response"]["hz"];
+    REQUIRE(hz.size() >= 120);
+    CHECK(hz.front().get<double>() == 20.0);
+    CHECK(hz.back().get<double>() == Catch::Approx(20000.0).margin(1.0));
+    s.volume.mode = daphne::VolumeMode::Digital;
+    s.volume.db = -daphne::kColorHeadroomDb;
+    REQUIRE(daphne::color_reserve_db(s) == 0.0);
+    daphne::AudioInfo src;
+    src.rate = 48000, src.channels = 2, src.codec = "test";
+    daphne::DeviceFormat dev;
+    dev.rate = 48000, dev.channels = 2, dev.type = daphne::SampleType::Float32, dev.container_bits = dev.valid_bits = 32;
+    auto through_chain = [&](double hz0, double amp) {
+        daphne::DspChain c;
+        std::string e;
+        REQUIRE(c.build(s, src, dev, 4096, &e));
+        const int frames = 48000;
+        std::vector<double> x(2 * static_cast<size_t>(frames)), y, o(static_cast<size_t>(c.max_output_frames()) * 2);
+        for (int i = 0; i < frames; ++i) x[2 * static_cast<size_t>(i)] = x[2 * static_cast<size_t>(i) + 1] = amp * std::sin(2 * std::numbers::pi * hz0 * i / 48000);
+        for (int at = 0; at < frames; at += 4096) {
+            const int n = c.process(x.data() + 2 * static_cast<size_t>(at), std::min(4096, frames - at), o.data());
+            y.insert(y.end(), o.begin(), o.begin() + 2 * static_cast<std::ptrdiff_t>(n));
+        }
+        return y;
+    };
+    const double amp = std::pow(10.0, -18.0 / 20.0) * std::sqrt(2.0);
+    const auto y = through_chain(1000.0, amp);
+    const int n = static_cast<int>(y.size() / 2), from = n - 12000;
+    auto mag = [&](const std::vector<double>& v, double f, int a, int b) { const auto [c, sn] = harmonic_of(v, 48000, f, 1, a, b); return std::hypot(c, sn); };
+    const double h1 = mag(y, 1000.0, from, n);
+    for (int k = 2; k <= 7; ++k) {
+        INFO("H" << k);
+        const double want = p["harmonics"][k - 2]["db"].get<double>();
+        if (want < -100.0) continue;   // (none to speak of: the test curve's even ones, the far ones)
+        CHECK(20 * std::log10(mag(y, 1000.0 * k, from, n) / h1) == Catch::Approx(want).margin(0.05));
+    }
+    for (size_t i : {size_t{12}, size_t{60}, size_t{100}}) {   // about 40 Hz, 640 Hz, 6.4 kHz
+        const double f = hz[i].get<double>();
+        INFO(f << " Hz");
+        const auto t = through_chain(f, 1e-3);
+        const int m = static_cast<int>(t.size() / 2), len = static_cast<int>(std::floor(0.4 * f)) * 48000 / static_cast<int>(std::lround(f));
+        const int a = m - std::max(len, 4800);
+        CHECK(20 * std::log10(mag(t, f, a, m) / 1e-3) + daphne::kColorHeadroomDb == Catch::Approx(p["response"]["db"][i].get<double>()).margin(0.05));
+    }
+    const auto z = daphne::color_preview(s, 0.0);
+    for (const auto& x : z["harmonics"]) CHECK(x["db"].get<double>() < -150.0);
+    for (const auto& d : z["response"]["db"]) CHECK(std::abs(d.get<double>()) < 1e-6);
+}

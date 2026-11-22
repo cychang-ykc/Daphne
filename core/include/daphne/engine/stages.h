@@ -18,9 +18,9 @@ std::unique_ptr<dsp::PeqParams> make_peq_params(const EqSettings& s, double fs);
 
 void configure_crossfeed(dsp::Crossfeed& c, const CrossfeedSettings& s);
 
-// The gain stage's level: digital volume plus the track's headroom.
+// The gain stage's level: digital volume plus the track's headroom, less Tube Color's reserve (settings.h).
 inline double gain_db(const Settings& s) {
-    return (s.volume.mode == VolumeMode::Digital ? s.volume.db : 0.0) + s.headroom_db;
+    return (s.volume.mode == VolumeMode::Digital ? s.volume.db : 0.0) + s.headroom_db - color_reserve_db(s);
 }
 
 }  // namespace daphne

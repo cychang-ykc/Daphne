@@ -23,6 +23,33 @@ namespace daphne {
 
 namespace {
 
+#if defined(DAPHNE_COLOR)
+// Tube Color's stage from the settings (doc/N28): the drive, the trim, the preset's curve and response, the load and the
+// drive's makeup. The chain adds the level and the volume it cancels; the preview (color_preview) runs it as it is.
+color::StageParams color_stage_params(const Settings& s) {
+    color::StageParams cp;
+    cp.drive = s.color.drive;
+    cp.trim_db = s.color.makeup_gain_db.value_or(0.0);
+#if defined(DAPHNE_COLOR_TEST_CURVE)
+    cp.linear = color::test_linear_model();   // (test builds: every preset on the M1 test curve)
+#else
+    cp.curve = color::preset_curve(color_preset_name(s.color.preset));
+    if (cp.curve) cp.linear = cp.curve->linear;
+    // the loudspeaker load (doc/N28): its sections after the output transformer's, faded in with them
+    if (s.color.load != ColorLoad::Resistor8) {
+        const int fb = s.color.preset == ColorPreset::PpEl34Ul ? s.color.feedback_db : -1;
+        if (const auto* l = color::preset_load(color_preset_name(s.color.preset), fb, color_load_name(s.color.load))) {
+            cp.load = l->sections;
+            cp.load_gain_db = l->makeup_db;
+        }
+    }
+    // the drive's automatic makeup for this preset and load (doc/N28)
+    if (const auto* m = color::drive_makeup(color_preset_name(s.color.preset), color_load_name(s.color.load))) cp.makeup = m->table;
+#endif
+    return cp;
+}
+#endif
+
 bool eq_on(const EqSettings& e) {
     return e.enabled && std::any_of(e.bands.begin(), e.bands.end(), [](const EqBand& b) { return b.on; });
 }
@@ -153,11 +180,9 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     // Tube Color (doc/N28), an effect: after the upsampler, before the limiters and the final quantizer; only while
     // active (enabled, and a build that can run it), so with it off the chain is the one without it
     if (color_active(s)) {
-        color::StageParams cp;
-        cp.drive = s.color.drive;
+        color::StageParams cp = color_stage_params(s);
         cp.level = src.dsd_pcm ? 2.0 : 1.0;   // the DSD -> PCM conversion's +6 dB, cancelled like the volume
         cp.volume = color_volume_ = color_volume(s);
-        cp.trim_db = s.color.makeup_gain_db.value_or(0.0);
         // where the gain stage's changes reach the stage: its rate over the source's, and the content delay of what
         // lies between (the upsampler), in the stage's frames
         color_ratio_ = std::max(1, rate / std::max(1, src.rate));
@@ -168,22 +193,6 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
             else if (after_gain) color_lead_ += x.block->content_delay_frames() * std::max(1, rate / std::max(1, x.block->output_format().rate));
         }
         gain_ramp_ = static_cast<int>(std::max(1.0, dsp::Gain::kRampMs * 1e-3 * src.rate)) * color_ratio_;
-#if defined(DAPHNE_COLOR_TEST_CURVE)
-        cp.linear = color::test_linear_model();   // (test builds: every preset on the M1 test curve)
-#else
-        cp.curve = color::preset_curve(color_preset_name(s.color.preset));
-        if (cp.curve) cp.linear = cp.curve->linear;
-        // the loudspeaker load (doc/N28): its sections after the output transformer's, faded in with them
-        if (s.color.load != ColorLoad::Resistor8) {
-            const int fb = s.color.preset == ColorPreset::PpEl34Ul ? s.color.feedback_db : -1;
-            if (const auto* l = color::preset_load(color_preset_name(s.color.preset), fb, color_load_name(s.color.load))) {
-                cp.load = l->sections;
-                cp.load_gain_db = l->makeup_db;
-            }
-        }
-        // the drive's automatic makeup for this preset and load (doc/N28)
-        if (const auto* m = color::drive_makeup(color_preset_name(s.color.preset), color_load_name(s.color.load))) cp.makeup = m->table;
-#endif
         auto c = std::make_unique<color::TubeColorStage>(std::move(cp));
         color_ = c.get();
         add("tube color", std::move(c), frames, rate, ch);
@@ -236,8 +245,9 @@ bool DspChain::build(const Settings& s, const AudioInfo& src, const DeviceFormat
     return true;
 }
 
+// the digital volume and Tube Color's reserve (settings.h): both on the gain stage, both cancelled around the curve
 double DspChain::color_volume(const Settings& s) {
-    return s.volume.mode == VolumeMode::Digital ? dsp::Gain::db_to_linear(s.volume.db) : 1.0;
+    return (s.volume.mode == VolumeMode::Digital ? dsp::Gain::db_to_linear(s.volume.db) : 1.0) * dsp::Gain::db_to_linear(-color_reserve_db(s));
 }
 
 bool DspChain::update(const Settings& s) {
@@ -379,6 +389,74 @@ std::vector<std::string> DspChain::stages() const {
     for (const auto& s : st_)
         if (!identity(s)) v.push_back(s.name);
     return v;
+}
+
+nlohmann::json color_preview(const Settings& settings, double drive) {
+    nlohmann::json out = {{"available", false}};
+#if defined(DAPHNE_COLOR)
+    Settings s = settings;
+    s.color.enabled = true;
+    if (!color_active(s)) return out;
+    drive = std::clamp(std::isfinite(drive) ? drive : 0.0, 0.0, kColorDriveMax);
+    s.color.drive = drive;
+    constexpr int kRate = 48000, kBlock = 4096;
+    // one stage of its own for each measurement (the playing chain is not touched), at the drive from the start
+    auto run = [&](const std::vector<double>& x) {
+        color::TubeColorStage st(color_stage_params(s));
+        st.prepare({kRate, 1, kBlock});
+        std::vector<double> y(x.size());
+        for (size_t at = 0; at < x.size(); at += kBlock) {
+            const int n = static_cast<int>(std::min<size_t>(kBlock, x.size() - at));
+            st.process(x.data() + at, n, y.data() + at);
+        }
+        return y;
+    };
+    // the harmonics: a 1 kHz sine at the calibration level (-18 dBFS RMS), 0.5 s; the last 0.25 s (250 periods)
+    const double amp = std::pow(10.0, -18.0 / 20.0) * std::sqrt(2.0);
+    std::vector<double> x(kRate / 2);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = amp * std::sin(2.0 * 3.141592653589793 * 1000.0 * static_cast<double>(i) / kRate);
+    const auto y = run(x);
+    const size_t from = x.size() / 2;
+    auto bin = [&](int k) {
+        double c = 0.0, sn = 0.0;
+        for (size_t i = from; i < y.size(); ++i) {
+            const double w = 2.0 * 3.141592653589793 * 1000.0 * k * static_cast<double>(i) / kRate;
+            c += y[i] * std::cos(w), sn += y[i] * std::sin(w);
+        }
+        return 2.0 * std::hypot(c, sn) / static_cast<double>(y.size() - from);
+    };
+    const double h1 = bin(1);
+    nlohmann::json hs = nlohmann::json::array();
+    for (int k = 2; k <= 7; ++k) {
+        const double r = h1 > 0.0 ? bin(k) / h1 : 0.0;
+        hs.push_back({{"n", k}, {"db", r > 0.0 ? 20.0 * std::log10(r) : -200.0}, {"pct", 100.0 * r}});
+    }
+    // the response: a small impulse (-60 dBFS: the curve linear), 1.4 s, against bypass (the impulse itself)
+    std::vector<double> d(65536, 0.0);
+    d[0] = 1e-3;
+    const auto h = run(d);
+    nlohmann::json hz = nlohmann::json::array(), db = nlohmann::json::array();
+    for (int k = 0; k <= 120; ++k) {   // 20 Hz .. 20 kHz, 121 points (1/12 octave)
+        const double f = 20.0 * std::pow(1000.0, k / 120.0);
+        double re = 0.0, im = 0.0;
+        for (size_t i = 0; i < h.size(); ++i) {
+            const double w = 2.0 * 3.141592653589793 * f * static_cast<double>(i) / kRate;
+            re += h[i] * std::cos(w), im -= h[i] * std::sin(w);
+        }
+        hz.push_back(std::round(f * 10.0) / 10.0);
+        db.push_back(20.0 * std::log10(std::max(std::hypot(re, im) / 1e-3, 1e-12)));
+    }
+    out = {{"available", true},
+           {"preset", color_preset_name(s.color.preset)},
+           {"load", color_load_name(s.color.load)},
+           {"drive", drive},
+           {"signal", {{"hz", 1000}, {"dbfs_rms", -18}}},
+           {"harmonics", hs},
+           {"response", {{"hz", hz}, {"db", db}}}};
+#else
+    (void)settings, (void)drive;
+#endif
+    return out;
 }
 
 }  // namespace daphne

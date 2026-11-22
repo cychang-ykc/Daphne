@@ -49,6 +49,7 @@ static class DaphneNative
     [DllImport(Dll)] public static extern void dc_live_rate(int rate);
     [DllImport(Dll)] static extern int dc_devices(byte[] json, int len);
     [DllImport(Dll)] static extern int dc_color_info(byte[] json, int len);   // ABI 6
+    [DllImport(Dll)] static extern int dc_color_preview(byte[] settings, double drive, byte[] json, int len);   // ABI 7
     [DllImport(Dll, CharSet = CharSet.Unicode)] static extern int dc_filter_cache_dir(char[] dir, int len);
     [DllImport(Dll)] static extern long dc_filter_cache_prune(byte[] settings, int limitMb);
 
@@ -111,7 +112,21 @@ static class DaphneNative
     /// <summary>Tube Color's controls from the core (doc/N28; null: a core without them): availability, the drive limit, the presets.</summary>
     public static JsonElement? ColorInfo => _colorInfo.Value;
 
+    /// <summary>Tube Color's settings as two pictures (doc/N28, dc_color_preview): the harmonics of a 1 kHz sine at the
+    /// calibration level and the response against bypass, from a stage of the core's own at this drive. Some ms of
+    /// work: off the UI thread. Null from a core before ABI 7.</summary>
+    public static JsonElement? ColorPreview(string settingsJson, double drive)
+    {
+        try
+        {
+            if (dc_abi_version() < 7) return null;
+            var s = Utf8z(settingsJson);
+            return Json(b => dc_color_preview(s, drive, b, b.Length)) is string j ? JsonDocument.Parse(j).RootElement.Clone() : null;
+        }
+        catch (Exception) { return null; }
+    }
+
     /// <summary>The strength slider's limit (1.0 = 100 %), the core's own constant.</summary>
     public static double ColorDriveMax =>
-        ColorInfo is { } i && i.TryGetProperty("drive_max", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble() : 4.0;
+        ColorInfo is { } i && i.TryGetProperty("drive_max", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble() : 2.0;
 }
