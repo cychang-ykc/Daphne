@@ -1200,15 +1200,85 @@ TEST_CASE("Player: an output that can resample is asked to only after the device
         REQUIRE(tried.size() == 1);
         CHECK_FALSE(tried[0].convert);
     }
-    SECTION("an output that cannot resample is not asked to") {
+    SECTION("an output that cannot resample is not asked to: the player resamples the track itself") {
         Rig r;
         r.dev->lock_rate = 48000;
-        r.dev->can_convert = true;   // (the fake would, but the caps say no: WASAPI exclusive, ASIO)
+        r.dev->can_convert = true;   // (the fake would, but the caps say no: ASIO)
         r.sources["a"] = int24_noise(44100, 2, 4410, 4);
-        CHECK_FALSE(r.start("a", Settings{}));
-        REQUIRE(r.dev->opens.size() == 1);
+        REQUIRE(r.start("a", Settings{}));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(r.dev->opens.size() == 2);
         CHECK_FALSE(r.dev->opens[0].convert);
+        CHECK_FALSE(r.dev->opens[1].convert);
+        CHECK(r.dev->opens[1].rate == 48000);
+        CHECK(rep.source.rate == 48000);
+        CHECK(rep.source.resampled_from == 44100);
+        CHECK(rep.device.rate == 48000);
+        CHECK_FALSE(rep.bit_perfect);
+        CHECK(r.saw("resampling this track to 48000 Hz"));
+        // the whole track, at the new rate (within the filter's edges)
+        CHECK(r.dev->frames() >= 4800u - 64u);
     }
+}
+
+TEST_CASE("Player: a track at a rate the device does not take is resampled to one it does (ASIO)", "[player][convert]") {
+    SECTION("192 kHz on a DAC that stops at 96 kHz: 96 kHz, the same family") {
+        Rig r;
+        r.dev->lock_rate = 96000;
+        r.sources["a"] = int24_noise(192000, 2, 19200, 5);
+        REQUIRE(r.start("a", Settings{}));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK(rep.source.resampled_from == 192000);
+        CHECK(rep.device.rate == 96000);
+        CHECK(r.dev->opens.back().rate == 96000);
+        CHECK(r.dev->frames() >= 9600u - 64u);
+    }
+    SECTION("a device that fails for another reason is not opened again") {
+        Rig r;
+        std::vector<OutputRequest> tried;
+        r.dev->accept = [&](const OutputRequest& q) {
+            tried.push_back(q);
+            return false;
+        };
+        r.sources["a"] = int24_noise(192000, 2, 4800, 6);
+        CHECK_FALSE(r.start("a", Settings{}));
+        CHECK(tried.size() == 1);
+    }
+}
+
+TEST_CASE("Resampling decoder: a sine keeps its frequency and level", "[decoder][convert]") {
+    // 1 kHz at 44.1 kHz, resampled to 48 kHz: the samples follow sin(2 pi 1000 t) at the new rate
+    const int n = 44100;
+    auto sig = sine(44100, 1000.0, 1.0);   // 1 s, amplitude 0.5
+    auto d = make_resampling_decoder(std::make_unique<test::MemoryDecoder>(sig), 48000);
+    REQUIRE(d);
+    CHECK(d->info().rate == 48000);
+    CHECK(d->info().resampled_from == 44100);
+    CHECK(d->source_rate() == 44100);
+    const int ch = d->info().channels;
+    std::vector<double> out(static_cast<size_t>(48000) * ch);
+    int got = 0;
+    while (got < 48000) {
+        const int k = d->read(out.data() + static_cast<size_t>(got) * ch, 48000 - got);
+        if (k <= 0) break;
+        got += k;
+    }
+    CHECK(got >= 48000 * static_cast<int64_t>(sig->x.size() / ch) / n - 2);
+    // away from the edges, the error against the ideal sine is tiny
+    double worst = 0;
+    for (int i = 2000; i < got - 2000; ++i) {
+        const double ideal = 0.5 * std::sin(2 * 3.14159265358979323846 * 1000.0 * i / 48000.0);
+        worst = std::max(worst, std::abs(out[static_cast<size_t>(i) * ch] - ideal));
+    }
+    CHECK(worst < 1e-3);
+    // a seek lands at the right place
+    REQUIRE(d->seek(24000));
+    double x = 0;
+    REQUIRE(d->read(&out[0], 1) == 1);
+    x = out[0];
+    CHECK(std::abs(x - 0.5 * std::sin(2 * 3.14159265358979323846 * 1000.0 * 24000 / 48000.0)) < 1e-3);
 }
 
 TEST_CASE("Player: a DSF file stopped while its DoP output opens is not converted to PCM", "[player][dsd]") {

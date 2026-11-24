@@ -88,6 +88,8 @@ public sealed partial class DaphneEngine
         bool dsdFile = sentDirect;                 // a DSD file sent as DSD
         bool dsdPcm = isDsd && !sentDirect;        // a DSD file converted to PCM (it may leave as DSD again: the modulator)
         int pcmRate = src.GetProperty("rate").GetInt32();   // where the PCM chain starts (DSD → PCM: the converted rate)
+        // the device took none of the file's rates (ASIO): the decoder's output was resampled to one it takes
+        int resFrom = src.TryGetProperty("resampled_from", out var rf) && rf.ValueKind == JsonValueKind.Number ? rf.GetInt32() : 0;
         int channels = src.GetProperty("channels").GetInt32();
         int clock = nativeDsd ? devRate : dop ? devRate * 16 : 0;   // the DSD rate sent
         bool upsampler = SettingsMap.Upsampler(_s, o, t) != "off";
@@ -116,17 +118,19 @@ public sealed partial class DaphneEngine
                   t.IsLossy ? "解碼器輸出浮點樣本，轉成 64-bit 浮點"
                   : srcLossless ? "整數樣本放進 64-bit 浮點的 53-bit 尾數，數值完全不變"
                   : "浮點樣本放進 64-bit 浮點，數值不變")
-              with { pin = new[] { To(Pcm(F64, pcmRate)), new PathPin("解碼器", mark: true) } };
-        sections.Add(new
+              with { pin = new[] { To(Pcm(F64, resFrom > 0 ? resFrom : pcmRate)), new PathPin("解碼器", mark: true) } };
+        var srcRows = new List<PathRow>
         {
-            title = "來源",
-            rows = new[]
-            {
-                Row("檔案", srcText, false, channels != 2 ? $"聲道：{channels}" : null,
-                    t.IsLossy ? "有損壓縮來源：壓縮時已丟棄部分聲音資訊，無法還原" : null),
-                decode,
-            },
-        });
+            Row("檔案", srcText, false, channels != 2 ? $"聲道：{channels}" : null,
+                t.IsLossy ? "有損壓縮來源：壓縮時已丟棄部分聲音資訊，無法還原" : null),
+            decode,
+        };
+        if (resFrom > 0)
+            srcRows.Add(Row("重新取樣", $"{Khz(resFrom)} → {Khz(pcmRate)} kHz", true,
+                    $"DAC 不支援 {Khz(resFrom)} kHz，Daphne 先把這首轉成裝置能播的取樣率",
+                    "多相 sinc 濾波（Kaiser 窗），通帶到較低取樣率奈奎斯特頻率的 94%")
+                with { pin = new[] { To(Pcm(F64, pcmRate)) } });
+        sections.Add(new { title = "來源", rows = srcRows });
 
         // ── DSP (the core's chain, in its order)
         var proc = new List<PathRow>();

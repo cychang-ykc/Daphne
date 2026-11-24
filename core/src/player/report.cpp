@@ -19,6 +19,8 @@ void Report::bit_perfect(const DspChain* c) {
     const AudioInfo& src = rep.source;
     rep.not_bit_perfect_reason.clear();
     if (src.dsd_pcm) rep.not_bit_perfect_reason = "DSD converted to PCM";
+    else if (src.resampled_from > 0)
+        rep.not_bit_perfect_reason = "resampled from " + std::to_string(src.resampled_from) + " Hz: the device does not take that rate";
     else if (!src.lossless_int) rep.not_bit_perfect_reason = "source is not integer PCM";
     else if (!c->transparent()) rep.not_bit_perfect_reason = "DSP active";
     else if (rep.system_rate > 0) rep.not_bit_perfect_reason = "the system resamples to the device's " + std::to_string(rep.system_rate) + " Hz";

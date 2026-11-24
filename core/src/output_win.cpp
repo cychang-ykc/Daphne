@@ -18,7 +18,12 @@ OutputOpener platform_output_opener() {
             return a;
         }
         auto w = std::make_unique<WasapiOutput>();
-        if (!w->open({r.out.device, r.out.api != OutputApi::WasapiShared, r.buffer_ms}, r.rate, r.channels, error)) return nullptr;
+        // convert (the player's last PCM attempt, OutputCaps::converts): the DAC has no rate the chain can use for this
+        // track in exclusive mode (192 kHz on a DAC that stops at 96 kHz, 44.1 kHz on a 48 kHz-only one), so this
+        // track goes through the Windows mixer, which resamples to the device (as Core Audio's converter does on
+        // macOS). The next track is tried in exclusive mode again.
+        const bool exclusive = r.out.api != OutputApi::WasapiShared && !r.convert;
+        if (!w->open({r.out.device, exclusive, r.buffer_ms}, r.rate, r.channels, error)) return nullptr;
         return w;
     };
 }
@@ -38,6 +43,7 @@ OutputCapsQuery platform_output_caps() {
         c.native_dsd = o.api == OutputApi::Asio;
         c.shared_mix = o.api == OutputApi::WasapiShared;
         c.takes_buffer_ms = o.api != OutputApi::Asio;
+        c.converts = o.api == OutputApi::WasapiExclusive;   // through the Windows mixer (platform_output_opener)
         return c;
     };
 }

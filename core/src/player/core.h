@@ -204,6 +204,7 @@ struct Player::Impl {
     // Opens the device for the current settings (pcm: stepping the rate down by powers of two
     // when the device cannot open or start it), builds the chain, prefills and starts.
     bool open_and_start(int64_t from, std::string* error);
+    bool open_at_rates(int64_t from, std::string* error);   // the device's own rates (and its converter)
     // One chunk into bytes; false at the end of the stream.
     bool produce();
     // Starts the crossfade to nx: warm it up on the recent input (in the background, poll_warm) and

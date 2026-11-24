@@ -599,8 +599,12 @@ public sealed partial class DaphneEngine : IAudioEngine
         int devRate = dev.GetProperty("rate").GetInt32();
         // the core's output rate; WASAPI shared may convert it to the mixer's rate (system_rate) after that
         int sysRate = _report.TryGetProperty("system_rate", out var sr) && sr.ValueKind == JsonValueKind.Number ? sr.GetInt32() : 0;
-        int srcRate = dsdRate > 0 ? dsdRate : src.GetProperty("rate").GetInt32();
-        string mode = _s.OutputMode switch { "asio" => "ASIO", "shared" => "WASAPI 共享", _ => "WASAPI 獨佔" };
+        // the device took none of the track's rates (ASIO): the core resampled the track itself; the card shows the file's rate
+        int resFrom = src.TryGetProperty("resampled_from", out var rf) && rf.ValueKind == JsonValueKind.Number ? rf.GetInt32() : 0;
+        int srcRate = dsdRate > 0 ? dsdRate : resFrom > 0 ? resFrom : src.GetProperty("rate").GetInt32();
+        // WASAPI exclusive at a rate the DAC cannot lock: the track went through the Windows mixer instead
+        bool viaMixer = _s.OutputMode != "shared" && _s.OutputMode != "asio" && sysRate > 0;
+        string mode = _s.OutputMode switch { "asio" => "ASIO", "shared" => "WASAPI 共享", _ => viaMixer ? "WASAPI 共享（自動）" : "WASAPI 獨佔" };
         // a DSD file sent as DSD: the core's own word for it. A DSD file converted to PCM may still leave as DSD again
         // (the DSD modulator), which is processed (and PCM → DSD keeps the core's digital volume)
         bool sentDirect = isDsd && filter.StartsWith("none (DSD file sent directly)");
@@ -621,7 +625,7 @@ public sealed partial class DaphneEngine : IAudioEngine
             Dop = dop,
             DsdDirect = dsdOut,
             DsdTransport = nativeDsd ? "Native" : dop ? "Dop" : null,
-            Resampled = isDsd ? !sentDirect : dsdOut || devRate != srcRate || sysRate > 0,   // DSD → PCM (→ DSD), PCM → DSD, another rate
+            Resampled = isDsd ? !sentDirect : dsdOut || devRate != srcRate || sysRate > 0 || resFrom > 0,   // DSD → PCM (→ DSD), PCM → DSD, another rate
             OutputRate = sysRate > 0 ? sysRate : devRate,
             OutputFormat = format,
             OutputBits = nativeDsd ? 1 : dev.GetProperty("bits").GetInt32(),
@@ -638,7 +642,11 @@ public sealed partial class DaphneEngine : IAudioEngine
         var notes = new List<string>();
         if (_s.Dsp != null && _s.Dsp.Enabled && (Math.Abs(_s.Dsp.Balance) > 0.001 || _s.Dsp.Invert))
             notes.Add("Daphne 內核沒有平衡 / 反相，這兩項設定不會作用。");
-        if (sysRate > 0)
+        if (resFrom > 0)
+            notes.Add($"DAC 不支援 {Khz(resFrom)} kHz，這首改以 {Khz(src.GetProperty("rate").GetInt32())} kHz 播放（Daphne 重新取樣，非 bit-perfect）。");
+        if (viaMixer)
+            notes.Add($"DAC 無法以獨佔模式鎖定 {Khz(devRate)} kHz，這首改經 Windows 混音器轉成 {Khz(sysRate)} kHz 播放（非 bit-perfect）。");
+        else if (sysRate > 0)
             notes.Add($"裝置目前是 {Khz(sysRate)} kHz，由 Windows 把 {Khz(devRate)} kHz 轉成裝置的取樣率。");
         if (dsdFile && volumeMode == "none")
             notes.Add("DSD 直送時無法使用數位音量，DAC 會以原始音量輸出，請用 DAC 的音量旋鈕調整。");

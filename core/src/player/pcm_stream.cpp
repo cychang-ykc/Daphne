@@ -6,6 +6,44 @@
 namespace daphne {
 
 bool Player::Impl::open_and_start(int64_t from, std::string* error) {
+    std::string e;
+    if (open_at_rates(from, &e)) return true;
+    // The device took none of the rates this track can play at, and the output does not convert by itself (ASIO: a
+    // 192 kHz track on a DAC that stops at 96 kHz, 44.1 kHz on a 48 kHz-only one): the track is resampled to a rate
+    // the device has, the highest of its own family first (make_resampling_decoder), and plays at that. Only for a
+    // failure about the rate (the outputs say "lock": "cannot lock", "failed to lock", "the device locked ..."), so a
+    // device that is busy or gone is not opened again and again. Outputs that convert were asked to already.
+    const bool about_rate = e.find("lock") != std::string::npos;
+    if (cancel || !about_rate || s.core != CoreMode::Pcm || !dec || caps().converts || caps().shared_mix || is_live_path(cur_path) ||
+        dynamic_cast<ResamplingDecoder*>(dec.get())) {
+        if (error) *error = e;
+        return false;
+    }
+    const int orig = rep.source.rate;
+    std::unique_ptr<Decoder> inner = std::move(dec);
+    for (int target : fallback_rates(orig)) {
+        if (cancel) break;
+        auto rs = make_resampling_decoder(std::move(inner), target);
+        ResamplingDecoder* raw = rs.get();
+        dec = std::move(rs);
+        rep.source = dec->info();
+        event("the device does not take " + std::to_string(orig) + " Hz: resampling this track to " + std::to_string(target) + " Hz");
+        std::string e2;
+        if (open_at_rates(from * target / orig, &e2)) return true;
+        inner = raw->release();
+        dec.reset();
+        if (e2.find("lock") == std::string::npos) {   // not about the rate any more: that is the error
+            e = e2;
+            break;
+        }
+    }
+    dec = std::move(inner);
+    rep.source = dec->info();
+    if (error) *error = e;
+    return false;
+}
+
+bool Player::Impl::open_at_rates(int64_t from, std::string* error) {
     const AudioInfo& src = rep.source;
     // attempts: device rate, and for the dsd core the DSD multiple and transport
     struct Attempt {

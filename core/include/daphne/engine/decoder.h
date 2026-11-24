@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace daphne {
 
@@ -23,6 +24,8 @@ struct AudioInfo {
     int dsd_rate = 0;           // DSD file: its DSD rate. Played directly: rate = dsd_rate / 8, frames = bytes;
                                 // converted to PCM (dsd_pcm): rate is the PCM rate
     bool dsd_pcm = false;       // DSD file converted to PCM (make_dsd_pcm_decoder)
+    int resampled_from = 0;     // nonzero: the file's rate, resampled to `rate` because the device does not take it
+                                // (make_resampling_decoder)
 };
 
 class Decoder {
@@ -58,6 +61,19 @@ std::unique_ptr<Decoder> make_flac_decoder();
 std::unique_ptr<Decoder> make_wav_decoder();
 std::unique_ptr<Decoder> make_mp3_decoder();
 std::unique_ptr<Decoder> make_ffmpeg_decoder();
+
+// `inner` (open) resampled to `rate`: the player's last resort when the output neither takes the track's rate nor
+// converts by itself (decoder_resampled.cpp). Null when there is nothing to do (the same rate) or to work with.
+class ResamplingDecoder : public Decoder {
+public:
+    virtual int source_rate() const = 0;   // the file's rate
+    // The decoder it resamples, handed back (to try another rate); this one is not used after that.
+    virtual std::unique_ptr<Decoder> release() = 0;
+};
+std::unique_ptr<ResamplingDecoder> make_resampling_decoder(std::unique_ptr<Decoder> inner, int rate);
+// The rates to try for a track at `rate` the device does not take, the best first: its own family halved down,
+// then the standard rates at or below it.
+std::vector<int> fallback_rates(int rate);
 // DSF / DFF converted to PCM: make_dsd_pcm_decoder in dsd_file.h.
 
 }  // namespace daphne
