@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "daphne/dsp/progress.h"
+#include "daphne/engine/file_bytes.h"
 
 namespace daphne::playback {
 
@@ -52,6 +53,7 @@ void TrackQueue::kick(const std::function<Context()>& make) {
     const Context c = make();
     p->key = chain_key(c.cs, c.cf);
     std::thread worker([p, c] {
+        FileBytes::set_thread_cancel(&p->cancel);   // dropped: a read waiting for a stalled copy or disk returns
         std::string e;
         // opening may throw on a damaged file: the next track is then not prepared (not gapless), the process goes on
         if (c.dsd) {

@@ -230,6 +230,7 @@ bool Player::Impl::service_transport() {
 }
 
 void Player::Impl::run() {
+    FileBytes::set_thread_cancel(&cancel);   // a stop is not held up by a read waiting for a stalled copy or disk
     try {
         run_playback();
     } catch (const std::exception& ex) {

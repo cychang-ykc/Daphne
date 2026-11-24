@@ -59,6 +59,8 @@ class DaphneEngine extends EventEmitter {
 
   /** YouTube Music plays through its own page on the Mac (main.js: ytThroughCore off). */
   get supportsLive() { return false; }
+  /** FileBytes waits for the rest of a file still being copied here (MIKU 遠端音樂庫, <file>.growing). */
+  get readsGrowingFiles() { return true; }
   get isPlaying() { return this.loaded && this.playing; }
   get isLoaded() { return this.loaded; }
   get position() { return this.loaded ? this.pos : (this.pausedAt || 0); }

@@ -98,6 +98,12 @@ public sealed partial class DaphneEngine : IAudioEngine
     public double Position => _loaded ? _position : _pausedAt;
     /// <summary>YouTube Music: what the page wrote and the core has not played yet (the ring, the chain and its ring, the device).</summary>
     public double? LiveLatency => _track?.IsLive == true && _loaded ? _liveLatency : null;
+    /// <summary>
+    /// FileBytes waits for the rest of a file still being copied here (MIKU's 遠端音樂庫: its whole size is in
+    /// &lt;file&gt;.growing until it is complete), so MIKU can start a song of another computer before it has all of it.
+    /// DSD files are read without FileBytes: MIKU copies those whole first.
+    /// </summary>
+    public bool ReadsGrowingFiles => true;
 
     /// <summary>Daphne's events and state, every 50 ms: gapless switches, the end, failures, position.</summary>
     void PollLoop()
