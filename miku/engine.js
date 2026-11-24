@@ -20,13 +20,42 @@ const { buildSignal, nowPlaying } = require('./signal');
 const DC_ERR_DEVICE = -4;
 const DC_ERR_CANCELLED = -7;   // the load was cancelled by a stop: not a failure
 // The core's messages are English (they go to the log as they are); the common ones are shown to the user in MIKU's
-// language, anything else as it came
+// language, as what happened and what to do about it (MIKU's toast has no button: the place to fix it is named in the
+// text); anything else as it came. The same table as src/Daphne.Extension/DaphneEngine.cs (ReadableError).
+const OUT = '設定 → 音訊 → 輸出裝置';
+const khz = hz => +(hz / 1000).toFixed(1) + ' kHz';
 const Readable = [
   [/cannot open (FLAC|WAV\/AIFF|MP3) file|FFmpeg: (cannot open file|no stream info|no audio stream)|not a DSF or DFF file|file too short/, () => '檔案損毀，或不是支援的音訊格式'],
   [/cannot map (\d+) source channels to (\d+)/, (m, a, b) => `裝置有 ${b} 個聲道，無法播放 ${a} 聲道的檔案`],
-  [/is in exclusive use by another application/, () => '另一個程式正在獨佔這個裝置'],
-  [/does not offer exclusive \(hog\) mode/, () => '這個裝置不提供獨佔模式'],
+  // the device is busy, or will not be held
+  [/(.+?) is in exclusive use by another application|HRESULT 0x8889000A/, (m, n) => `${n ? `「${n}」` : '輸出裝置'}正被另一個程式獨佔（例如其他播放器或通話軟體）。請關閉那個程式後再按播放，或到 ${OUT} 改選其他裝置。`],
+  [/could not take (.+?) in exclusive \(hog\) mode/, (m, n) => `無法獨佔「${n}」，可能有其他程式正在使用它。請關閉其他會發出聲音的程式後再按播放，或到 設定 → 音訊 把輸出模式改為共享。`],
+  [/(.+?) does not offer exclusive \(hog\) mode|HRESULT 0x8889000E/, (m, n) => `${n ? `「${n}」` : '這個裝置'}不允許獨佔模式。請到 設定 → 音訊 把輸出模式改為共享，或到 ${OUT} 改選其他裝置。`],
+  // not there
+  [/Core Audio device not found|wasapi: device not found|ASIO driver not found|HRESULT 0x88890004|HRESULT 0x80070490/, () => `找不到選擇的輸出裝置，可能已拔除、關機或進入休眠。請重新連接後再按播放，或到 ${OUT} 改選其他裝置。`],
+  [/no system output device|no Core Audio output device/, () => '系統目前沒有可用的輸出裝置。請連接喇叭、耳機或 DAC 後再按播放。'],
+  [/no ASIO drivers installed|this build has no ASIO support/, () => '找不到 ASIO 驅動程式。請安裝 DAC 廠商的 ASIO 驅動，或到 設定 → 音訊 把輸出模式改為 WASAPI。'],
+  [/another ASIO stream is open/, () => 'ASIO 驅動程式正被另一個串流使用。請關閉其他使用 ASIO 的程式後再按播放。'],
+  [/cannot load ASIO driver (.+)|ASIO init failed/, (m, n) => `無法載入 ASIO 驅動程式${n ? `「${n}」` : ''}。請確認 DAC 已連接並開機，或重新安裝驅動程式。`],
+  [/(.+?) has no output (?:streams|channels)|driver reports 0 physical output channels/, (m, n) => `${n ? `「${n}」` : '這個裝置'}沒有輸出聲道，不能用來播放。請到 ${OUT} 改選其他裝置。`],
+  // the rate or the DSD format
+  [/locked (\d+) Hz, not the DSD(\d+) rate/, (m, r, x) => `輸出裝置不支援 DSD${x}（DoP），只能以 ${khz(r)} 播放。請到 設定 → 音訊 把「升頻」改為 PCM，或改選支援 DSD 的 DAC。`],
+  [/DSD output \(dsd core\) needs/, () => '「轉成 DSD」需要獨佔模式。請到 設定 → 音訊 把輸出模式改為獨佔，或把「升頻」改為 PCM。'],
+  [/output\.dsd = native needs/, () => '這個輸出不支援原生 DSD。請到 設定 → 音訊 把「DSD 播放方式」改為 DoP 或 PCM。'],
+  [/DoP needs a 24- or 32-bit integer/, () => '輸出裝置不支援 DoP（需要 24 位元以上的整數格式）。請到 設定 → 音訊 把「DSD 播放方式」改為 PCM。'],
+  [/is above output\.max_dsd/, () => '這個 DSD 檔案的取樣率高於「DAC 最高 DSD 取樣倍率」，請到 設定 → 音訊 調整這個設定。'],
+  [/not an integer multiple of the source rate (\d+)/, (m, r) => `輸出裝置不支援 ${khz(r)} 這一系列的取樣率。請到 ${OUT} 改選其他裝置，或改用共享模式由系統轉換。`],
+  [/instead of (\d+) Hz|cannot lock (\d+) Hz|failed to lock (\d+) Hz|HRESULT 0x88890008/, (m, a, b, c) => { const r = a || b || c; return `輸出裝置不支援${r ? ` ${khz(r)} ` : '這個'}取樣率。請到 設定 → 音訊 把「升頻」調低或關閉，或到 ${OUT} 改選其他裝置。`; }],
+  // there, but it does not start (after the specific causes above)
+  [/could not (?:start|create the IO procedure for|restart the IO stream for) (.+)|ASIO start failed|(?:Start|Initialize|Activate IAudioClient) failed \(HRESULT/, (m, n) => `${n ? `「${n}」` : '輸出裝置'}無法開始播放，可能正在休眠或被其他程式佔用。請喚醒或重新連接裝置後再按播放，或到 ${OUT} 改選其他裝置。`],
 ];
+// The core's step down to what the device takes (DSD -> PCM, DSD128 -> DSD64): told once per device and session (the core
+// sends the "output fallback:" line once)
+const Notices = [
+  [/^output fallback: (.+) does not play DSD \(DoP\): playing PCM at (\d+) Hz/, (m, n, r) => `「${n}」不支援 DSD（DoP），這次改用 PCM ${khz(r)} 播放。設定不變；換成支援 DSD 的 DAC 就會照原設定播放。`],
+  [/^output fallback: (.+) does not play DSD(\d+) \(DoP\): DSD(\d+) instead/, (m, n, a, b) => `「${n}」不支援 DSD${a}，已改用 DSD${b} 播放。`],
+];
+const notice = text => { for (const [re, f] of Notices) { const m = String(text).match(re); if (m) return f(...m); } return null; };
 /** How a DSD file goes out (DoP or PCM, and MIKU's DAC 最高 DSD) in the settings of a load. */
 const dsdKeyOf = settings => settings.output.dsd + '|' + settings.output.max_dsd;
 const readable = err => { const s = String(err || ''); for (const [re, f] of Readable) { const m = s.match(re); if (m) return f(...m); } return s; };
@@ -172,6 +201,8 @@ class DaphneEngine extends EventEmitter {
         if (e.text) {
           this.log(e.text);
           if (e.text.startsWith('designing')) this.design.text = e.text;
+          const n = notice(e.text);
+          if (n && this.host.post) this.host.post('notice', { text: n });   // web/daphne.js shows it as a toast
         }
         break;
     }

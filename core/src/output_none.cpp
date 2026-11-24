@@ -27,6 +27,10 @@ std::vector<AsioDriver> list_asio_drivers(std::string* error) {
     return {};
 }
 
+OutputProbeQuery platform_output_probe() {
+    return [](const OutputChoice&) { return OutputProbe{}; };
+}
+
 std::vector<CoreAudioDevice> list_coreaudio_devices(std::string* error) {
     if (error) *error = "Core Audio is macOS only";
     return {};

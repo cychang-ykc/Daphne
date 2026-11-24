@@ -12,8 +12,38 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         int rate, osr;
         bool native;
         bool convert = false;   // the output may resample to a rate the device has (OutputRequest::convert)
+        bool pcm = false;       // dsd core: PCM at this rate instead, for this track (no DSD rate worked)
     };
     std::vector<Attempt> rates;
+    pcm_fallback = 0;
+    // dsd core: what the device offers before it is opened, and what this process learned about it (output_memo)
+    const OutputProbe dev = s.core == CoreMode::Dsd ? probe() : OutputProbe{};
+    const std::string mkey = output_memo::key(out, dev.name);
+    const bool remember = static_cast<bool>(deps.probe_output);
+    bool dop_left_out = false;   // a DoP rate was left out (the device does not offer it, or did not take it earlier)
+    std::vector<int> dop_bad;    // DoP rates tried here that did not work: remembered once something plays
+    int locked_seen = remember ? output_memo::locked_instead(mkey, modulator_input_rate(src.rate)) : 0;   // a rate the device ran at instead of DoP
+    int top = 0;
+    // dsd core, no DSD rate works on this device: PCM for this track as the pcm core would play it, upsampled 2x at
+    // most (44.1 -> 88.2, 48 -> 96 kHz: a device without DSD gains little from more, and the filter's cost grows with the
+    // rate), capped by what the device offers in the source's family; a device without the family gets the source
+    // rate, converted by the output where it can
+    auto add_pcm = [&] {
+        int hi = std::min(modulator_input_rate(src.rate), 2 * src.rate);
+        // the rate the device ran at instead of a DoP rate: what it takes (a device may list rates it does not take)
+        if (locked_seen >= src.rate && locked_seen % src.rate == 0 && locked_seen < hi) hi = locked_seen;
+        if (!dev.rates.empty()) {
+            int best = 0;
+            for (int r : dev.rates)
+                if (r >= src.rate && r % src.rate == 0 && r <= hi) best = std::max(best, r);
+            if (!best) {
+                rates.push_back({src.rate, 0, false, caps().converts, true});
+                return;
+            }
+            hi = best;
+        }
+        for (int r = hi; r >= src.rate && r % src.rate == 0; r /= 2) rates.push_back({r, 0, false, false, true});
+    };
     if (s.core == CoreMode::Dsd) {
         if (caps().shared_mix) {
             if (error) *error = "DSD output (dsd core) needs WASAPI exclusive or ASIO: shared mode mixes everything to PCM";
@@ -21,19 +51,36 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         }
         // ASIO: native DSD first (output.dsd auto), then DoP; a DSD rate the device refuses steps
         // down to DSD64. output.max_dsd caps the start: a driver may accept a rate its DAC cannot play
-        int top = s.modulator.osr;
+        top = s.modulator.osr;
         if (s.output.max_dsd > 0 && top > s.output.max_dsd) {
             top = s.output.max_dsd;
             event("DSD" + std::to_string(s.modulator.osr) + " is above output.max_dsd: modulating to DSD" + std::to_string(top));
         }
+        const std::string dev_name = dev.name.empty() ? "the device" : dev.name;
         for (int osr = top; osr >= 64; osr /= 2) {
             if (caps().native_dsd && s.output.dsd != DsdMode::Dop) rates.push_back({dsd_clock(osr), osr, true});
-            if (s.output.dsd != DsdMode::Native) rates.push_back({dop_rate(dsd_clock(osr)), osr, false});
+            if (s.output.dsd != DsdMode::Native) {
+                // DoP needs its carrier rate on the device: one it does not list (or did not take earlier in this
+                // process) is not tried, so the device is not switched to a rate for nothing
+                // (a virtual device has no DAC behind it that would take DoP as sent: it mixes or resamples it into noise)
+                const int r = dop_rate(dsd_clock(osr));
+                const bool offered = dev.rates.empty() || std::find(dev.rates.begin(), dev.rates.end(), r) != dev.rates.end();
+                if (!dev.dop || !offered || (remember && output_memo::dop_known_bad(mkey, r))) {
+                    dop_left_out = true;
+                    event("DSD" + std::to_string(osr) + " (DoP) left out: " + dev_name +
+                          (!dev.dop   ? " is a virtual device (no DAC behind it takes DoP)"
+                           : offered ? " did not take " + std::to_string(r) + " Hz earlier"
+                                     : " does not offer " + std::to_string(r) + " Hz"));
+                    continue;
+                }
+                rates.push_back({r, osr, false});
+            }
         }
-        if (rates.empty()) {
+        if (rates.empty() && !dop_left_out) {
             if (error) *error = "output.dsd = native needs an ASIO driver with a DSD mode";
             return false;
         }
+        if (rates.empty()) add_pcm();
     } else {
         rates.push_back({requested_rate(s, src.rate), 0, false});
         if (s.core == CoreMode::Pcm)
@@ -46,8 +93,9 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
     bool wrong_rate = false;
     want = requested_rate(s, src.rate);
     auto what = [&](size_t i) {
-        return s.core == CoreMode::Dsd ? "DSD" + std::to_string(rates[i].osr) + (rates[i].native ? " (native)" : " (DoP)")
-                                       : std::to_string(rates[i].rate) + " Hz" + (rates[i].convert ? " (resampled by the system)" : "");
+        return s.core == CoreMode::Dsd && !rates[i].pcm
+                   ? "DSD" + std::to_string(rates[i].osr) + (rates[i].native ? " (native)" : " (DoP)")
+                   : (rates[i].pcm ? "PCM " : "") + std::to_string(rates[i].rate) + " Hz" + (rates[i].convert ? " (resampled by the system)" : "");
     };
     for (size_t attempt = 0; attempt < rates.size(); ++attempt) {
         bool last = attempt + 1 == rates.size();
@@ -60,8 +108,16 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         // the last failure is the error; one before it goes to the log, so the host sees why the next was tried
         auto fail_attempt = [&]() {
             io.dev.reset();
-            if (last && wrong_rate && caps().converts && s.core == CoreMode::Pcm && !rates[attempt].convert) {
-                rates.push_back({src.rate, 0, false, true});
+            const Attempt a = rates[attempt];   // (the pushes below may move the vector)
+            const bool dsd = s.core == CoreMode::Dsd && !a.pcm;
+            if (dsd && !a.native) dop_bad.push_back(a.rate);
+            // the last DSD rate did not work either: PCM for this track (the settings stay; the host is told once)
+            if (last && dsd && !cancel) {
+                add_pcm();
+                last = false;
+            }
+            if (last && wrong_rate && caps().converts && (s.core == CoreMode::Pcm || a.pcm) && !a.convert) {
+                rates.push_back({src.rate, 0, false, true, a.pcm});
                 last = false;
             }
             if (last && error) *error = e;
@@ -80,6 +136,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         xf.clear();
         take_warm();   // a crossfade warming up: the chain is built anew for the settings below
         cross_join.clear();
+        const bool dsd_attempt = s.core == CoreMode::Dsd && !rates[attempt].pcm;
         io.dev = open_output({out, s.output.buffer_ms, rates[attempt].rate, src.channels, rates[attempt].native, rates[attempt].convert}, &e);
         if (!io.dev) {
             if (fail_attempt()) return false;
@@ -90,7 +147,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
             // (DoP: DoP silence, so the DAC does not see a stretch of PCM before the stream)
             ByteRing probe(1 << 12);
             std::atomic<bool> probe_eof{false};
-            io.dev->set_dop(s.core == CoreMode::Dsd && !rates[attempt].native);
+            io.dev->set_dop(dsd_attempt && !rates[attempt].native);
             if (!io.dev->start(&probe, &probe_eof, &e)) {
                 if (fail_attempt()) return false;
                 continue;
@@ -108,11 +165,13 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         chain_fmt = rep.device;
         dsdenc.reset();
         run_osr = 0;
-        if (s.core == CoreMode::Dsd) {
+        pcm_fallback = rates[attempt].pcm ? rep.device.rate : 0;   // (the chain's rate: what the device took)
+        if (dsd_attempt) {
             const int osr = rates[attempt].osr;
             run_osr = osr;
             const bool native = rates[attempt].native;
             if (rep.device.rate != (native ? dsd_clock(osr) : dop_rate(dsd_clock(osr))) || rep.system_rate > 0) {
+                if (!native && rep.system_rate == 0 && rep.device.rate < rates[attempt].rate) locked_seen = std::max(locked_seen, rep.device.rate);
                 e = "the device locked " + std::to_string(rep.system_rate > 0 ? rep.system_rate : rep.device.rate) + " Hz, not the DSD" +
                     std::to_string(osr) + " rate";
                 if (fail_attempt()) return false;
@@ -144,7 +203,7 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         cur = std::make_unique<DspChain>();
         bool built = false;
         {
-            const Settings cs = chain_settings(s, run_osr);
+            const Settings cs = chain_for(s);
             DspChain* c = cur.get();
             const DeviceFormat devf = chain_fmt;
             std::string be;
@@ -219,12 +278,33 @@ bool Player::Impl::open_and_start(int64_t from, std::string* error) {
         }
         break;
     }
+    if (s.core == CoreMode::Dsd) {
+        // what did not work is not tried again for the next track; a step down is told once per device and session
+        if (remember)
+            for (int r : dop_bad) output_memo::dop_failed(mkey, r, locked_seen);
+        const std::string name = rep.device_name.empty() ? "the device" : rep.device_name;
+        if (pcm_fallback) {
+            note_dop_fallback(mkey, pcm_fallback);
+        } else if (run_osr > 0 && run_osr < top && (dop_left_out || !dop_bad.empty())) {
+            const std::string step = "DSD" + std::to_string(top) + " -> DSD" + std::to_string(run_osr);
+            event(std::string(output_memo::first(mkey, step) ? "output fallback: " : "") + name + " does not play DSD" +
+                  std::to_string(top) + " (DoP): DSD" + std::to_string(run_osr) + " instead");
+        }
+    }
     rep.chain = cur->stages();
-    rep.filter = report.filter(s, dsdenc.get());
+    rep.filter = report.filter(chain_for(s), dsdenc.get());
     report.bit_perfect(tl.heard_chain(cur.get()));
     if (cb.on_start) cb.on_start(rep);
     kick_cache_trim();
     return true;
+}
+
+void Player::Impl::note_dop_fallback(const std::string& memo_key, int pcm_rate) {
+    const std::string name = rep.device_name.empty() ? "the device" : rep.device_name;
+    if (output_memo::first(memo_key, "dop"))
+        event("output fallback: " + name + " does not play DSD (DoP): playing PCM at " + std::to_string(pcm_rate) + " Hz this time");
+    else
+        event("DSD (DoP) does not work on " + name + ": PCM at " + std::to_string(pcm_rate) + " Hz");
 }
 
 void Player::Impl::finish_fade() {
@@ -234,7 +314,7 @@ void Player::Impl::finish_fade() {
     cur = xf.finish();
     throughput.reset();
     rep.chain = cur->stages();
-    rep.filter = report.filter(s, dsdenc.get());
+    rep.filter = report.filter(chain_for(s), dsdenc.get());
     report.bit_perfect(tl.heard_chain(cur.get()));
     event("now playing with filter: " + rep.filter + " | dsp: " + join(rep.chain));
     if (cb.on_changed) cb.on_changed(rep);

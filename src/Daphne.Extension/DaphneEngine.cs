@@ -202,6 +202,8 @@ public sealed partial class DaphneEngine : IAudioEngine
                     string text = tx.GetString();
                     Log.Info("[daphne] " + text);
                     if (text.StartsWith("designing")) _designText = text;
+                    string n = Notice(text);
+                    if (n != null) _host?.Post("notice", new { text = n });   // web/daphne.js shows it as a toast
                 }
                 break;
         }
@@ -347,15 +349,76 @@ public sealed partial class DaphneEngine : IAudioEngine
     }
 
     // The core's messages are English (they go to the log as they are); the common ones are shown to the user in
-    // MIKU's language, anything else as it came. The same table as miku/engine.js, plus WASAPI's HRESULTs.
+    // MIKU's language, as what happened and what to do about it (MIKU's toast has no button: the place to fix it is
+    // named in the text); anything else as it came. The same table as miku/engine.js, with WASAPI's HRESULTs.
+    const string Out = "設定 → 音訊 → 輸出裝置";
+    static string KhzText(string hz) =>
+        (double.Parse(hz, System.Globalization.CultureInfo.InvariantCulture) / 1000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " kHz";
+    static string Named(Match m, string fallback) => m.Groups[1].Success && m.Groups[1].Value.Length > 0 ? $"「{m.Groups[1].Value}」" : fallback;
+    static string FirstNumber(Match m)
+    {
+        for (int i = 1; i < m.Groups.Count; i++)
+            if (m.Groups[i].Success) return m.Groups[i].Value;
+        return null;
+    }
     static readonly (Regex re, Func<Match, string> text)[] Readable =
     {
         (new Regex(@"cannot open (FLAC|WAV/AIFF|MP3) file|FFmpeg: (cannot open file|no stream info|no audio stream)|not a DSF or DFF file|file too short"),
             _ => "檔案損毀，或不是支援的音訊格式"),
         (new Regex(@"cannot map (\d+) source channels to (\d+)"), m => $"裝置有 {m.Groups[2].Value} 個聲道，無法播放 {m.Groups[1].Value} 聲道的檔案"),
-        (new Regex(@"is in exclusive use by another application|HRESULT 0x8889000A"), _ => "另一個程式正在獨佔這個裝置"),
-        (new Regex(@"does not offer exclusive \(hog\) mode|HRESULT 0x8889000E"), _ => "這個裝置不提供獨佔模式"),
+        // the device is busy, or will not be held
+        (new Regex(@"(.+?) is in exclusive use by another application|HRESULT 0x8889000A"),
+            m => $"{Named(m, "輸出裝置")}正被另一個程式獨佔（例如其他播放器或通話軟體）。請關閉那個程式後再按播放，或到 {Out} 改選其他裝置。"),
+        (new Regex(@"could not take (.+?) in exclusive \(hog\) mode"),
+            m => $"無法獨佔{Named(m, "輸出裝置")}，可能有其他程式正在使用它。請關閉其他會發出聲音的程式後再按播放，或到 設定 → 音訊 把輸出模式改為共享。"),
+        (new Regex(@"(.+?) does not offer exclusive \(hog\) mode|HRESULT 0x8889000E"),
+            m => $"{Named(m, "這個裝置")}不允許獨佔模式。請到 設定 → 音訊 把輸出模式改為共享，或到 {Out} 改選其他裝置。"),
+        // not there
+        (new Regex(@"Core Audio device not found|wasapi: device not found|ASIO driver not found|HRESULT 0x88890004|HRESULT 0x80070490"),
+            _ => $"找不到選擇的輸出裝置，可能已拔除、關機或進入休眠。請重新連接後再按播放，或到 {Out} 改選其他裝置。"),
+        (new Regex(@"no system output device|no Core Audio output device"), _ => "系統目前沒有可用的輸出裝置。請連接喇叭、耳機或 DAC 後再按播放。"),
+        (new Regex(@"no ASIO drivers installed|this build has no ASIO support"),
+            _ => "找不到 ASIO 驅動程式。請安裝 DAC 廠商的 ASIO 驅動，或到 設定 → 音訊 把輸出模式改為 WASAPI。"),
+        (new Regex(@"another ASIO stream is open"), _ => "ASIO 驅動程式正被另一個串流使用。請關閉其他使用 ASIO 的程式後再按播放。"),
+        (new Regex(@"cannot load ASIO driver (.+)|ASIO init failed"),
+            m => $"無法載入 ASIO 驅動程式{(m.Groups[1].Success ? $"「{m.Groups[1].Value}」" : "")}。請確認 DAC 已連接並開機，或重新安裝驅動程式。"),
+        (new Regex(@"(.+?) has no output (?:streams|channels)|driver reports 0 physical output channels"),
+            m => $"{Named(m, "這個裝置")}沒有輸出聲道，不能用來播放。請到 {Out} 改選其他裝置。"),
+        // the rate or the DSD format
+        (new Regex(@"locked (\d+) Hz, not the DSD(\d+) rate"),
+            m => $"輸出裝置不支援 DSD{m.Groups[2].Value}（DoP），只能以 {KhzText(m.Groups[1].Value)} 播放。請到 設定 → 音訊 把「升頻」改為 PCM，或改選支援 DSD 的 DAC。"),
+        (new Regex(@"DSD output \(dsd core\) needs"), _ => "「轉成 DSD」需要獨佔模式。請到 設定 → 音訊 把輸出模式改為獨佔，或把「升頻」改為 PCM。"),
+        (new Regex(@"output\.dsd = native needs"), _ => "這個輸出不支援原生 DSD。請到 設定 → 音訊 把「DSD 播放方式」改為 DoP 或 PCM。"),
+        (new Regex(@"DoP needs a 24- or 32-bit integer"), _ => "輸出裝置不支援 DoP（需要 24 位元以上的整數格式）。請到 設定 → 音訊 把「DSD 播放方式」改為 PCM。"),
+        (new Regex(@"is above output\.max_dsd"), _ => "這個 DSD 檔案的取樣率高於「DAC 最高 DSD 取樣倍率」，請到 設定 → 音訊 調整這個設定。"),
+        (new Regex(@"not an integer multiple of the source rate (\d+)"),
+            m => $"輸出裝置不支援 {KhzText(m.Groups[1].Value)} 這一系列的取樣率。請到 {Out} 改選其他裝置，或改用共享模式由系統轉換。"),
+        (new Regex(@"instead of (\d+) Hz|cannot lock (\d+) Hz|failed to lock (\d+) Hz|HRESULT 0x88890008"),
+            m => { string r = FirstNumber(m); return $"輸出裝置不支援{(r != null ? $" {KhzText(r)} " : "這個")}取樣率。請到 設定 → 音訊 把「升頻」調低或關閉，或到 {Out} 改選其他裝置。"; }),
+        // there, but it does not start (after the specific causes above)
+        (new Regex(@"could not (?:start|create the IO procedure for|restart the IO stream for) (.+)|ASIO start failed|(?:Start|Initialize|Activate IAudioClient) failed \(HRESULT"),
+            m => $"{Named(m, "輸出裝置")}無法開始播放，可能正在休眠或被其他程式佔用。請喚醒或重新連接裝置後再按播放，或到 {Out} 改選其他裝置。"),
     };
+
+    // The core's step down to what the device takes (DSD -> PCM, DSD128 -> DSD64): told once per device and session
+    // (the core sends the "output fallback:" line once). The same as miku/engine.js.
+    static readonly (Regex re, Func<Match, string> text)[] Notices =
+    {
+        (new Regex(@"^output fallback: (.+) does not play DSD \(DoP\): playing PCM at (\d+) Hz"),
+            m => $"「{m.Groups[1].Value}」不支援 DSD（DoP），這次改用 PCM {KhzText(m.Groups[2].Value)} 播放。設定不變；換成支援 DSD 的 DAC 就會照原設定播放。"),
+        (new Regex(@"^output fallback: (.+) does not play DSD(\d+) \(DoP\): DSD(\d+) instead"),
+            m => $"「{m.Groups[1].Value}」不支援 DSD{m.Groups[2].Value}，已改用 DSD{m.Groups[3].Value} 播放。"),
+    };
+
+    static string Notice(string text)
+    {
+        foreach (var n in Notices)
+        {
+            var m = n.re.Match(text ?? "");
+            if (m.Success) return n.text(m);
+        }
+        return null;
+    }
 
     static string ReadableError(string err)
     {

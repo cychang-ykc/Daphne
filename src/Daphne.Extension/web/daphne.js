@@ -397,6 +397,8 @@
       Daphne.api = api;
       Daphne.state = await api.rpc('state') || Daphne.state;
       api.on('design', d => Design.show(d || {}));
+      // the core stepped down to what the output device takes (DSD -> PCM, DSD128 -> DSD64): once per device and session
+      api.on('notice', d => { if (d && d.text) toast(d.text, { ms: 9000 }); });
       api.signalPath(drawPath);
       // the wordmark in place of "Daphne" in MIKU's 播放方案 menu (MIKU builds without coreLabel show the name)
       if (api.coreLabel) api.coreLabel('daphne', mark);

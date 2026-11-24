@@ -5,7 +5,7 @@ namespace daphne {
 
 void Player::Impl::launch_build(const Settings& ns, const OutputChoice& no) {
     build_target = std::make_pair(ns, no);
-    const Settings cs = chain_settings(ns, run_osr);
+    const Settings cs = chain_for(ns);
     const AudioInfo src = rep.source;
     report.design_prog = 0.0;
     build_designs = (chain_fmt.rate != src.rate || cs.filter.apodize) && !filter_cached(cs.filter, src.rate, chain_fmt.rate);
@@ -105,7 +105,7 @@ bool Player::Impl::handle(const Settings& ns, const OutputChoice& no) {
     }
     dsp::set_design_threads(ns.design.threads);
     if (needs_restart(playing(), ns, no)) return restart(ns, no);
-    if (cur->update(chain_settings(ns, run_osr))) {
+    if (cur->update(chain_for(ns))) {
         s = ns;
         event("applied in place (EQ / crossfeed / volume)");
         // the stages that are active now (EQ switched on / off, volume at 0 dB ...)

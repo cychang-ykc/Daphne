@@ -7,7 +7,7 @@ void Player::Impl::kick_prepare() {
     queue.kick([this] {
         TrackQueue::Context c;
         c.dsd = dsdf != nullptr;
-        c.cs = chain_settings(s, run_osr);
+        c.cs = chain_for(s);
         c.cf = chain_fmt;
         c.chain_rate = crate;
         c.channels = ch;
@@ -128,7 +128,7 @@ void Player::Impl::apply_headroom(std::optional<double> h) {
     tl.switches.back().old_headroom = s.headroom_db;
     Settings ns = s;
     ns.headroom_db = *h;
-    if (cur->update(chain_settings(ns, run_osr))) {
+    if (cur->update(chain_for(ns))) {
         s = ns;
         return;
     }
@@ -142,7 +142,7 @@ void Player::Impl::undo_headroom() {
         if (w.old_headroom) {
             Settings ns = s;
             ns.headroom_db = *w.old_headroom;
-            if (cur && cur->update(chain_settings(ns, run_osr))) s = ns;
+            if (cur && cur->update(chain_for(ns))) s = ns;
             break;
         }
 }
@@ -205,7 +205,7 @@ bool Player::Impl::try_gapless() {
             if (!nd) return not_opened(e);
         }
         if (nd->info().channels != ch) return false;
-        const bool fits = cur->fits(chain_settings(s, run_osr), nd->info());
+        const bool fits = cur->fits(chain_for(s), nd->info());
         if (fits) {
             Switch w;
             w.at_in = in_total;
@@ -219,7 +219,7 @@ bool Player::Impl::try_gapless() {
             // track after a 16-bit one on a 16-bit device needs the quantizer): gapless only on the same
             // output, joined through the new chain built ahead for the current settings; otherwise the track
             // ends and the host loads the next one
-            if (!p || !p->done || !p->chain || xf.fading || building.valid() || warming.valid() || cross_join.active() || p->key != TrackQueue::chain_key(chain_settings(s, run_osr), chain_fmt))
+            if (!p || !p->done || !p->chain || xf.fading || building.valid() || warming.valid() || cross_join.active() || p->key != TrackQueue::chain_key(chain_for(s), chain_fmt))
                 return false;
             cross_switch(std::move(nd), std::move(p->chain), np);
             apply_headroom(nh);

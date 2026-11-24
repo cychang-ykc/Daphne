@@ -72,11 +72,13 @@ struct Rig {
     std::atomic<bool> ended{false};
     std::unique_ptr<Player> player;
     OutputCaps caps;   // what the fake output says it offers
+    OutputProbeQuery probe;   // what the device offers before it is opened (none: unknown, nothing remembered)
 
     PlayerDeps deps() {
         PlayerDeps d;
         d.open_output = test::fake_opener(dev);
         d.output_caps = [this](const OutputChoice&) { return caps; };
+        d.probe_output = probe;
         d.open_decoder = [this](const std::filesystem::path& p, std::string* e) -> std::unique_ptr<Decoder> {
             const auto it = sources.find(platform::path_to_utf8(p));
             if (it == sources.end()) return open_decoder(p, e);
@@ -1295,13 +1297,130 @@ TEST_CASE("Player: DoP never goes through a converter or a mixer", "[player][dsd
             std::filesystem::remove(path, ec);
         }
     }
-    SECTION("the dsd core does not take an output that resamples") {
+    SECTION("the dsd core does not take an output that resamples: the track plays PCM instead") {
+        forget_output_memo();
         Rig r;
         r.dev->mixer_rate = 48000;   // (an output reporting a system rate in exclusive mode)
         r.sources["sine"] = sine(44100, 1000.0, 0.2);
         Settings s;
         s.core = CoreMode::Dsd;
         s.modulator.osr = 64;
-        CHECK_FALSE(r.start("sine", s));
+        REQUIRE(r.start("sine", s));
+        r.finish();
+        CHECK(r.ended);
+        CHECK(r.saw("does not play DSD (DoP): playing PCM"));
+        CHECK(no_dop(r.dev->take()));
+    }
+}
+
+// A device without the DoP carrier rates (a virtual device such as Background Music: 44.1 - 96 kHz): the dsd core plays
+// the track as PCM instead of failing, at the device's highest rate of the source's family; the settings stay, the host
+// is told once per device, and the next track goes straight to PCM.
+TEST_CASE("Player: the dsd core falls back when the device has no DoP rate", "[player][dsd][fallback]") {
+    auto no_dop = [](const std::vector<uint8_t>& b) {
+        const auto m = dop_markers(b, 2);
+        size_t dop = 0;
+        for (size_t i = 1; i < m.size(); ++i) dop += (m[i] == 0x05 && m[i - 1] == 0xFA) || (m[i] == 0xFA && m[i - 1] == 0x05);
+        return dop < 4;
+    };
+    auto dop_open = [](const Rig& r) {
+        for (const auto& o : r.dev->opens)
+            if (o.rate == 176400 || o.rate == 352800) return true;
+        return false;
+    };
+    Settings s;
+    s.core = CoreMode::Dsd;
+    s.modulator.osr = 128;
+    s.output.dsd = DsdMode::Dop;
+    SECTION("the device locks another rate: DSD128, DSD64, then PCM; the next track does not try DoP again") {
+        forget_output_memo();
+        auto probe = [](const OutputChoice&) { return OutputProbe{"Virtual", {}}; };   // rates unknown
+        {
+            Rig r;
+            r.probe = probe;
+            r.dev->lock_rate = 88200;
+            r.sources["sine"] = sine(44100, 1000.0, 0.2);
+            REQUIRE(r.start("sine", s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            CHECK(rep.device.rate == 88200);
+            CHECK(dop_open(r));
+            CHECK(r.saw("output fallback: "));
+            CHECK(r.saw("does not play DSD (DoP): playing PCM at 88200 Hz this time"));
+            CHECK(no_dop(r.dev->take()));
+        }
+        {
+            Rig r;
+            r.probe = probe;
+            r.dev->lock_rate = 88200;
+            r.sources["sine"] = sine(44100, 1000.0, 0.2);
+            REQUIRE(r.start("sine", s));
+            const auto rep = r.finish();
+            CHECK(r.ended);
+            CHECK(rep.device.rate == 88200);
+            CHECK_FALSE(dop_open(r));                      // remembered: no DoP attempt, no relock
+            REQUIRE(!r.dev->opens.empty());
+            CHECK(r.dev->opens[0].rate == 88200);          // straight at the rate it ran at
+            CHECK_FALSE(r.saw("output fallback: "));       // told once
+            CHECK(r.saw("DSD (DoP) does not work on"));
+        }
+    }
+    SECTION("the device lists its rates: DoP is not tried at all") {
+        forget_output_memo();
+        Rig r;
+        r.probe = [](const OutputChoice&) { return OutputProbe{"Virtual", {44100, 48000, 88200, 96000}}; };
+        r.sources["sine"] = sine(44100, 1000.0, 0.2);
+        REQUIRE(r.start("sine", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK_FALSE(dop_open(r));
+        REQUIRE(!r.dev->opens.empty());
+        CHECK(r.dev->opens[0].rate == 88200);
+        CHECK(rep.device.rate == 88200);
+        CHECK(r.saw("does not play DSD (DoP): playing PCM at 88200 Hz this time"));
+        CHECK(no_dop(r.dev->take()));
+    }
+    SECTION("a virtual device (it lists every rate, but no DAC takes DoP through it): PCM, DoP not tried") {
+        forget_output_memo();
+        Rig r;
+        r.probe = [](const OutputChoice&) {
+            return OutputProbe{"Background Music", {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000}, false};
+        };
+        r.sources["sine"] = sine(44100, 1000.0, 0.2);
+        REQUIRE(r.start("sine", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK_FALSE(dop_open(r));
+        CHECK(r.saw("is a virtual device"));
+        CHECK(r.saw("output fallback: "));
+        CHECK(rep.device.rate == 88200);   // 2x at most, though the device lists more
+        CHECK(no_dop(r.dev->take()));
+    }
+    SECTION("DSD128's carrier is missing, DSD64's is there: DSD64, told once") {
+        forget_output_memo();
+        Rig r;
+        r.probe = [](const OutputChoice&) { return OutputProbe{"DAC", {44100, 88200, 176400}}; };
+        r.sources["sine"] = sine(44100, 1000.0, 0.2);
+        REQUIRE(r.start("sine", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        REQUIRE(!r.dev->opens.empty());
+        CHECK(r.dev->opens[0].rate == 176400);
+        CHECK(rep.device.rate == 176400);
+        CHECK(r.saw("does not play DSD128 (DoP): DSD64 instead"));
+        CHECK_FALSE(no_dop(r.dev->take()));
+    }
+    SECTION("a device with the DoP rate plays DSD as before, with nothing told") {
+        forget_output_memo();
+        Rig r;
+        r.probe = [](const OutputChoice&) { return OutputProbe{"DAC", {44100, 88200, 176400, 352800}}; };
+        r.sources["sine"] = sine(44100, 1000.0, 0.2);
+        REQUIRE(r.start("sine", s));
+        const auto rep = r.finish();
+        CHECK(r.ended);
+        CHECK(r.dev->opens.size() == 1);
+        CHECK(rep.device.rate == 352800);
+        CHECK_FALSE(r.saw("output fallback"));
+        CHECK_FALSE(no_dop(r.dev->take()));
     }
 }

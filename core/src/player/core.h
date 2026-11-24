@@ -118,6 +118,10 @@ struct Player::Impl {
     std::atomic<bool> device_fail{false};
     std::atomic<bool> internal_fail{false};   // start() failed by an exception (abort_run)
     int run_osr = 0;                   // dsd core: the DSD multiple the device runs
+    // dsd core: the device takes no DoP rate (it does not offer one, or did not lock it), so this track plays PCM at this
+    // rate instead (the settings stay as they are; chain_for gives the chain the pcm core's settings). 0: DSD as asked
+    int pcm_fallback = 0;
+    bool dop_refused_file = false;     // a DSD file: DoP was left out or not taken by the device (converted to PCM)
     std::vector<uint8_t> dsd_bytes;
     bool flushed = false;
     // Only the music is played, not the filter's delay around it: at the start (open, seek) the chain's first
@@ -162,6 +166,12 @@ struct Player::Impl {
     }
     // The source of the track being decoded (the last switched-to one, or the heard one).
     const AudioInfo& decoding_info() const { return tl.switches.empty() ? rep.source : tl.switches.back().info; }
+    // the settings as the chain sees them (chain_settings with the DSD multiple run and the PCM fallback)
+    Settings chain_for(const Settings& x) const { return chain_settings(x, run_osr, pcm_fallback); }
+    // what the device offers before it is opened (PlayerDeps::probe_output; empty without a probe) and its memo key
+    OutputProbe probe() const { return deps.probe_output ? deps.probe_output(out) : OutputProbe{}; }
+    // the device had no DoP rate this time: the host is told once per device and session (output_memo::first)
+    void note_dop_fallback(const std::string& memo_key, int pcm_rate);
     // what plays now, for the change decisions (change_plan.h)
     Playing playing() const { return {s, out, caps(), want, rep.source.rate, cur_path}; }
 

@@ -39,6 +39,7 @@ public:
     bool paused() const { return state_.load(std::memory_order_acquire) == kPaused; }
     // The stream carries DoP (the player sets it): pausing sends DoP silence.
     void set_dop(bool d) { dop_.store(d, std::memory_order_release); }
+    bool dop() const { return dop_.load(std::memory_order_acquire); }
 
     // Peak (0..1, first two channels) since the last call.
     void meter(double& l, double& r);

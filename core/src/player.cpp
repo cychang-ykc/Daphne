@@ -10,7 +10,10 @@ namespace daphne {
 
 Player::Player() : Player(PlayerDeps{}) {}
 
+void forget_output_memo() { playback::output_memo::clear(); }
+
 Player::Player(PlayerDeps deps) : impl_(std::make_unique<Impl>()) {
+    if (!deps.open_output && !deps.probe_output) deps.probe_output = platform_output_probe();   // (a fake device has no probe)
     if (!deps.open_output) deps.open_output = platform_output_opener();
     if (!deps.open_decoder) deps.open_decoder = [](const std::filesystem::path& p, std::string* e) { return open_decoder(p, e); };
     if (!deps.output_caps) deps.output_caps = platform_output_caps();

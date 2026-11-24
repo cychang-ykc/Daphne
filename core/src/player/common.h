@@ -48,8 +48,26 @@ bool same_output(const Settings& cs, int rate, int chain_rate);
 std::string modulator_key(const Settings& s);
 
 // Settings as the chain sees them. osr > 0: the DSD multiple the device runs (the dsd core may have
-// stepped down; the chain's limiter follows the modulator's stable range).
-Settings chain_settings(const Settings& s, int osr = 0);
+// stepped down; the chain's limiter follows the modulator's stable range). pcm_rate > 0: the dsd core plays PCM
+// at that rate for this track (the device takes no DoP rate): the chain is the pcm core's, upsampling to it.
+Settings chain_settings(const Settings& s, int osr = 0, int pcm_rate = 0);
+
+// What the player learned about devices in this process (Player instances come and go per track): the DoP rates a
+// device did not take, and which notes the host was shown once. Keyed by the output API and the device's name (as
+// the probe gives it; else the choice as written). Thread-safe.
+namespace output_memo {
+std::string key(const OutputChoice& out, const std::string& probed_name);
+// A DoP rate the device did not take: it and the higher ones of its family are left out from now on. locked: the rate
+// the device ran at instead (0: it did not open).
+void dop_failed(const std::string& key, int rate, int locked = 0);
+// Whether DoP at `rate` is known not to work (it, or a lower rate of its family, failed).
+bool dop_known_bad(const std::string& key, int rate);
+// The rate of rate's family the device ran at instead of a DoP rate (0: not known).
+int locked_instead(const std::string& key, int rate);
+// True the first time for (key, what): a note shown once per device and session.
+bool first(const std::string& key, const std::string& what);
+void clear();
+}  // namespace output_memo
 
 // "4096 taps, minimum phase (alpha 1.00), apodize" for messages.
 std::string describe_filter(const Settings& x);

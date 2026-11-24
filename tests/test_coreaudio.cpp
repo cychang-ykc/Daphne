@@ -1,5 +1,6 @@
 // Core Audio output on a real Mac (hidden: run with daphne_tests "[.coreaudio]"; CI runners have no
 // dependable audio device). Plays at -60 dBFS on the system output, so it is barely audible.
+// DAPHNE_TEST_COREAUDIO_DEVICE selects a device UID without changing the system default.
 #include <catch_amalgamated.hpp>
 
 #include <unistd.h>
@@ -9,6 +10,7 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <random>
 #include <thread>
@@ -27,8 +29,10 @@ namespace {
 constexpr double kPi = 3.141592653589793;
 
 CoreAudioDevice find(const std::string& uid) {
+    const char* selected = std::getenv("DAPHNE_TEST_COREAUDIO_DEVICE");
+    const std::string want = uid.empty() && selected ? selected : uid;
     for (auto& d : list_coreaudio_devices())
-        if (uid.empty() ? d.is_default : d.uid == uid) return d;
+        if (want.empty() ? d.is_default : d.uid == want) return d;
     return {};
 }
 
@@ -221,6 +225,38 @@ TEST_CASE("Core Audio: reopened at another rate right after closing (a player re
     CHECK(find(before.uid).hog_pid == -1);
 }
 
+TEST_CASE("Core Audio: a DoP output is released before the next PCM stream", "[.coreaudio]") {
+    const auto before = find("");
+    REQUIRE_FALSE(before.uid.empty());
+    REQUIRE(before.hog_pid == -1);
+    if (std::find(before.rates.begin(), before.rates.end(), 176400) == before.rates.end())
+        SKIP("the selected device does not offer the DSD64 DoP carrier rate");
+    keep_output_devices(true);
+    std::string e;
+    {
+        CoreAudioOutput dsd;
+        REQUIRE(dsd.open({before.uid, true, 0}, 176400, 2, &e));
+        dsd.set_dop(true);
+    }
+    // A fresh PCM open must not inherit the receiver's DSD state from a kept device.
+    CHECK_FALSE(output_device_kept());
+    CHECK(find(before.uid).hog_pid == -1);
+    CHECK(find(before.uid).rate == before.rate);
+    {
+        CoreAudioOutput pcm;
+        REQUIRE(pcm.open({before.uid, true, 0}, before.rate, 2, &e));
+        ByteRing ring(static_cast<size_t>(before.rate) * 8);
+        fill_ring(ring, before.rate);
+        std::atomic<bool> eof{true};
+        REQUIRE(pcm.start(&ring, &eof, &e));
+        CHECK(wait_for([&] { return pcm.drained(); }, 3.0));
+    }
+    CHECK(release_kept_output_device());
+    keep_output_devices(false);
+    CHECK(find(before.uid).hog_pid == -1);
+    CHECK(find(before.uid).rate == before.rate);
+}
+
 TEST_CASE("Core Audio: a kept device is taken over by the next open, and put back on release", "[.coreaudio]") {
     const auto before = find("");
     REQUIRE_FALSE(before.uid.empty());
@@ -231,7 +267,9 @@ TEST_CASE("Core Audio: a kept device is taken over by the next open, and put bac
     std::string e;
     {
         CoreAudioOutput a;
-        REQUIRE(a.open({before.uid, true, 0}, want, 2, &e));
+        const bool opened = a.open({before.uid, true, 0}, want, 2, &e);
+        INFO(e);
+        REQUIRE(opened);
         ByteRing ring(static_cast<size_t>(want) * 8);
         fill_ring(ring, want);
         std::atomic<bool> eof{true};

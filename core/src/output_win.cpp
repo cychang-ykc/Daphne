@@ -23,6 +23,11 @@ OutputOpener platform_output_opener() {
     };
 }
 
+// WASAPI and ASIO tell their rates only by opening: the player finds out that way
+OutputProbeQuery platform_output_probe() {
+    return [](const OutputChoice&) { return OutputProbe{}; };
+}
+
 std::vector<CoreAudioDevice> list_coreaudio_devices(std::string* error) {
     if (error) *error = "Core Audio is macOS only";
     return {};

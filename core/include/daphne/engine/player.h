@@ -86,11 +86,23 @@ struct OutputCaps {
 };
 using OutputCapsQuery = std::function<OutputCaps(const OutputChoice&)>;
 
+// What a device offers, read without opening it (Core Audio): its name and the nominal rates it lists. Empty when the
+// platform cannot tell (WASAPI, ASIO); the player then finds out by opening. The dsd core uses it to leave out DoP
+// rates the device does not have, so a device that cannot play DoP is not switched to a rate for nothing.
+struct OutputProbe {
+    std::string name;
+    std::vector<int> rates;
+    bool dop = true;   // false: DoP cannot reach a DAC through it (a virtual device mixes or resamples what it gets)
+};
+using OutputProbeQuery = std::function<OutputProbe(const OutputChoice&)>;
+
 // The outputs of this platform (Windows: WASAPI exclusive / shared, ASIO); fails with a message for an
 // API the platform does not have.
 OutputOpener platform_output_opener();
 // What each of them offers.
 OutputCapsQuery platform_output_caps();
+// What a device of them offers before it is opened (OutputProbe).
+OutputProbeQuery platform_output_probe();
 
 // Where the player gets its device and its PCM decoders from. Tests give a fake device and synthetic
 // sources; empty members take the defaults (platform_output_opener, open_decoder, platform_output_caps).
@@ -98,7 +110,14 @@ struct PlayerDeps {
     OutputOpener open_output;
     DecoderOpener open_decoder;
     OutputCapsQuery output_caps;
+    // empty: platform_output_probe() with the platform's own outputs (open_output empty too), else none. With a probe the
+    // player also remembers, for the rest of the process, the DoP rates a device did not take (the next track goes to
+    // what works without trying them again)
+    OutputProbeQuery probe_output;
 };
+
+// Forgets what the player learned about devices in this process (the DoP rates they did not take, the notes shown).
+void forget_output_memo();
 
 class Player {
 public:

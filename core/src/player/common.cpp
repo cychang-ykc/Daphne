@@ -1,6 +1,10 @@
 #include "common.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <map>
+#include <mutex>
+#include <set>
 
 #include "daphne/engine/dsd_output.h"
 
@@ -24,11 +28,64 @@ std::string modulator_key(const Settings& s) {
            std::to_string(s.output.max_dsd);
 }
 
-Settings chain_settings(const Settings& s, int osr) {
+Settings chain_settings(const Settings& s, int osr, int pcm_rate) {
     Settings c = s;
     if (osr > 0) c.modulator.osr = osr;
+    if (pcm_rate > 0) {
+        c.core = CoreMode::Pcm;
+        c.output.rate = std::to_string(pcm_rate);
+    }
     return c;
 }
+
+namespace output_memo {
+namespace {
+std::mutex g_m;
+std::map<std::string, std::map<int, int>> g_dop_bad;   // DoP rate -> the rate locked instead (0: none)
+std::set<std::pair<std::string, std::string>> g_shown;
+int family(int rate) { return rate % 44100 == 0 ? 44100 : 48000; }
+}  // namespace
+
+std::string key(const OutputChoice& out, const std::string& probed_name) {
+    return std::to_string(static_cast<int>(out.api)) + "|" + (probed_name.empty() ? out.device : probed_name);
+}
+
+void dop_failed(const std::string& key, int rate, int locked) {
+    std::lock_guard<std::mutex> l(g_m);
+    int& v = g_dop_bad[key][rate];
+    if (locked > 0) v = locked;
+}
+
+bool dop_known_bad(const std::string& key, int rate) {
+    std::lock_guard<std::mutex> l(g_m);
+    auto it = g_dop_bad.find(key);
+    if (it == g_dop_bad.end()) return false;
+    for (const auto& [r, locked] : it->second)
+        if (family(r) == family(rate) && r <= rate) return true;
+    return false;
+}
+
+int locked_instead(const std::string& key, int rate) {
+    std::lock_guard<std::mutex> l(g_m);
+    auto it = g_dop_bad.find(key);
+    if (it == g_dop_bad.end()) return 0;
+    int best = 0;
+    for (const auto& [r, locked] : it->second)
+        if (locked > 0 && family(locked) == family(rate) && locked < rate) best = std::max(best, locked);
+    return best;
+}
+
+bool first(const std::string& key, const std::string& what) {
+    std::lock_guard<std::mutex> l(g_m);
+    return g_shown.insert({key, what}).second;
+}
+
+void clear() {
+    std::lock_guard<std::mutex> l(g_m);
+    g_dop_bad.clear();
+    g_shown.clear();
+}
+}  // namespace output_memo
 
 std::string describe_filter(const Settings& x) {
     static const char* phases[] = {"linear", "intermediate", "minimum", "custom"};

@@ -15,9 +15,13 @@
 // hangs for seconds; seen by MIKU's own Core Audio output). So open() starts the IO (silent) before it
 // changes the rate or the physical format, and close() puts both back while the IO still runs, then
 // stops it and releases hog mode.
+// After open() changes a rate or physical format, it rebinds the IOProc at the settled format before
+// attaching the track. Some USB DACs otherwise keep calling the old IOProc without producing sound,
+// including when a subsequent track returns to PCM (observed with the Sony WM1A).
 //
 // keep_output_devices (devices.h): close() in exclusive mode then keeps the device running, silent, in hog mode,
 // and the next open() of the same device takes it over (the IO callback has no owner meanwhile).
+// DoP is released on close instead, so the next PCM stream cannot inherit the DAC's DSD state.
 
 #include <atomic>
 #include <cstdint>
@@ -38,6 +42,11 @@ struct CoreAudioOptions {
     // Core Audio's converter resamples to the device's rate (system_rate()). Shared mode always converts.
     bool convert = false;
 };
+
+// The device a choice resolves to (as open() resolves it: UID, index, the system output, or the system output when the
+// chosen one is not connected), read without opening it: its name and nominal rates. False when there is none.
+// *is_virtual: a virtual device (Background Music, a loopback driver): no DAC behind it takes DoP as sent.
+bool coreaudio_probe(const std::string& device, std::string* name, std::vector<int>* rates, bool* is_virtual = nullptr);
 
 class CoreAudioOutput final : public AudioOutput {
 public:

@@ -49,9 +49,49 @@ std::mutex g_kept_m;
 bool g_keep = false;
 CoreAudioOutput::Impl* g_kept = nullptr;
 
-// *taken_default: the device was resolved as "the system output".
-AudioDeviceID resolve(const std::string& want, std::string* error, bool* taken_default) {
+// A UID without its last ":<digits>" field. USB audio UIDs end in an instance or location number
+// ("AppleUSBAudioEngine:ASUSTek:ROG CETRA OPEN WIRELESS:0000000000000000:1") that can change when the device (or a
+// wireless dongle) comes back, so that field is not part of what identifies it.
+std::string uid_stem(const std::string& uid) {
+    const size_t p = uid.rfind(':');
+    return p != std::string::npos && p > 0 && all_digits(uid.substr(p + 1)) ? uid.substr(0, p) : uid;
+}
+
+// The product name inside a USB audio UID (its third field), "" for other UIDs.
+std::string uid_product(const std::string& uid) {
+    if (uid.rfind("AppleUSBAudioEngine:", 0) != 0) return {};
+    const size_t a = uid.find(':', 20);
+    if (a == std::string::npos) return {};
+    const size_t b = uid.find(':', a + 1);
+    return b == std::string::npos ? std::string{} : uid.substr(a + 1, b - a - 1);
+}
+
+// The device chosen by UID or name: the exact UID, the exact name, the same UID but for its instance number, then a
+// USB device whose name is the product named in the UID. kAudioObjectUnknown when none is there.
+AudioDeviceID find_selected(const std::string& want, const std::vector<AudioDeviceID>& devs) {
+    for (AudioDeviceID d : devs)
+        if (ca::string_prop(d, kAudioDevicePropertyDeviceUID) == want) return d;
+    for (AudioDeviceID d : devs)
+        if (ca::string_prop(d, kAudioObjectPropertyName) == want) return d;
+    const std::string stem = uid_stem(want);
+    if (stem != want)
+        for (AudioDeviceID d : devs)
+            if (uid_stem(ca::string_prop(d, kAudioDevicePropertyDeviceUID)) == stem) return d;
+    const std::string product = uid_product(want);
+    if (!product.empty())
+        for (AudioDeviceID d : devs)
+            if (ca::string_prop(d, kAudioObjectPropertyName) == product &&
+                ca::string_prop(d, kAudioDevicePropertyDeviceUID).rfind("AppleUSBAudioEngine:", 0) == 0)
+                return d;
+    return kAudioObjectUnknown;
+}
+
+// *taken_default: the device was resolved as "the system output". *fell_back: a chosen device is not there (unplugged,
+// a wireless headset that is off) and the system output was taken instead; the output reopens on the chosen one when
+// it comes back (Impl::on_devices).
+AudioDeviceID resolve(const std::string& want, std::string* error, bool* taken_default, bool* fell_back = nullptr) {
     *taken_default = false;
+    if (fell_back) *fell_back = false;
     if (want.empty() || want == "default") {
         *taken_default = true;
         // While a device is held in hog mode macOS moves the system output elsewhere (or to none), and moves it back a
@@ -91,10 +131,15 @@ AudioDeviceID resolve(const std::string& want, std::string* error, bool* taken_d
         const size_t i = static_cast<size_t>(std::stoul(want));
         if (i < devs.size()) return devs[i];
     }
-    for (AudioDeviceID d : devs)
-        if (ca::string_prop(d, kAudioDevicePropertyDeviceUID) == want) return d;
-    for (AudioDeviceID d : devs)
-        if (ca::string_prop(d, kAudioObjectPropertyName) == want) return d;
+    if (const AudioDeviceID d = find_selected(want, devs)) return d;
+    if (fell_back) {
+        std::string e;
+        const AudioDeviceID d = resolve("default", &e, taken_default);
+        if (d != kAudioObjectUnknown) {
+            *fell_back = true;
+            return d;
+        }
+    }
     if (error) *error = "Core Audio device not found: " + want;
     return kAudioObjectUnknown;
 }
@@ -172,6 +217,10 @@ struct CoreAudioOutput::Impl {
 
     bool listening = false;
     std::atomic<bool> removed{false};
+    // Opened on the system output because the chosen device (want) was missing (resolve): the device list is watched
+    // and the output asks to be reopened once the chosen one is back.
+    bool fell_back = false, watching_devices = false;
+    std::string want;
     std::mutex notes_m;
     std::vector<std::string> notes;
 
@@ -305,7 +354,28 @@ struct CoreAudioOutput::Impl {
 
     static constexpr AudioObjectPropertySelector kWatched[] = {kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyNominalSampleRate};
 
+    // The device list changed while playing on the system output in place of the chosen device: reopen when it is back.
+    static OSStatus on_devices(AudioObjectID, UInt32, const AudioObjectPropertyAddress*, void* ctx) {
+        auto* m = static_cast<Impl*>(ctx);
+        if (!m->fell_back) return noErr;
+        const AudioDeviceID d = find_selected(m->want, ca::output_devices());
+        if (d != kAudioObjectUnknown && d != m->dev && !ca::output_streams(d).empty()) {
+            if (CoreAudioOutput* o = m->owner.load(); o && !o->reset_.load()) {
+                m->note("the chosen output device is back: reopening on it");
+                o->reset_ = true;
+            }
+        }
+        return noErr;
+    }
+
     void listen(bool on) {
+        const bool devices = on && fell_back;
+        if (devices != watching_devices) {
+            const auto ad = ca::addr(kAudioHardwarePropertyDevices);
+            if (devices) AudioObjectAddPropertyListener(kAudioObjectSystemObject, &ad, &Impl::on_devices, this);
+            else AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &ad, &Impl::on_devices, this);
+            watching_devices = devices;
+        }
         if (on == listening || dev == kAudioObjectUnknown) return;
         for (auto s : kWatched) {
             const auto ad = ca::addr(s);
@@ -397,6 +467,23 @@ struct CoreAudioOutput::Impl {
         for (int i = 0; i < 50 && calls.load() < c0 + 2; ++i) sleep_ms(10);
     }
 
+    // USB drivers can keep invoking an IOProc after a rate/physical-format change while its
+    // stream is silent. Rebind it after the new format has settled, before an owner is attached.
+    // All property changes still happen with IO running (see coreaudio_output.h).
+    bool rebind_io() {
+        if (AudioDeviceStop(dev, proc) != noErr) return false;
+        io_running = false;
+        while (in_render.load() != 0) std::this_thread::yield();
+        if (AudioDeviceDestroyIOProcID(dev, proc) != noErr) return false;
+        proc = nullptr;
+        if (AudioDeviceCreateIOProcID(dev, &Impl::io, this, &proc) != noErr || !proc) return false;
+        if (AudioDeviceStart(dev, proc) != noErr) return false;
+        io_running = true;
+        wait_io();
+        note("Core Audio IO restarted after the output format changed");
+        return true;
+    }
+
     // Puts back what open() changed while the IO still runs, then stops it and releases hog mode (header).
     void shut() {
         listen(false);
@@ -457,6 +544,21 @@ bool output_device_kept() {
     return g_kept != nullptr;
 }
 
+bool coreaudio_probe(const std::string& device, std::string* name, std::vector<int>* rates, bool* is_virtual) {
+    std::string e;
+    bool taken_default = false, fell_back = false;
+    const AudioDeviceID d = resolve(device, &e, &taken_default, &fell_back);
+    if (d == kAudioObjectUnknown) return false;
+    if (name) *name = ca::string_prop(d, kAudioObjectPropertyName);
+    if (rates) *rates = ca::offered_rates(d);
+    if (is_virtual) {
+        UInt32 t = 0;
+        ca::get(d, kAudioDevicePropertyTransportType, t);
+        *is_virtual = t == kAudioDeviceTransportTypeVirtual;
+    }
+    return true;
+}
+
 CoreAudioOutput::CoreAudioOutput() = default;
 
 CoreAudioOutput::~CoreAudioOutput() { close(); }
@@ -474,8 +576,8 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     };
     if (channels <= 0 || rate <= 0) return fail("Core Audio: invalid request");
     std::string e;
-    bool taken_default = false;
-    const AudioDeviceID dev = resolve(opt.device, &e, &taken_default);
+    bool taken_default = false, fell_back = false;
+    const AudioDeviceID dev = resolve(opt.device, &e, &taken_default, &fell_back);
     // the device kept from the last track: taken over when it is the one asked for in exclusive mode, else put back
     std::unique_ptr<Impl> kept = take_kept();
     if (kept) {
@@ -492,9 +594,14 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     if (dev == kAudioObjectUnknown) return fail(e);
     m.dev = dev;
     m.taken_default = m.taken_default || taken_default;
+    m.listen(false);   // (a kept device: its watch is set again for this open below)
+    m.fell_back = fell_back;
+    m.want = opt.device;
     m.slots.clear();
     m.mono = false;
     name_ = ca::string_prop(m.dev, kAudioObjectPropertyName);
+    if (fell_back) m.note("the chosen output device (" + opt.device + ") is not connected: playing on the system output, " + name_ +
+                          ", until it is back");
     if (ca::output_streams(m.dev).empty()) return fail(name_ + " has no output streams");
     m.exclusive = opt.exclusive;
     rates_ = ca::offered_rates(m.dev);
@@ -595,10 +702,13 @@ bool CoreAudioOutput::open(const CoreAudioOptions& opt, int rate, int channels, 
     std::sort(used.begin(), used.end());
     used.erase(std::unique(used.begin(), used.end()), used.end());
 
-    if (m.exclusive && m.raise_physical(used)) {
+    const bool physical_changed = m.exclusive && m.raise_physical(used);
+    if (physical_changed) {
         m.wait_io();
         m.settle(true);
     }
+
+    if ((changed || physical_changed) && !m.rebind_io()) return fail("could not restart the IO stream for " + name_);
 
     UInt32 bf = 0;
     ca::get(m.dev, kAudioDevicePropertyBufferFrameSize, bf);
@@ -703,7 +813,9 @@ void CoreAudioOutput::close() {
     bool keep = false;
     {
         std::lock_guard<std::mutex> l(g_kept_m);
-        keep = g_keep && m.exclusive && m.io_running && m.own_hog && !m.removed;
+        // A DAC may stay latched in DSD after DoP even once PCM silence was sent. Put its
+        // original format/rate back and release it before another stream takes over.
+        keep = g_keep && m.exclusive && m.io_running && m.own_hog && !m.removed && !feeder_.dop();
     }
     if (keep) {
         // kept for the next track: the IO goes on, silent once no callback holds this output any more

@@ -36,6 +36,16 @@ OutputCapsQuery platform_output_caps() {
     };
 }
 
+// Core Audio lists a device's nominal rates without opening it (the device a choice resolves to, as open() would)
+OutputProbeQuery platform_output_probe() {
+    return [](const OutputChoice& o) {
+        OutputProbe p;
+        bool is_virtual = false;
+        if (is_coreaudio(o.api) && coreaudio_probe(o.device, &p.name, &p.rates, &is_virtual)) p.dop = !is_virtual;
+        return p;
+    };
+}
+
 std::vector<WasapiDevice> list_wasapi_devices(bool, std::string* error) {
     if (error) *error = "WASAPI is Windows only";
     return {};

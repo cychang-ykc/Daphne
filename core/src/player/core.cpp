@@ -105,7 +105,7 @@ void Player::Impl::check_switch() {
         cur_path = w.path;
         tl.switches.pop_front();
         if (!dsdf) {   // a DSD file sent directly has no chain and stays bit-perfect
-            if (cross) rep.filter = report.filter(s, dsdenc.get());
+            if (cross) rep.filter = report.filter(chain_for(s), dsdenc.get());
             rep.chain = tl.heard_chain(cur.get())->stages();   // a cross switch's new chain; the track's own headroom
             report.bit_perfect(tl.heard_chain(cur.get()));     // the track's own format
         }
@@ -167,7 +167,7 @@ bool Player::Impl::do_seek(double sec) {
             cur = warmed ? std::move(warmed) : std::move(xf.next);
             xf.fading = false;
             rep.chain = cur->stages();
-            rep.filter = report.filter(s, dsdenc.get());
+            rep.filter = report.filter(chain_for(s), dsdenc.get());
             report.bit_perfect(tl.heard_chain(cur.get()));
         }
         cur->reset();
@@ -371,6 +371,9 @@ void Player::Impl::run_playback() {
         done = true;
         return;
     }
+    // a DSD file the device could not take as DoP plays as PCM: the host is told once per device and session (the dsd
+    // core's own fallback has told it already)
+    if (dop_refused_file && !pcm_fallback) note_dop_fallback(output_memo::key(out, probe().name), rep.device.rate);
     PcmStream st(*this);
     play(st);
 }
